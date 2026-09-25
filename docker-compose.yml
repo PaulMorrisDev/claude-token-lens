@@ -1,12 +1,12 @@
-# claude-token-lens service (deliverable 2.b -- see docs/deploy.md for
+# claudeglass service (deliverable 2.b -- see docs/deploy.md for
 # the full deployment picture and the egress-verification smoke test
 # this compose file is meant to pass: `docker run --network none ...`
 # must still be able to serve `/api/health` from the store alone).
 
 services:
-  token-lens:
+  claudeglass:
     build: .
-    container_name: claude-token-lens
+    container_name: claudeglass
     restart: unless-stopped
 
     volumes:
@@ -29,7 +29,7 @@ services:
       # The service's own SQLite store (service.db) and any monthly
       # reports -- a named volume, not a bind mount, since nothing
       # outside the container needs to read this directly.
-      - token-lens-data:/data/token-lens
+      - claudeglass-data:/data/claudeglass
 
     ports:
       # Loopback-only on the host, regardless of --bind 0.0.0.0 inside
@@ -61,4 +61,4 @@ services:
     network_mode: bridge
 
 volumes:
-  token-lens-data:
+  claudeglass-data:

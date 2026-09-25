@@ -1,6 +1,6 @@
 # How it works, and what it can't do
 
-The README covers installing and using claude-token-lens. This page
+The README covers installing and using claudeglass. This page
 holds the detail behind it:
 
 - what it reads, and what it can't measure;
@@ -14,7 +14,7 @@ full privacy and security checklist.
 
 ## What it reads, and what it can't
 
-claude-token-lens reads the transcripts Claude Code keeps on your
+claudeglass reads the transcripts Claude Code keeps on your
 machine. These are `~/.claude/projects/<slug>/<session>.jsonl`, plus
 `<session>/subagents/agent-*.jsonl` and
 `<session>/workflows/wf_*.json`. It groups the lines Claude wrote into
@@ -30,7 +30,7 @@ What it can't do:
 
 - **Read your bill.** Anthropic has no way to read back what a Claude
   Code session actually cost. Every amount is worked out from a rate
-  card in [`pricing.toml`](../src/claude_token_lens/pricing.toml),
+  card in [`pricing.toml`](../src/claudeglass/pricing.toml),
   which you can edit. The tool never fetches prices and has no code that
   could.
 - **Price a plan in dollars.** On a Pro or Max plan you don't pay per
@@ -49,8 +49,8 @@ What it can't do:
     Max plans. Set `billing = "subscription"` or `"api"` to
     choose yourself.
   - In the code, `ReportMeta.billing_mode` and `Config.billing` hold
-    this ([`model.py`](../src/claude_token_lens/model.py),
-    [`config.py`](../src/claude_token_lens/config.py)).
+    this ([`model.py`](../src/claudeglass/model.py),
+    [`config.py`](../src/claudeglass/config.py)).
 - **Rely on a stable format.** Claude Code's docs describe the
   transcript format as internal, and it changes between versions. Every
   field this tool reads was found by looking at real transcripts. The
@@ -64,15 +64,15 @@ What it can't do:
 
 ## The SessionStart hook
 
-[`hooks/snapshot-config.py`](../src/claude_token_lens/hooks/snapshot-config.py)
+[`hooks/snapshot-config.py`](../src/claudeglass/hooks/snapshot-config.py)
 records your Claude Code settings when a session starts. That lets the
 dashboard show what changed, and what that did. The script uses only
 Python's standard library and imports nothing from this package, so it
 keeps working when copied on its own.
 
-**The easy way:** `python -m claude_token_lens init` installs the
+**The easy way:** `python -m claudeglass init` installs the
 script, shows the exact `settings.json` change, and makes it only after
-you say yes, backing the file up first. `python -m claude_token_lens
+you say yes, backing the file up first. `python -m claudeglass
 uninstall` takes it out again. The rest of this section is for doing it
 by hand.
 
@@ -88,8 +88,8 @@ by hand.
 To install it by hand:
 
 ```powershell
-python -m claude_token_lens snapshot-config --install-hook   # copies the script into <config-dir>/hooks/
-python -m claude_token_lens snapshot-config --print-hook     # prints the settings.json fragment
+python -m claudeglass snapshot-config --install-hook   # copies the script into <config-dir>/hooks/
+python -m claudeglass snapshot-config --print-hook     # prints the settings.json fragment
 ```
 
 `--print-hook` prints both variants. Merge the one for your system into
@@ -106,7 +106,7 @@ Windows:
         "hooks": [
           {
             "type": "command",
-            "command": "\"C:\\path\\to\\python.exe\" \"C:\\Users\\<you>\\.claude\\token-lens\\hooks\\snapshot-config.py\""
+            "command": "\"C:\\path\\to\\python.exe\" \"C:\\Users\\<you>\\.claude\\claudeglass\\hooks\\snapshot-config.py\""
           }
         ]
       }
@@ -125,7 +125,7 @@ Linux and macOS:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/token-lens/hooks/snapshot-config.py\""
+            "command": "python3 \"$HOME/.claude/claudeglass/hooks/snapshot-config.py\""
           }
         ]
       }
@@ -141,7 +141,7 @@ things can stop the hook running without any visible error:
   `%USERPROFILE%`.
 - The `py` launcher isn't always on the `PATH`.
 
-The Data quality page flags both, and `python -m claude_token_lens init
+The Data quality page flags both, and `python -m claudeglass init
 --repair-hook` fixes them. It writes the folder out in full and keeps
 your own Python when it finds it. A new install names your main Python
 rather than a virtual environment's, which could later be deleted. The
@@ -194,8 +194,8 @@ The status line is a separate entry point. Either of these prints the
 `settings.json` fragment:
 
 ```powershell
-python -m claude_token_lens statusline --print-install-fragment
-python -m claude_token_lens.statusline --print-install-fragment
+python -m claudeglass statusline --print-install-fragment
+python -m claudeglass.statusline --print-install-fragment
 ```
 
 Merge the result into `~/.claude/settings.json`. It replaces any
@@ -204,13 +204,13 @@ Merge the result into `~/.claude/settings.json`. It replaces any
 Windows:
 
 ```json
-{ "statusLine": { "type": "command", "command": "\"C:\\path\\to\\python.exe\" -m claude_token_lens.statusline" } }
+{ "statusLine": { "type": "command", "command": "\"C:\\path\\to\\python.exe\" -m claudeglass.statusline" } }
 ```
 
 Linux and macOS:
 
 ```json
-{ "statusLine": { "type": "command", "command": "python3 -m claude_token_lens.statusline" } }
+{ "statusLine": { "type": "command", "command": "python3 -m claudeglass.statusline" } }
 ```
 
 The status line runs only in Claude Code in a terminal. Sessions in the
@@ -221,7 +221,7 @@ arriving. Like the hook, it adds no tokens to the conversation.
 With metrics capture's status-line items on, it prints a second line.
 Those items are `feedback = ["feedback_note"]` or
 `coaching = ["coaching_line"]` in `[capture]`, set from **Setup ›
-Capture** or `python -m claude_token_lens capture enable`. The second
+Capture** or `python -m claudeglass capture enable`. The second
 line shows a live hint when one applies, and otherwise the reminder to
 run `/tl-feedback`. The first line doesn't change. A hint appears for:
 
@@ -241,9 +241,9 @@ reads:
   the cache lifetime when there is no usable `prompt_cache`.
 
 The usage-window percentages are also added to
-`~/.claude/token-lens/usage-log.csv`, with duplicates by session, reset
+`~/.claude/claudeglass/usage-log.csv`, with duplicates by session, reset
 time and percentage skipped. The status line never raises an error: if
-anything fails, it prints a minimal `token-lens` line rather than
+anything fails, it prints a minimal `claudeglass` line rather than
 blanking the status bar.
 
 **Cache segment:**
@@ -262,7 +262,7 @@ The whole line stays under 120 characters and never shows message text.
 
 The numeric `prompt_cache` fields go into `usage-log.csv` as six extra
 columns: warm, lifetime, expiry, misses, miss cause, and tokens to
-rebuild if cold. `python -m claude_token_lens report` uses them for a
+rebuild if cold. `python -m claudeglass report` uses them for a
 `cache_ground_truth` table (see
 [`sections-reference.md`](sections-reference.md)), which summarises real
 cache warmth across sessions.
@@ -287,7 +287,7 @@ cache warmth across sessions.
   never cached (`cache.py`), and a half-written last line is tolerated.
 - **`CLAUDE_CONFIG_DIR`** moves the whole folder. When it's set, both the
   projects folder (`.../projects`) and this tool's own folder
-  (`.../token-lens`) are found under it instead of `~/.claude`.
+  (`.../claudeglass`) are found under it instead of `~/.claude`.
 - **Where `settings.json` is.** Every part that reads or changes Claude
   Code's `settings.json` looks in the same place: `--claude-root` when
   given, else `$CLAUDE_CONFIG_DIR`, else `~/.claude`. That covers

@@ -15,11 +15,11 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import waste
-from claude_token_lens.model import Column, Recommendation, ReportModel, Section, Table, TranscriptMeta
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import ModelRates, Pricing
-from claude_token_lens.units import Units
+from claudeglass import waste
+from claudeglass.model import Column, Recommendation, ReportModel, Section, Table, TranscriptMeta
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import ModelRates, Pricing
+from claudeglass.units import Units
 
 from helpers import (
     assert_privacy,
@@ -116,7 +116,7 @@ def test_tool_error_absent_when_no_is_error_result(tmp_path: Path):
 
 
 def test_tool_error_kinds_come_from_the_start_of_the_error_text():
-    from claude_token_lens.parse import _tool_error_kind
+    from claudeglass.parse import _tool_error_kind
 
     assert _tool_error_kind("PreToolUse:Read hook error: [pwsh guard.ps1]: first Read must use the index") == "blocked"
     assert _tool_error_kind("<tool_use_error>Blocked: sleep 90 followed by: cat out.txt</tool_use_error>") == "blocked"
@@ -663,7 +663,7 @@ def test_rule_evidence_cites_real_table_cells(tmp_path: Path):
 
 
 def test_untyped_subagent_is_not_filed_under_top_level():
-    from claude_token_lens.model import TranscriptMeta, TranscriptResult, agent_type_label
+    from claudeglass.model import TranscriptMeta, TranscriptResult, agent_type_label
 
     assert agent_type_label(TranscriptResult(meta=TranscriptMeta(kind="subagent"))) == "unknown"
     assert agent_type_label(TranscriptResult(meta=TranscriptMeta(kind="top-level"))) == "top-level"
@@ -671,8 +671,8 @@ def test_untyped_subagent_is_not_filed_under_top_level():
 
 
 def test_wasted_turns_cites_redone_messages_and_missed_goals_when_there_are_any(tmp_path: Path):
-    from claude_token_lens import habits
-    from claude_token_lens.habits import CycleFact, Piece
+    from claudeglass import habits
+    from claudeglass.habits import CycleFact, Piece
 
     report = _report_with_waste_section(_built_section_for_high_waste_share(tmp_path))
     th = waste.WasteThresholds(share_pct=10.0, min_sessions=5, min_turns=200)

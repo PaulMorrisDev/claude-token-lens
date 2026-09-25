@@ -1,7 +1,7 @@
 
 
 def test_profile_prompt_lists_changed_unmanaged_keys_with_their_files():
-    from claude_token_lens.fixes import profile_prompt
+    from claudeglass.fixes import profile_prompt
 
     rows = [
         {"key": "settings.model", "current_value": "opus", "proposed_value": "sonnet"},
@@ -21,7 +21,7 @@ def test_profile_prompt_lists_changed_unmanaged_keys_with_their_files():
 
 
 def test_profile_prompt_says_so_when_nothing_changes():
-    from claude_token_lens.fixes import profile_prompt
+    from claudeglass.fixes import profile_prompt
 
     text = profile_prompt("Same", [{"key": "settings.model", "current_value": "x", "proposed_value": "x"}], "user")
     assert "nothing to change" in text
@@ -33,8 +33,8 @@ def test_build_fixes_gives_an_actionable_workflow_rule_a_where_trade_off_undo_ex
     ``explainer`` (the three ids in the old ``_WORKFLOW_PROMPTS``) or no
     fix at all (every other id) -- neither carried a where/trade-off/undo
     entry. Every id now gets one via ``_WORKFLOW_EXPLAINER``."""
-    from claude_token_lens.fixes import build_fixes
-    from claude_token_lens.model import Recommendation
+    from claudeglass.fixes import build_fixes
+    from claudeglass.model import Recommendation
 
     rec = Recommendation(
         id="batch-instructions",
@@ -57,8 +57,8 @@ def test_build_fixes_gives_a_purely_informational_workflow_card_an_explainer_but
     """cache-read-dominance, data-quality and window-budget propose no
     change at all -- they still get the explainer (stating so plainly),
     but ``prompt`` is empty: there is nothing to ask Claude to do."""
-    from claude_token_lens.fixes import build_fixes
-    from claude_token_lens.model import Recommendation
+    from claudeglass.fixes import build_fixes
+    from claudeglass.model import Recommendation
 
     rec = Recommendation(
         id="cache-read-dominance",
@@ -77,8 +77,8 @@ def test_build_fixes_gives_a_purely_informational_workflow_card_an_explainer_but
 def test_build_fixes_still_gives_nothing_for_an_id_with_no_workflow_entry_at_all():
     """A ``rec.id`` that appears in neither ``_WORKFLOW_EXPLAINER`` nor
     ``_WORKFLOW_PROMPTS`` gets no fix -- unchanged from before UX-8."""
-    from claude_token_lens.fixes import build_fixes
-    from claude_token_lens.model import Recommendation
+    from claudeglass.fixes import build_fixes
+    from claudeglass.model import Recommendation
 
     rec = Recommendation(id="not-a-real-id", title="x", action="x", lever=None)
     assert build_fixes(rec) == []
@@ -88,8 +88,8 @@ def test_render_fix_skips_the_ask_claude_block_for_an_empty_prompt():
     """UX-8's informational workflow cards have an explainer but no
     prompt (see above) -- ``_render_fix``/``_fix_html`` must not print an
     empty "Ask Claude to do it" code block for them."""
-    from claude_token_lens.render.html import _fix_html
-    from claude_token_lens.render.markdown import _render_fix
+    from claudeglass.render.html import _fix_html
+    from claudeglass.render.markdown import _render_fix
 
     fix = {"key": None, "agent": None, "explainer": [["Trade-off", "None."]], "command": None, "prompt": ""}
     md_lines = _render_fix(fix)

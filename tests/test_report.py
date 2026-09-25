@@ -1,5 +1,5 @@
 """``report.py``: ``build_report``'s corpus-wide integration of every
-WP3-WP9 accumulator into one :class:`~claude_token_lens.model.ReportModel`.
+WP3-WP9 accumulator into one :class:`~claudeglass.model.ReportModel`.
 Synthetic corpora are built with ``tests/helpers``/``corpus.load_corpus``
 (the same JSONL-fixture pattern ``test_corpus.py`` uses), per the plan's
 test list: an empty corpus, a two-session corpus with one subagent,
@@ -16,16 +16,16 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens.config import Config
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.model import Diagnostics
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.report import _SECTION_ORDER, _apply_autocompact_pct_override, build_report
-from claude_token_lens.render.csv_out import write_csv_dir
-from claude_token_lens.render.html import render_html
-from claude_token_lens.render.json_out import render_json
-from claude_token_lens.render.markdown import render_markdown
-from claude_token_lens.snapshots import Snapshot
+from claudeglass.config import Config
+from claudeglass.corpus import load_corpus
+from claudeglass.model import Diagnostics
+from claudeglass.pricing import load_pricing
+from claudeglass.report import _SECTION_ORDER, _apply_autocompact_pct_override, build_report
+from claudeglass.render.csv_out import write_csv_dir
+from claudeglass.render.html import render_html
+from claudeglass.render.json_out import render_json
+from claudeglass.render.markdown import render_markdown
+from claudeglass.snapshots import Snapshot
 
 from helpers import assert_privacy, turn_line, user_str_line, write_jsonl
 
@@ -207,7 +207,7 @@ def test_scorecard_ctx_stats_use_top_level_transcripts_only(tmp_path, monkeypatc
 
     corpus = load_corpus([project_dir])
 
-    from claude_token_lens import report as report_mod
+    from claudeglass import report as report_mod
 
     captured = {}
     original_build_section = report_mod.scorecard.build_section
@@ -713,10 +713,10 @@ def test_baseline_note_is_recorded_in_assumptions_when_no_record(tmp_path):
         projects=("proj-two",),
         window="w",
         baseline_record=None,
-        baseline_note="run `claude-token-lens baseline` first",
+        baseline_note="run `claudeglass baseline` first",
     )
     assert "baseline_comparison" not in [s.key for s in report.sections]
-    assert "run `claude-token-lens baseline` first" in report.meta.assumptions
+    assert "run `claudeglass baseline` first" in report.meta.assumptions
 
 
 # -- meta ---------------------------------------------------------------
@@ -916,8 +916,8 @@ def test_recache_by_group_agent_matches_recache_by_agent_type_on_real_fixture():
 
 
 def test_limit_recache_share_counts_only_limit_expiry_rebuilds():
-    from claude_token_lens.model import Turn
-    from claude_token_lens.report import _recache_shares
+    from claudeglass.model import Turn
+    from claudeglass.report import _recache_shares
 
     turns = [
         Turn(cache_creation_tokens=100, is_recache=True, recache_signature="limit-expiry", gap_cause="limit"),
@@ -934,7 +934,7 @@ def test_limit_recache_share_counts_only_limit_expiry_rebuilds():
 def test_session_records_carry_the_profile_active_at_their_start(tmp_path, monkeypatch):
     # The apply stamp for "lean" predates the session's first turn, so
     # its SessionRecord is filled in with that profile.
-    from claude_token_lens import report as report_mod
+    from claudeglass import report as report_mod
 
     project_dir = tmp_path / "proj"
     project_dir.mkdir()

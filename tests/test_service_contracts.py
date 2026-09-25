@@ -12,11 +12,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from claude_token_lens.service.contracts import ApiError, ServeOptions, WatcherStats
+from claudeglass.service.contracts import ApiError, ServeOptions, WatcherStats
 
 
 def test_serve_options_defaults():
-    options = ServeOptions(projects_root=Path("/data/claude/projects"), config_dir=Path("/data/token-lens"))
+    options = ServeOptions(projects_root=Path("/data/claude/projects"), config_dir=Path("/data/claudeglass"))
     assert options.port == 8765
     assert options.bind == "127.0.0.1"
     assert options.poll_interval_s == 30.0
@@ -95,7 +95,7 @@ class _FakeWatcher:
 
 
 def test_fake_watcher_satisfies_the_watcher_protocol_shape():
-    from claude_token_lens.service.contracts import Watcher
+    from claudeglass.service.contracts import Watcher
 
     watcher: Watcher = _FakeWatcher()
     assert watcher.last_stats is None
@@ -107,7 +107,7 @@ def test_fake_watcher_satisfies_the_watcher_protocol_shape():
 
 
 def test_fake_api_handler_satisfies_the_api_handler_protocol_shape():
-    from claude_token_lens.service.contracts import ApiHandler
+    from claudeglass.service.contracts import ApiHandler
 
     def handler(store, query, body):
         return 200, {"ok": True, "data": {"echo": query}}
@@ -119,7 +119,7 @@ def test_fake_api_handler_satisfies_the_api_handler_protocol_shape():
 
 
 def test_fake_make_handler_satisfies_the_make_handler_protocol_shape():
-    from claude_token_lens.service.contracts import MakeHandler
+    from claudeglass.service.contracts import MakeHandler
 
     class _DummyHandlerClass:
         pass

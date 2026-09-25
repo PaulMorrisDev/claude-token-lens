@@ -1,5 +1,5 @@
 """Tests for v4-model-swap: the model-swap counterfactual
-(``src/claude_token_lens/model_swap.py``).
+(``src/claudeglass/model_swap.py``).
 
 Most branches are exercised on hand-built ``model.Turn``/
 ``model.TranscriptResult`` instances (the ``_turn``/``_transcript``
@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import model, model_swap
-from claude_token_lens.model import (
+from claudeglass import model, model_swap
+from claudeglass.model import (
     Diagnostics,
     PricingMeta,
     ReportMeta,
@@ -27,10 +27,10 @@ from claude_token_lens.model import (
     TranscriptMeta,
     TranscriptResult,
 )
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.render.tables import format_cell
-from claude_token_lens.units import Units
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing
+from claudeglass.render.tables import format_cell
+from claudeglass.units import Units
 
 from helpers import assert_privacy, elasticity_with_slope, turn_line, write_jsonl
 
@@ -604,7 +604,7 @@ def test_privacy(tmp_path: Path):
 
 
 def test_reported_fit_is_cited_but_never_changes_the_saving():
-    from claude_token_lens import habits
+    from claudeglass import habits
 
     tr = _agent(FABLE, "claude-implementer")
     stats = model_swap.compute_model_swap([tr], PRICING)

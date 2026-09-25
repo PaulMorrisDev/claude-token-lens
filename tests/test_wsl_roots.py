@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import cli, discovery, installer, onboarding, setup_flow
-from claude_token_lens.config import ConfigError, load_config
+from claudeglass import cli, discovery, installer, onboarding, setup_flow
+from claudeglass.config import ConfigError, load_config
 
 # conftest replaces this with a stub for every test; keep the real one.
 _REAL_FIND_WSL = discovery.find_wsl_projects_roots

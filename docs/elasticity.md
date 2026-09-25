@@ -163,4 +163,4 @@ adds the `elasticity` section right after `usage`, from the same fit
 assumptions. `recommend.recommend()` runs `elasticity.RULES` last. The
 dashboard shows the section on Spend › Usage. Under API billing, or with
 no usage-log rows, none of this appears. No separate CLI subcommand
-prints the section; `claude-token-lens report` includes it.
+prints the section; `claudeglass report` includes it.

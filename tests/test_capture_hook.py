@@ -17,11 +17,11 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import capture_catalogue as cat
-from claude_token_lens import hook_health
-from claude_token_lens.config import CaptureConfig
+from claudeglass import capture_catalogue as cat
+from claudeglass import hook_health
+from claudeglass.config import CaptureConfig
 
-SCRIPT = Path(str(resources.files("claude_token_lens") / "hooks" / cat.HOOK_SCRIPT))
+SCRIPT = Path(str(resources.files("claudeglass") / "hooks" / cat.HOOK_SCRIPT))
 
 
 def _load_hook_module():
@@ -108,9 +108,9 @@ def test_the_hook_switches_on_the_same_metrics_as_the_config(capture):
 
 
 def test_the_slug_matches_discovery():
-    from claude_token_lens import discovery
+    from claudeglass import discovery
 
-    for cwd in ("/work/app", r"C:\Dev\claude-token-lens", "/x/" + "deep/" * 60):
+    for cwd in ("/work/app", r"C:\Dev\claudeglass", "/x/" + "deep/" * 60):
         assert HOOK.slug_for(cwd) == discovery.slug_for(cwd)
 
 
@@ -192,7 +192,7 @@ def test_a_skipped_project_gets_nothing(tmp_path):
 
 
 def test_a_bad_pattern_is_skipped_and_the_rest_still_apply(tmp_path):
-    """SEC-P5: ``config.toml`` isn't only ever written by Token Lens's own
+    """SEC-P5: ``config.toml`` isn't only ever written by ClaudeGlass's own
     validated ``write_config_values`` -- it can be hand-edited, or come
     from an older version -- so the hook must not let one unparseable
     regex (an unbalanced paren, say) take the whole call down with it
@@ -263,7 +263,7 @@ def test_a_half_written_config_reads_as_off(tmp_path):
 
 
 def test_an_installed_copy_runs_from_the_data_folder(tmp_path):
-    config_dir = _config(tmp_path / "token-lens", '[capture]\nlevel = "essentials"\n')
+    config_dir = _config(tmp_path / "claudeglass", '[capture]\nlevel = "essentials"\n')
     written = hook_health.install_hook_files(config_dir, hook_health.CAPTURE_FILES[cat.HOOK_SCRIPT])
     assert [p.name for p in written] == [cat.HOOK_SCRIPT, cat.CATALOGUE_FILE]
     rc, out, _ = _run(config_dir, _start(), script=written[0])
@@ -275,8 +275,8 @@ def test_a_real_session_start_note_is_read_back():
     Essentials hook (paths and ids replaced; the reply stands in for the
     real one): ``rendered`` is a top-level list, and the hook_success
     line's copy of the note in ``stdout`` is not counted again."""
-    from claude_token_lens.model import TranscriptMeta
-    from claude_token_lens.parse import parse_transcript
+    from claudeglass.model import TranscriptMeta
+    from claudeglass.parse import parse_transcript
 
     path = Path(__file__).parent / "fixtures" / "capture" / "session-start-note.jsonl"
     lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -286,5 +286,6 @@ def test_a_real_session_start_note_is_read_back():
     assert result.meta.cap_metrics == ("task", "brief", "level", "shift", "retry")
     assert [turn.cap_note_chars for turn in result.turns] == [len(rendered)]
     assert (result.turns[0].cap.task, result.turns[0].cap.level) == ("research", "easy")
-    # Recorded before Essentials carried size: the note for the metrics it names.
-    assert rendered == f"<system-reminder>\nSessionStart hook additional context: {cat.note_text(result.meta.cap_metrics, 'main')}\n</system-reminder>"
+    # Recorded before Essentials carried size, and before 0.9.0 renamed the
+    # tool: the note for the metrics it names, under the old name.
+    assert rendered.replace("Token Lens", "ClaudeGlass") == f"<system-reminder>\nSessionStart hook additional context: {cat.note_text(result.meta.cap_metrics, 'main')}\n</system-reminder>"

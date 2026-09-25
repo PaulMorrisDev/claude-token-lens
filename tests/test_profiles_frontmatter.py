@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from claude_token_lens.profiles.frontmatter import (
+from claudeglass.profiles.frontmatter import (
     FrontmatterError,
     parse_frontmatter,
     patch_frontmatter,

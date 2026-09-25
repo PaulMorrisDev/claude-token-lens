@@ -5,21 +5,21 @@ short, numbered walkthrough (install, `init`, confirm the service
 actually registered, uninstall); this document is the full reference
 for every hosting path it links to.
 
-`claude-token-lens serve` (`docs/api.md`) needs to run *somewhere*
+`claudeglass serve` (`docs/api.md`) needs to run *somewhere*
 continuously to keep its store fresh and its JSON API/web UI
 (`docs/ui.md`) reachable. This document covers the three supported
 hosting paths, in the order the project's plan prioritises them: a
 native OS-level service first (no container runtime, no admin/root
 rights), then Docker for anyone who'd rather manage it that way.
 
-All three run the exact same `claude-token-lens serve` command
+All three run the exact same `claudeglass serve` command
 underneath; they differ only in how that process is started, kept
 running, and sandboxed by the host.
 
 ## The installer: `install-service`/`uninstall-service`
 
-`src/claude_token_lens/installer.py` (v3) drives Path 1 and Path 2
-below from Python, so `claude-token-lens init`'s service step, and the
+`src/claudeglass/installer.py` (v3) drives Path 1 and Path 2
+below from Python, so `claudeglass init`'s service step, and the
 standalone `install-service` subcommand, don't require you to copy a
 script or a unit file by hand. It exists for one reason: Claude Code
 deletes a project's own transcripts after `cleanupPeriodDays`, and this
@@ -30,11 +30,11 @@ up. Only a continuously running, logon-registered service actually
 keeps it.
 
 ```bash
-python -m claude_token_lens install-service                     # register for this platform
-python -m claude_token_lens install-service --dry-run           # print the plan only — writes/runs nothing
-python -m claude_token_lens install-service --port 9000 --bind 127.0.0.1
-python -m claude_token_lens uninstall-service                   # remove whatever was registered
-python -m claude_token_lens uninstall-service --dry-run
+python -m claudeglass install-service                     # register for this platform
+python -m claudeglass install-service --dry-run           # print the plan only — writes/runs nothing
+python -m claudeglass install-service --port 9000 --bind 127.0.0.1
+python -m claudeglass uninstall-service                   # remove whatever was registered
+python -m claudeglass uninstall-service --dry-run
 ```
 
 **Safety posture** (see the module's own docstring for the full
@@ -58,7 +58,7 @@ run *before* doing either.
   `New-ScheduledTaskSettingsSet` (runs on battery, restarts up to 3
   times a minute apart, `-ExecutionTimeLimit ([TimeSpan]::Zero)` since
   `serve` runs indefinitely) and `Register-ScheduledTask -TaskName
-  ClaudeTokenLens -Force`. The action runs `pythonw.exe` beside the
+  ClaudeGlass -Force`. The action runs `pythonw.exe` beside the
   running interpreter when it exists (no console window at logon), else
   `python.exe`. Writes no file of its own — the task definition lives
   entirely in Task Scheduler's own store. The same command
@@ -73,41 +73,41 @@ run *before* doing either.
   the task: `serve` reads them each time it starts. This is the same task
   Path 1 below registers by hand, with one difference: there is no
   `schtasks /create` fallback. `uninstall-service` first runs
-  `Stop-ScheduledTask -TaskName ClaudeTokenLens`, which shuts down a
+  `Stop-ScheduledTask -TaskName ClaudeGlass`, which shuts down a
   dashboard the task already started, then `Unregister-ScheduledTask
-  -TaskName ClaudeTokenLens`. It doesn't stop a `serve` you started by
-  hand in a terminal; `Unregister-TokenLensTask.ps1` does.
-- **Linux:** writes `~/.config/systemd/user/claude-token-lens.service`
-  (the same hardening as `scripts/systemd/claude-token-lens.service` —
+  -TaskName ClaudeGlass`. It doesn't stop a `serve` you started by
+  hand in a terminal; `Unregister-ClaudeGlassTask.ps1` does.
+- **Linux:** writes `~/.config/systemd/user/claudeglass.service`
+  (the same hardening as `scripts/systemd/claudeglass.service` —
   see Path 2 below — but with `ExecStart`/`ReadWritePaths` filled in
   with this call's real, absolute `config_dir` rather than `%h`), then
   runs `systemctl --user daemon-reload`, `systemctl --user enable
-  --now claude-token-lens.service` and `systemctl --user restart
-  claude-token-lens.service` (so re-running it after an update runs the
+  --now claudeglass.service` and `systemctl --user restart
+  claudeglass.service` (so re-running it after an update runs the
   new code). Prints a note to also run
   `loginctl enable-linger $USER` once, for a headless server with no
   interactive session. `uninstall-service` runs `systemctl --user
   disable --now`, which stops the running service as well as disabling
   it, and deletes the unit file.
-- **macOS:** writes `~/Library/LaunchAgents/com.claude-token-lens.plist`
+- **macOS:** writes `~/Library/LaunchAgents/com.claudeglass.plist`
   (`RunAtLoad`/`KeepAlive` both true) and runs `launchctl bootstrap
   gui/<uid> <path-to-plist>`. `uninstall-service` runs `launchctl
-  bootout gui/<uid>/com.claude-token-lens`, which stops the running
+  bootout gui/<uid>/com.claudeglass`, which stops the running
   agent as well as unloading it, and deletes the plist.
 
 **Running from a `.pyz`:** if the current process was itself launched
 from a `.pyz` archive (`detect_pyz_path`, a real zip-file check on
 `sys.argv[0]`, not just a filename check), the registered action
 re-invokes that same archive (`pythonw.exe <path-to-pyz> serve ...`)
-instead of `python -m claude_token_lens serve ...` — so `install-service`
-run from a `dist/claude-token-lens.pyz` build (see "Distribution
+instead of `python -m claudeglass serve ...` — so `install-service`
+run from a `dist/claudeglass.pyz` build (see "Distribution
 without pip" below) registers a service that keeps using that exact
 archive.
 
 **Checking registration:** `is_registered()` runs the platform's own
-query command (`schtasks /Query /TN ClaudeTokenLens`, `systemctl --user
-is-enabled claude-token-lens`, or `launchctl print
-gui/<uid>/com.claude-token-lens`) and returns `True`/`False` when it
+query command (`schtasks /Query /TN ClaudeGlass`, `systemctl --user
+is-enabled claudeglass`, or `launchctl print
+gui/<uid>/com.claudeglass`) and returns `True`/`False` when it
 got a clear answer, or `None` when the probe itself couldn't run (an
 unsupported platform, the query tool missing, or a timeout) — `None`
 always means "unknown", never "not registered". `install-service`/
@@ -120,7 +120,7 @@ routine polling doesn't shell out on every request (see
 [`docs/api.md`](api.md)) — the dashboard's Overview and Data quality
 pages show a warning when it comes back `false`.
 
-**Uninstalling:** `claude-token-lens uninstall-service` is the
+**Uninstalling:** `claudeglass uninstall-service` is the
 inverse of `install-service` — it runs the platform's own removal
 command (`Stop-ScheduledTask` then `Unregister-ScheduledTask`,
 `systemctl --user disable --now`, or `launchctl bootout`) and deletes
@@ -128,13 +128,13 @@ any file `install-service` wrote (the systemd unit or the LaunchAgent
 plist; Windows writes no file of its own). Each platform's first
 command also stops a dashboard the service is running, and the output
 says what was done, one line per step ("Stopped Scheduled Task
-'ClaudeTokenLens' ...", "Removed Scheduled Task ..."). It is
+'ClaudeGlass' ...", "Removed Scheduled Task ..."). It is
 best-effort past the printed plan: a command or file removal that
 fails is reported and the rest still runs, rather than aborting
 partway through, the same posture as
-`Unregister-TokenLensTask.ps1`/`serve --purge`. To remove everything
+`Unregister-ClaudeGlassTask.ps1`/`serve --purge`. To remove everything
 else this tool added as well (the hook, the statusline, applied changes
-and the data folder), use `claude-token-lens uninstall` — see
+and the data folder), use `claudeglass uninstall` — see
 [`docs/first-run.md`](first-run.md#7-undo-a-change-or-uninstall-completely).
 
 Nothing above replaces the hand-run paths below — `install-service`
@@ -147,19 +147,19 @@ use Compose's own restart policy there.
 ## Path 1: Windows Scheduled Task (native, no admin rights)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\windows\Register-TokenLensTask.ps1
+powershell -ExecutionPolicy Bypass -File scripts\windows\Register-ClaudeGlassTask.ps1
 ```
 
 Registers a Scheduled Task, triggered at logon, running:
 
 ```
-pythonw -m claude_token_lens serve --projects-root "$env:USERPROFILE\.claude\projects" --config-dir "$env:USERPROFILE\.claude\token-lens" --exit-on-code-change
+pythonw -m claudeglass serve --projects-root "$env:USERPROFILE\.claude\projects" --config-dir "$env:USERPROFILE\.claude\claudeglass" --exit-on-code-change
 ```
 
 - **Runs as the logged-in user, `-RunLevel Limited`** — no admin
   rights requested or required. The service only ever reads
   `%USERPROFILE%\.claude\projects` and reads/writes
-  `%USERPROFILE%\.claude\token-lens`; nothing it does needs elevation.
+  `%USERPROFILE%\.claude\claudeglass`; nothing it does needs elevation.
   The logon trigger itself is also scoped to that one account (via
   `-User "DOMAIN\user"` on `New-ScheduledTaskTrigger`, and `/RU`/`/IT`
   on the `schtasks` fallback) — an unscoped "any user logs on"
@@ -180,18 +180,18 @@ pythonw -m claude_token_lens serve --projects-root "$env:USERPROFILE\.claude\pro
 - **`--exit-on-code-change`** starts the task again on new code after
   an update lands without a restart (see "Updating under a running
   `serve`" below). That only happens under the default `-TaskName
-  ClaudeTokenLens`; under another name the dashboard only reports the
+  ClaudeGlass`; under another name the dashboard only reports the
   change.
 
 To remove it and stop any running instance:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\windows\Unregister-TokenLensTask.ps1
+powershell -ExecutionPolicy Bypass -File scripts\windows\Unregister-ClaudeGlassTask.ps1
 ```
 
 This unregisters the task (by whichever mechanism registered it) and
 searches for any `python.exe`/`pythonw.exe` process whose command line
-invokes `claude_token_lens` via `Get-CimInstance Win32_Process`,
+invokes `claudeglass` via `Get-CimInstance Win32_Process`,
 stopping it — a Scheduled Task's own action process carries no other
 marker to find it by.
 
@@ -206,26 +206,26 @@ own task definition store.
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp scripts/systemd/claude-token-lens.service ~/.config/systemd/user/
+cp scripts/systemd/claudeglass.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now claude-token-lens.service
+systemctl --user enable --now claudeglass.service
 ```
 
-Runs `~/.local/bin/claude-token-lens serve --projects-root
-~/.claude/projects --config-dir ~/.claude/token-lens
+Runs `~/.local/bin/claudeglass serve --projects-root
+~/.claude/projects --config-dir ~/.claude/claudeglass
 --exit-on-code-change` as your own user, restarting on failure
 (`Restart=on-failure`), which also covers `serve` exiting with status
 `3` after an update (see "Updating under a running `serve`" below).
 That `ExecStart` path
-assumes a `pip install --user`; edit it if `claude-token-lens` lives
-elsewhere (`command -v claude-token-lens`), or use `install-service`,
+assumes a `pip install --user`; edit it if `claudeglass` lives
+elsewhere (`command -v claudeglass`), or use `install-service`,
 which fills in the real interpreter for you.
 
 **What this path can/cannot touch:**
 
 - **`ProtectHome=read-only`** makes your entire home directory
   read-only to the unit by default.
-- **`ReadWritePaths=%h/.claude/token-lens`** carves out the one
+- **`ReadWritePaths=%h/.claude/claudeglass`** carves out the one
   exception: the service's own SQLite store, config, and snapshots
   directory. It cannot write anywhere else under your home directory,
   even though it can *read* `~/.claude/projects` for transcripts (a
@@ -242,13 +242,13 @@ which fills in the real interpreter for you.
   service's own code (`tests/test_service_egress.py`), not by a network
   namespace, for this path.
 
-**Logs:** `journalctl --user -u claude-token-lens.service -f`.
+**Logs:** `journalctl --user -u claudeglass.service -f`.
 
 **Surviving logout** (e.g. a headless server with no interactive
 session): `loginctl enable-linger $USER` once, so the user unit keeps
 running after you log out.
 
-**Stopping it:** `systemctl --user disable --now claude-token-lens.service`.
+**Stopping it:** `systemctl --user disable --now claudeglass.service`.
 
 ## Path 3: Docker
 
@@ -276,7 +276,7 @@ Windows (Docker Desktop) example: `CLAUDE_HOME=C:/Users/<you>/.claude`.
 - **Read-only bind mount** of your Claude Code config directory to
   `/data/claude` inside the container (`:ro` — the container cannot
   write to it, even if a future bug tried).
-- **A named volume** (`token-lens-data`) for the service's own SQLite
+- **A named volume** (`claudeglass-data`) for the service's own SQLite
   store and any monthly reports — isolated from the host filesystem
   entirely; nothing outside the container can read it directly.
 - **`127.0.0.1:8765:8765`** — the published port is loopback-only on
@@ -316,12 +316,12 @@ Three layers, from "always runs" to "manual, occasional":
    answers:
 
    ```bash
-   docker build -t claude-token-lens:smoke .
+   docker build -t claudeglass:smoke .
    docker run -d --rm --network none --name ctl-smoke \
      -v "$CLAUDE_HOME:/data/claude:ro" \
-     -v ctl-smoke-data:/data/token-lens \
-     claude-token-lens:smoke \
-     --projects-root /data/claude/projects --config-dir /data/token-lens \
+     -v ctl-smoke-data:/data/claudeglass \
+     claudeglass:smoke \
+     --projects-root /data/claude/projects --config-dir /data/claudeglass \
      --bind 0.0.0.0 --allow-remote
 
    # From inside the container -- there is no host-published port to
@@ -342,17 +342,17 @@ Three layers, from "always runs" to "manual, occasional":
    ```
 
    `--projects-root`/`--config-dir` are passed explicitly here (review
-   finding 4) rather than left to `claude-token-lens serve`'s own
+   finding 4) rather than left to `claudeglass serve`'s own
    argparse defaults: any bare `docker run <image> <args>` replaces the
    image's `CMD` entirely (the fixed `ENTRYPOINT` in the `Dockerfile`
-   only supplies `claude-token-lens serve`), so omitting them would
+   only supplies `claudeglass serve`), so omitting them would
    silently fall back to a `~`-relative default inside the container
-   instead of the `/data/claude`/`/data/token-lens` mount points this
+   instead of the `/data/claude`/`/data/claudeglass` mount points this
    image and `docker-compose.yml` are actually built around. The named
    `ctl-smoke-data` volume in particular is what proves the Dockerfile's
-   `chown -R token-lens:token-lens /data/token-lens` (finding 4) is
+   `chown -R claudeglass:claudeglass /data/claudeglass` (finding 4) is
    doing its job: a *fresh* named volume is seeded from that path's
-   ownership in the image, so the non-root `token-lens` user can create
+   ownership in the image, so the non-root `claudeglass` user can create
    `service.db` in it on first start without a manual `docker exec ...
    chown` step.
 
@@ -369,43 +369,43 @@ Three layers, from "always runs" to "manual, occasional":
 
 For a machine where `pip install` is unavailable or unwanted (no
 internet access to PyPI, a locked-down environment, or just "copy one
-file and run it"), `claude-token-lens` has zero runtime Python
+file and run it"), `claudeglass` has zero runtime Python
 dependencies (`pyproject.toml`'s `dependencies = []`), which makes a
 single-file [zipapp](https://docs.python.org/3/library/zipapp.html)
 distribution straightforward:
 
 ```bash
 python scripts/build-pyz.py
-# -> dist/claude-token-lens.pyz
+# -> dist/claudeglass.pyz
 
-python dist/claude-token-lens.pyz --version
-python dist/claude-token-lens.pyz serve --projects-root ~/.claude/projects --config-dir ~/.claude/token-lens
+python dist/claudeglass.pyz --version
+python dist/claudeglass.pyz serve --projects-root ~/.claude/projects --config-dir ~/.claude/claudeglass
 ```
 
 Equivalent, if you'd rather invoke `zipapp` yourself directly, to:
 
 ```bash
-python -m zipapp src -m "claude_token_lens.__main__:main" -o dist/claude-token-lens.pyz -p "/usr/bin/env python3"
+python -m zipapp src -m "claudeglass.__main__:main" -o dist/claudeglass.pyz -p "/usr/bin/env python3"
 ```
 
 `scripts/build-pyz.py` does the same thing (via the `zipapp` module's
-Python API rather than shelling out), plus: copies `src/claude_token_lens/`
+Python API rather than shelling out), plus: copies `src/claudeglass/`
 into a clean temporary directory first, skipping `__pycache__`, so a
 stray compiled-bytecode cache from your own dev environment never ends
 up inside the shipped archive; and includes `service/static/*` (the web
 UI) automatically, since it's just an ordinary file tree already living
-under `src/claude_token_lens/service/static/` — no separate packaging
+under `src/claudeglass/service/static/` — no separate packaging
 step needed.
 
-**Why `claude_token_lens.__main__:main`, not `claude_token_lens.cli:main`:**
+**Why `claudeglass.__main__:main`, not `claudeglass.cli:main`:**
 zipapp's generated archive-root `__main__.py` (from the `-m`/`main=`
 argument) is just `import <module>; <module>.<function>()` — it does
 **not** wrap that call in `sys.exit(...)`, so a target function's
 returned int exit code would otherwise be silently discarded and the
-process would always exit 0. `claude_token_lens/__main__.py` (the
-existing `python -m claude_token_lens` entry point) already solves this
+process would always exit 0. `claudeglass/__main__.py` (the
+existing `python -m claudeglass` entry point) already solves this
 for itself: its own top-level statement is `sys.exit(main())`, which
-runs the instant `import claude_token_lens.__main__` executes and
+runs the instant `import claudeglass.__main__` executes and
 raises `SystemExit` with the real code — propagating out through the
 zipapp-generated wrapper's own `import` line before its `.main()` call
 is ever reached. Pointing zipapp at `cli:main` instead would reproduce
@@ -443,7 +443,7 @@ that actually delete a row.
   regardless of whether `--retention-days`/`config.toml` set anything —
   at `N` when one is set, or a 180-day default
   (`config.SIGNAL_RETENTION_DEFAULT_DAYS`) otherwise.
-  `claude-token-lens capture prune [--dry-run]` runs the identical
+  `claudeglass capture prune [--dry-run]` runs the identical
   cleanup by hand for anyone not running `serve`.
 - **`serve --purge`** (deliverable 2.e): deletes `<config-dir>/service.db`
   and its `-wal`/`-shm` sidecars, then exits — never starts the watcher
@@ -451,12 +451,12 @@ that actually delete a row.
   actually deletes them with `--yes`:
 
   ```bash
-  python -m claude_token_lens serve --config-dir ~/.claude/token-lens --purge
-  # claude-token-lens serve --purge: will delete:
-  #   /home/you/.claude/token-lens/service.db
+  python -m claudeglass serve --config-dir ~/.claude/claudeglass --purge
+  # claudeglass serve --purge: will delete:
+  #   /home/you/.claude/claudeglass/service.db
   # Re-run with --yes to actually delete these files.
 
-  python -m claude_token_lens serve --config-dir ~/.claude/token-lens --purge --yes
+  python -m claudeglass serve --config-dir ~/.claude/claudeglass --purge --yes
   # Deleted 1 file(s).
   ```
 
@@ -505,7 +505,7 @@ from the loaded code:
 - `GET /api/health` reports `status: "outdated"` and a `code` block
   (see [docs/api.md](api.md#get-apihealth)), and the dashboard's banner
   says the code changed on disk and to run
-  `python -m claude_token_lens install-service`.
+  `python -m claudeglass install-service`.
 - A route that fails to import answers `503 restart_needed`, saying to
   restart, instead of `500 internal_error`.
 - With `serve --exit-on-code-change` (which `install-service` and both
@@ -520,9 +520,9 @@ from the loaded code:
     Windows 11, a task whose action exited with status `3` or `-3` was
     not run again. So before exiting, `serve` starts a hidden
     PowerShell helper that waits for it to exit, then runs
-    `Start-ScheduledTask -TaskName ClaudeTokenLens`. `Stop-ScheduledTask`
+    `Start-ScheduledTask -TaskName ClaudeGlass`. `Stop-ScheduledTask`
     and `uninstall-service` still stop it as before. When no
-    `ClaudeTokenLens` task is registered (you started `serve` by hand,
+    `ClaudeGlass` task is registered (you started `serve` by hand,
     or registered it under another name), exiting would leave no
     dashboard at all, so `serve` stays up and only reports the change.
 
@@ -539,7 +539,7 @@ Each watcher tick decides whether to re-parse a transcript from its
 `(mtime_ns, size_bytes)` against `Store.known_files()`, but a file that
 hasn't changed on disk can still be *stale* relative to the code: every
 stored transcript also carries the `parser_version` it was parsed
-under (`claude_token_lens.PARSER_VERSION`, bumped whenever a code
+under (`claudeglass.PARSER_VERSION`, bumped whenever a code
 release adds or changes what the parser derives from a transcript —
 see `CHANGELOG.md`'s "Fixed"/"Changed" entries for the version
 history). A file whose `(mtime_ns, size_bytes)` are unchanged but whose

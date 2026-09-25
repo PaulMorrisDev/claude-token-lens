@@ -1,5 +1,5 @@
 """Tests for WP12a's phase classification and cost split
-(src/claude_token_lens/phases.py).
+(src/claudeglass/phases.py).
 
 All ``Turn``s here are hand-built directly (no jsonl round-trip needed --
 ``classify_turn_phase`` and ``PhaseStats`` operate on already-parsed
@@ -14,9 +14,9 @@ import json
 
 import pytest
 
-from claude_token_lens import discovery, phases
-from claude_token_lens.model import Section, Table, TranscriptMeta, TranscriptResult, Turn
-from claude_token_lens.pricing import load_pricing
+from claudeglass import discovery, phases
+from claudeglass.model import Section, Table, TranscriptMeta, TranscriptResult, Turn
+from claudeglass.pricing import load_pricing
 
 pytestmark = pytest.mark.filterwarnings("ignore")
 
@@ -121,7 +121,7 @@ def test_task_only_tool_falls_back_to_other():
 
 
 def test_verification_prefix_list_is_fuller_than_classify_pys_own():
-    from claude_token_lens.classify import _TEST_TOOL_PREFIXES
+    from claudeglass.classify import _TEST_TOOL_PREFIXES
 
     assert set(_TEST_TOOL_PREFIXES) < set(phases._VERIFICATION_CMD_PREFIXES)
 
@@ -174,7 +174,7 @@ def test_new_tokens_is_input_plus_cache_creation():
 
 
 def test_add_transcript_uses_price_turn_for_cost():
-    from claude_token_lens.pricing import price_turn
+    from claudeglass.pricing import price_turn
 
     pricing = load_pricing()
     stats = phases.PhaseStats()

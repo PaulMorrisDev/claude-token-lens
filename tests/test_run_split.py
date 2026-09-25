@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import pytest
 
-from claude_token_lens import model
-from claude_token_lens.model import EventKind, ReportModel, TranscriptMeta, TranscriptResult
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.run_split import RULES, RunSplitThresholds, build_section, compute_run_split
+from claudeglass import model
+from claudeglass.model import EventKind, ReportModel, TranscriptMeta, TranscriptResult
+from claudeglass.pricing import load_pricing
+from claudeglass.run_split import RULES, RunSplitThresholds, build_section, compute_run_split
 
 PRICING = load_pricing()
 

@@ -6,8 +6,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from claude_token_lens import ignores
-from claude_token_lens.model import Recommendation, SettingChange
+from claudeglass import ignores
+from claudeglass.model import Recommendation, SettingChange
 
 NOW = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
 

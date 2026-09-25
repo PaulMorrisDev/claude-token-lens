@@ -1,6 +1,6 @@
 """Shared pytest configuration.
 
-Makes ``import claude_token_lens`` work even when the package hasn't been
+Makes ``import claudeglass`` work even when the package hasn't been
 pip-installed (editable or otherwise) — e.g. running ``python -m pytest``
 directly against a checkout with ``PYTHONPATH`` unset. If the package is
 already importable (installed, or PYTHONPATH=src is already set), this is
@@ -38,7 +38,7 @@ def _isolated_claude_config_dir(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(fake_home))
     # init looks for WSL distros through wsl.exe; a developer machine
     # with Ubuntu installed would otherwise get an extra question.
-    from claude_token_lens import discovery, hook_health
+    from claudeglass import discovery, hook_health
 
     monkeypatch.setattr(discovery, "find_wsl_projects_roots", lambda run=None: [])
     # hook_health.hook_policy reads the machine's own managed-settings.json;
@@ -52,7 +52,7 @@ def _isolated_claude_config_dir(tmp_path_factory, monkeypatch):
     # install (invocation.py), which depends on this machine's PATH; the
     # short form keeps every other test's expected text the same here and
     # on CI. tests/test_invocation.py checks the detection itself.
-    monkeypatch.setenv("CLAUDE_TOKEN_LENS_COMMAND", "claude-token-lens")
+    monkeypatch.setenv("CLAUDEGLASS_COMMAND", "claudeglass")
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +67,7 @@ def _no_real_logon_task(monkeypatch):
     function (tests/test_installer.py); a test that wants a registered or
     running dashboard monkeypatches these itself.
     """
-    from claude_token_lens import installer
+    from claudeglass import installer
 
     real_registered, real_health, real_install = installer.is_registered, installer.http_health_ok, installer.install
 
@@ -99,6 +99,6 @@ def _reset_parse_salt():
     never touch it pay nothing extra.
     """
     yield
-    from claude_token_lens import parse as parse_mod
+    from claudeglass import parse as parse_mod
 
     parse_mod._SALT = None

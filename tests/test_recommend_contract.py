@@ -32,10 +32,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from claude_token_lens import classify, compaction, recache, recommend, report, scorecard, snapshots, ttl, usage, workflows, workstyle
-from claude_token_lens.config import Config
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.model import (
+from claudeglass import classify, compaction, recache, recommend, report, scorecard, snapshots, ttl, usage, workflows, workstyle
+from claudeglass.config import Config
+from claudeglass.corpus import load_corpus
+from claudeglass.model import (
     Classification,
     EventKind,
     Section,
@@ -45,8 +45,8 @@ from claude_token_lens.model import (
     Turn,
     WorkflowRun,
 )
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing
 
 from helpers import system_line, tool_use_block, turn_line, write_jsonl
 
@@ -466,7 +466,7 @@ _ALL_RULE_IDS = frozenset(
 
 
 def _build_every_rule_fixture() -> "report.ReportModel":
-    from claude_token_lens.model import Column, Diagnostics, PricingMeta, ReportMeta, ReportModel, Table
+    from claudeglass.model import Column, Diagnostics, PricingMeta, ReportMeta, ReportModel, Table
 
     overview = Section(
         key="overview",
@@ -734,7 +734,7 @@ def test_every_rule_id_that_can_fire_with_no_setting_change_has_a_workflow_expla
     is a linkage check: it catches a new rule id added to
     ``_ALL_RULE_IDS`` (and therefore to ``recommend.py``) without a
     matching entry here, which is exactly the gap UX-8 closed."""
-    from claude_token_lens import fixes
+    from claudeglass import fixes
 
     missing = _ALL_RULE_IDS - set(fixes._WORKFLOW_EXPLAINER)
     assert not missing, f"rule ids with no where/trade-off/undo explainer: {sorted(missing)}"

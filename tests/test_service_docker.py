@@ -38,10 +38,10 @@ def test_compose_binds_claude_home_read_only() -> None:
     assert ro_mounts, "no read-only bind mount of the Claude config dir found"
 
 
-def test_compose_names_a_data_volume_for_token_lens_state() -> None:
+def test_compose_names_a_data_volume_for_claudeglass_state() -> None:
     text = COMPOSE_FILE.read_text(encoding="utf-8")
-    assert "/data/token-lens" in text
-    assert "token-lens-data:" in text  # the named volume itself declared
+    assert "/data/claudeglass" in text
+    assert "claudeglass-data:" in text  # the named volume itself declared
 
 
 def test_compose_publishes_port_loopback_only() -> None:
@@ -108,11 +108,11 @@ def test_dockerfile_has_a_non_root_user_line() -> None:
 
 def test_dockerfile_chowns_every_compose_mount_point_before_switching_user() -> None:
     """Regression test for review finding 4 (blocking): docker-compose.yml
-    mounts a *named* volume at ``/data/token-lens`` (the SQLite store's own
+    mounts a *named* volume at ``/data/claudeglass`` (the SQLite store's own
     directory) and a bind mount at ``/data/claude``. A named volume with no
     prior contents is seeded from the image's own directory at that path,
     owned by whoever the daemon (root) created it as if the image never
-    created it first -- leaving the non-root ``token-lens`` user unable to
+    created it first -- leaving the non-root ``claudeglass`` user unable to
     write ``service.db`` on first start. The ``Dockerfile`` must create and
     ``chown -R`` both paths to the non-root user *before* its ``USER``
     instruction switches away from root (a ``chown`` issued while already
@@ -174,7 +174,7 @@ def test_dockerfile_healthcheck_uses_stdlib_urllib_against_api_health() -> None:
 
 def test_dockerfile_entrypoint_is_the_serve_subcommand() -> None:
     text = DOCKERFILE.read_text(encoding="utf-8")
-    assert 'ENTRYPOINT ["claude-token-lens", "serve"]' in text
+    assert 'ENTRYPOINT ["claudeglass", "serve"]' in text
 
 
 def test_dockerfile_default_cmd_binds_remote_for_port_publishing() -> None:

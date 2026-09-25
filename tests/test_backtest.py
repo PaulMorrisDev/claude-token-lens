@@ -9,14 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import backtest, impact
-from claude_token_lens.change_points import ChangePoint
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.pricing import load_pricing, price_turn
-from claude_token_lens.profiles import apply as apply_mod
-from claude_token_lens.profiles.schema import load_dict
-from claude_token_lens.service.store import Store
-from claude_token_lens.units import Units
+from claudeglass import backtest, impact
+from claudeglass.change_points import ChangePoint
+from claudeglass.corpus import load_corpus
+from claudeglass.pricing import load_pricing, price_turn
+from claudeglass.profiles import apply as apply_mod
+from claudeglass.profiles.schema import load_dict
+from claudeglass.service.store import Store
+from claudeglass.units import Units
 
 from helpers import turn_line, write_jsonl
 
@@ -205,7 +205,7 @@ def test_calibration_skips_too_little_data_and_zero_predicted_rows():
 
 def _apply(tmp_path: Path, settings: dict):
     claude_root = tmp_path / ".claude"
-    config_dir = claude_root / "token-lens"
+    config_dir = claude_root / "claudeglass"
     claude_root.mkdir(exist_ok=True)
     profile = load_dict({"id": "one-off", "settings": settings})
     plan = apply_mod.plan_apply(profile, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root)

@@ -123,7 +123,7 @@ gives no lexical hint (a codename, a project acronym) — add it to
 names = ["my-mcp-server"]
 ```
 
-Check the Config report section, or run `claude-token-lens
+Check the Config report section, or run `claudeglass
 probe-config`, for the exact MCP server and plugin names this tool
 already has on file before typing one in.
 
@@ -148,7 +148,7 @@ these are fixed:
 Call it directly:
 
 ```python
-from claude_token_lens import savers
+from claudeglass import savers
 
 candidates = savers.detect_savers(results, snapshots, config)         # list[SaverCandidate]
 stats = savers.compute_saver_roi(results, sessions, snapshots, pricing, thresholds)

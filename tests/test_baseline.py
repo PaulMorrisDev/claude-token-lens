@@ -1,11 +1,11 @@
 """Tests for the v0.3 ``init``/onboarding milestone's
-``src/claude_token_lens/baseline.py``: :class:`~claude_token_lens.
+``src/claudeglass/baseline.py``: :class:`~claudeglass.
 baseline.CaptureStatus`, the report-table extraction helpers (hand-built
-:class:`~claude_token_lens.model.Section`/``Table`` objects, the same
+:class:`~claudeglass.model.Section`/``Table`` objects, the same
 "pin the consumer against a fixture, not a real transcript" approach
 ``test_scorecard.py`` already uses for a report-table consumer), the
 overnight-majority profile override, the billing-mismatch heuristic, and
-the end-to-end :func:`~claude_token_lens.baseline.build_baseline` +
+the end-to-end :func:`~claudeglass.baseline.build_baseline` +
 JSON persistence + Markdown report round trip against synthetic corpora
 built with ``tests/helpers``.
 """
@@ -17,12 +17,12 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import baseline
-from claude_token_lens.config import Config
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.model import Column, ReportModel, Section, Table
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.report import (
+from claudeglass import baseline
+from claudeglass.config import Config
+from claudeglass.corpus import load_corpus
+from claudeglass.model import Column, ReportModel, Section, Table
+from claudeglass.pricing import load_pricing
+from claudeglass.report import (
     compactions_per_session_metric,
     mean_spawn_write_by_agent_type_metric,
     overview_metric,
@@ -284,7 +284,7 @@ def test_suggested_profile_no_override_below_majority_share():
 
 
 def test_suggested_profile_delegates_to_catalogue_suggest_otherwise():
-    from claude_token_lens.profiles import catalogue
+    from claudeglass.profiles import catalogue
 
     profile_id, reason = baseline._suggested_profile({"mixed": 10}, archetype="workflow-heavy", purposes=[])
     assert profile_id == catalogue.suggest("workflow-heavy", [])
@@ -593,7 +593,7 @@ def test_list_baselines_sorted_oldest_first_and_skips_malformed(tmp_path):
 
 
 def test_build_baseline_does_not_count_orphan_subagent_bundles_as_sessions(tmp_path, monkeypatch):
-    from claude_token_lens.corpus import SessionBundle
+    from claudeglass.corpus import SessionBundle
 
     project_dir = tmp_path / "projects" / "orphan-proj"
     project_dir.mkdir(parents=True)

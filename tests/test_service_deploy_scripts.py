@@ -20,9 +20,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WINDOWS_DIR = REPO_ROOT / "scripts" / "windows"
-REGISTER_SCRIPT = WINDOWS_DIR / "Register-TokenLensTask.ps1"
-UNREGISTER_SCRIPT = WINDOWS_DIR / "Unregister-TokenLensTask.ps1"
-SYSTEMD_UNIT = REPO_ROOT / "scripts" / "systemd" / "claude-token-lens.service"
+REGISTER_SCRIPT = WINDOWS_DIR / "Register-ClaudeGlassTask.ps1"
+UNREGISTER_SCRIPT = WINDOWS_DIR / "Unregister-ClaudeGlassTask.ps1"
+SYSTEMD_UNIT = REPO_ROOT / "scripts" / "systemd" / "claudeglass.service"
 
 #: PowerShell 5.1 lacks `&&`/`||` pipeline chain operators and the
 #: ternary/null-coalescing/null-conditional operators -- a script using
@@ -82,7 +82,7 @@ def test_register_script_runs_without_admin_rights() -> None:
 def test_register_script_uses_pythonw_for_a_windowless_process() -> None:
     text = _text(REGISTER_SCRIPT)
     assert "pythonw" in text
-    assert "claude_token_lens serve" in text or "claude_token_lens" in text
+    assert "claudeglass serve" in text or "claudeglass" in text
 
 
 def test_register_script_has_a_schtasks_fallback() -> None:
@@ -102,7 +102,7 @@ def test_unregister_script_removes_the_task_and_stops_the_process() -> None:
     assert "Unregister-ScheduledTask" in text or "schtasks" in text.lower()
     assert "Get-CimInstance" in text
     assert "Win32_Process" in text
-    assert "claude_token_lens" in text.lower()
+    assert "claudeglass" in text.lower()
 
 
 def test_register_script_domain_qualifies_the_scheduled_task_principal() -> None:
@@ -200,7 +200,7 @@ def test_systemd_unit_protects_home_but_allows_its_own_data_dir() -> None:
     text = _text(SYSTEMD_UNIT)
     assert "ProtectHome=read-only" in text
     assert "ReadWritePaths=" in text
-    assert "token-lens" in text  # the carved-out path names the service's own dir
+    assert "claudeglass" in text  # the carved-out path names the service's own dir
 
 
 def test_systemd_unit_documents_private_network_choice() -> None:
@@ -217,7 +217,7 @@ def test_systemd_unit_installs_for_the_default_user_target() -> None:
 def test_systemd_unit_runs_the_real_serve_command() -> None:
     text = _text(SYSTEMD_UNIT)
     assert "ExecStart=" in text
-    assert "claude-token-lens serve" in text
+    assert "claudeglass serve" in text
     assert "--projects-root" in text
     assert "--config-dir" in text
 

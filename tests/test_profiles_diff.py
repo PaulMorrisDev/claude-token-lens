@@ -9,14 +9,14 @@ import pytest
 
 from helpers import assert_privacy
 
-from claude_token_lens.profiles.diff import (
+from claudeglass.profiles.diff import (
     DiffRow,
     ProfileDiff,
     apply_command,
     diff_against_effective,
     render_unified_diff,
 )
-from claude_token_lens.profiles.schema import load_dict
+from claudeglass.profiles.schema import load_dict
 
 
 def _profile(**overrides):
@@ -314,10 +314,10 @@ def test_render_unified_diff_drops_unchanged_rows_entirely():
 def test_apply_command_user_scope_has_no_project_flag():
     text = apply_command("interactive-chat", "user")
     apply_line, launch_line = text.splitlines()
-    assert apply_line == "claude-token-lens apply interactive-chat"
+    assert apply_line == "claudeglass apply interactive-chat"
     # The overlay file doesn't exist until apply --launch writes it, so
     # the one-session command is that one, not claude --settings.
-    assert launch_line == "claude-token-lens apply interactive-chat --launch"
+    assert launch_line == "claudeglass apply interactive-chat --launch"
 
 
 def test_apply_command_project_scope_without_path_names_the_current_folder():

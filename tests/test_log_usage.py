@@ -1,4 +1,4 @@
-"""Tests for WP6's usage-window logger (src/claude_token_lens/tools/log_usage.py)."""
+"""Tests for WP6's usage-window logger (src/claudeglass/tools/log_usage.py)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens.tools import log_usage
+from claudeglass.tools import log_usage
 
 # `tests/helpers.assert_privacy` walks a dataclass's fields (TranscriptResult
 # shape); log_usage's rows are plain dicts, so it would silently pass
@@ -274,7 +274,7 @@ def test_build_section_regression_expected_slope(tmp_path):
 
 
 def test_main_reads_stdin_and_appends(tmp_path, monkeypatch, capsys):
-    config_dir = tmp_path / "token-lens-config"
+    config_dir = tmp_path / "claudeglass-config"
     payload = {"rate_limits": {"five_hour": {"used_percentage": 42.0, "resets_at": "r"}}}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
 
@@ -291,7 +291,7 @@ def test_main_reads_stdin_and_appends(tmp_path, monkeypatch, capsys):
 
 
 def test_main_malformed_stdin_exits_0_and_adds_nothing(tmp_path, monkeypatch, capsys):
-    config_dir = tmp_path / "token-lens-config"
+    config_dir = tmp_path / "claudeglass-config"
     monkeypatch.setattr("sys.stdin", io.StringIO("{not valid json"))
 
     rc = log_usage.main(["--config-dir", str(config_dir)])
@@ -301,7 +301,7 @@ def test_main_malformed_stdin_exits_0_and_adds_nothing(tmp_path, monkeypatch, ca
 
 
 def test_main_empty_stdin_exits_0(tmp_path, monkeypatch, capsys):
-    config_dir = tmp_path / "token-lens-config"
+    config_dir = tmp_path / "claudeglass-config"
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
     rc = log_usage.main(["--config-dir", str(config_dir)])
     assert rc == 0
@@ -318,7 +318,7 @@ def test_resolve_config_dir_cli_arg_wins(tmp_path):
 def test_resolve_config_dir_env_var(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-cfg"))
     resolved = log_usage.resolve_config_dir(None)
-    assert resolved == tmp_path / "claude-cfg" / "token-lens"
+    assert resolved == tmp_path / "claude-cfg" / "claudeglass"
 
 
 def test_default_usage_log_path(tmp_path):

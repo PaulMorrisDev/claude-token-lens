@@ -1,5 +1,5 @@
 """Tests for WP2: rate-card loading, model-id resolution and per-turn
-pricing (``src/claude_token_lens/pricing.py``).
+pricing (``src/claudeglass/pricing.py``).
 
 Turns are built directly as ``model.Turn`` instances (there is no parser
 yet — that is WP1) via the small ``_turn`` helper below rather than
@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import model
-from claude_token_lens.pricing import (
+from claudeglass import model
+from claudeglass.pricing import (
     FastRule,
     ModelRates,
     Pricing,
@@ -193,27 +193,27 @@ def test_explicit_path_overrides_everything(tmp_path):
 
 
 def test_config_dir_used_when_present(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "pricing.toml").write_text(
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "pricing.toml").write_text(
         (FIXTURES / "pricing_min.toml").read_text(encoding="utf-8"), encoding="utf-8"
     )
-    pricing = load_pricing(config_dir=token_lens_dir)
+    pricing = load_pricing(config_dir=claudeglass_dir)
     assert "claude-widget-9" in pricing.models
-    assert pricing.path == str(token_lens_dir / "pricing.toml")
+    assert pricing.path == str(claudeglass_dir / "pricing.toml")
 
 
 def test_falls_back_to_packaged_default_when_config_dir_empty(tmp_path):
-    pricing = load_pricing(config_dir=tmp_path / "token-lens")
+    pricing = load_pricing(config_dir=tmp_path / "claudeglass")
     assert "claude-sonnet-5" in pricing.models
     assert "packaged default" in pricing.path
 
 
 def test_claude_config_dir_env_var_moves_the_lookup(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "pricing.toml").write_text(
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "pricing.toml").write_text(
         (FIXTURES / "pricing_min.toml").read_text(encoding="utf-8"), encoding="utf-8"
     )
     pricing = load_pricing()
@@ -1186,11 +1186,11 @@ def test_effective_rates_none_for_an_unresolved_model():
 
 
 def test_model_name_reads_an_id_as_people_say_it():
-    from claude_token_lens.pricing import model_name, model_names_in
+    from claudeglass.pricing import model_name, model_names_in
 
     assert model_name("claude-opus-5-5") == "Opus 5.5"
     assert model_name("claude-haiku-4-5-20251001") == "Haiku 4.5"
     assert model_name("claude-3-5-haiku-20241022") == "Haiku 3.5"
     assert model_name("claude-opus-5[1m]") == "Opus 5 [1m]"
     assert model_name("gpt-4") == "gpt-4"
-    assert model_names_in("claude-sonnet-5 (+2 more), not claude-token-lens") == "Sonnet 5 (+2 more), not claude-token-lens"
+    assert model_names_in("claude-sonnet-5 (+2 more), not claudeglass") == "Sonnet 5 (+2 more), not claudeglass"

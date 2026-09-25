@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import discovery
+from claudeglass import discovery
 
 
 # -- projects_root ---------------------------------------------------------

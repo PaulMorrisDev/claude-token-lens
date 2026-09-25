@@ -1,4 +1,4 @@
-"""Tests for S1-exports' ``exports.py`` (``claude-token-lens export``):
+"""Tests for S1-exports' ``exports.py`` (``claudeglass export``):
 row-grain correctness for ``csv-flat``/``json``, the otel-jsonl shape,
 ``--aggregate-only``/``--hash-slugs`` resolution, and the privacy
 guarantees the plan's "Aggregation without surveillance" section
@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import json
 
-from claude_token_lens import exports
-from claude_token_lens.config import Config
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.pricing import load_pricing
+from claudeglass import exports
+from claudeglass.config import Config
+from claudeglass.corpus import load_corpus
+from claudeglass.pricing import load_pricing
 
 from helpers import assert_privacy, turn_line, write_jsonl
 
@@ -168,7 +168,7 @@ def test_render_otel_jsonl_shape(tmp_path):
 
 
 def test_build_export_text_hashes_slugs_with_salt(tmp_path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir()
     corpus = _build_corpus(tmp_path / "projects")
     options = exports.resolve_export_options("csv-flat", True, True)
@@ -192,7 +192,7 @@ def test_build_export_text_unknown_format_raises(tmp_path):
 
 
 def test_export_aggregate_only_never_contains_session_id(tmp_path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir()
     corpus = _build_corpus(tmp_path / "projects")
     for fmt in ("csv-flat", "json"):
@@ -202,7 +202,7 @@ def test_export_aggregate_only_never_contains_session_id(tmp_path):
 
 
 def test_export_hashed_slugs_never_contains_raw_slug(tmp_path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir()
     corpus = _build_corpus(tmp_path / "projects")
     for fmt in ("csv-flat", "json"):
@@ -212,7 +212,7 @@ def test_export_hashed_slugs_never_contains_raw_slug(tmp_path):
 
 
 def test_export_passes_generic_privacy_scan(tmp_path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir()
     corpus = _build_corpus(tmp_path / "projects")
     for fmt in ("csv-flat", "json", "otel-jsonl"):
@@ -231,7 +231,7 @@ def test_no_hash_slugs_redacts_the_username_segment_not_fully_raw(tmp_path):
     C:\\Users\\paulm\\Dev\\acme-client-secret (corpus.py's own
     project_dir.name convention means this test can build that shape
     directly as a fixture directory name)."""
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir()
     projects_root = tmp_path / "projects"
     slug_dir_name = "C--Users-paulm-Dev-acme-client-secret"
@@ -284,7 +284,7 @@ def test_cache_creation_totals_reconcile_across_csv_flat_otel_and_report(tmp_pat
     -- all three must agree, closing the "5000 tokens lost" gap the
     review's own repro demonstrated.
     """
-    from claude_token_lens.report import build_report
+    from claudeglass.report import build_report
 
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
@@ -334,7 +334,7 @@ def test_cli_export_csv_flat_out_file_has_no_doubled_cr(tmp_path):
     text through a text-mode handle with default newline translation
     doubled every CR, corrupting the file for any BI/pandas import (a
     50% blank-row rate). --out must now be opened with newline=""."""
-    from claude_token_lens import cli as cli_mod
+    from claudeglass import cli as cli_mod
 
     projects_root = tmp_path / "projects"
     project_dir = projects_root / "proj"
@@ -342,7 +342,7 @@ def test_cli_export_csv_flat_out_file_has_no_doubled_cr(tmp_path):
     write_jsonl(project_dir / "s1.jsonl", [turn_line(input_tokens=100, output_tokens=20)])
 
     out_path = tmp_path / "team-usage.csv"
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     rc = cli_mod.main(
         [
             "export",
@@ -372,14 +372,14 @@ def test_cli_export_csv_flat_out_file_has_no_doubled_cr(tmp_path):
 def test_cli_export_csv_flat_stdout_has_no_doubled_cr(tmp_path, capsys):
     """The stdout path (no --out) must be equally free of doubled CRs --
     the review reproduced the bug on both output paths."""
-    from claude_token_lens import cli as cli_mod
+    from claudeglass import cli as cli_mod
 
     projects_root = tmp_path / "projects"
     project_dir = projects_root / "proj"
     project_dir.mkdir(parents=True)
     write_jsonl(project_dir / "s1.jsonl", [turn_line(input_tokens=100, output_tokens=20)])
 
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     rc = cli_mod.main(
         [
             "export",
@@ -400,7 +400,7 @@ def test_cli_export_csv_flat_stdout_has_no_doubled_cr(tmp_path, capsys):
 def test_export_per_session_opt_in_does_contain_session_id(tmp_path):
     """The flip side of the aggregate-only guarantee: --per-session is
     an explicit, informed opt-in, so the session id IS present then."""
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir()
     corpus = _build_corpus(tmp_path / "projects")
     options = exports.resolve_export_options("csv-flat", False, False)

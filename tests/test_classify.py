@@ -1,5 +1,5 @@
 """Tests for WP5: session mode/purpose classification and ``SessionRecord``
-construction/grouping (``src/claude_token_lens/classify.py``).
+construction/grouping (``src/claudeglass/classify.py``).
 
 The three fixture session directories under ``tests/fixtures/classify/``
 are hand-built, realistic-shaped JSONL (the same schema
@@ -22,9 +22,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytest
 
-from claude_token_lens import classify, discovery
-from claude_token_lens.model import TranscriptMeta
-from claude_token_lens.parse import parse_transcript
+from claudeglass import classify, discovery
+from claudeglass.model import TranscriptMeta
+from claudeglass.parse import parse_transcript
 
 from helpers import turn_line, write_jsonl
 
@@ -809,7 +809,7 @@ def _tagged_top(tmp_path, *tasks, session_id="s-tagged"):
 
     # SEC-P2: a `[tl: ...]` tag only counts once a capture note has been
     # seen and the metric it answers was requested -- "task" here.
-    note_text = "Token Lens metrics capture (tl-cap v1 task): ..."
+    note_text = "ClaudeGlass metrics capture (tl-cap v1 task): ..."
     note = attachment_line(
         "hook_additional_context",
         rendered=f"<system-reminder>\nSessionStart hook additional context: {note_text}\n</system-reminder>",

@@ -1,9 +1,9 @@
 """The command the dashboard prints for this install (invocation.py).
 
-The short ``claude-token-lens`` only runs when pip's Scripts folder is
+The short ``claudeglass`` only runs when pip's Scripts folder is
 on ``PATH``; a default Windows Python install leaves it off, so the
 service names the form that runs here and swaps it into every command
-it serves. conftest.py pins ``CLAUDE_TOKEN_LENS_COMMAND`` to the short
+it serves. conftest.py pins ``CLAUDEGLASS_COMMAND`` to the short
 form for every other test; these tests clear or set it themselves.
 """
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import installer, invocation
+from claudeglass import installer, invocation
 
 from test_service_api import _start_server
 
@@ -57,35 +57,35 @@ def test_the_env_var_wins_word_for_word(monkeypatch):
 def test_an_empty_env_var_falls_back_to_the_detection(detect, monkeypatch):
     monkeypatch.setenv(invocation.ENV_VAR, "   ")
     python = str(Path("/opt/py/bin/python3"))
-    assert detect(executable=python) == f"{python} -m claude_token_lens"
+    assert detect(executable=python) == f"{python} -m claudeglass"
 
 
 def test_the_launcher_in_this_pythons_scripts_folder_keeps_the_short_form(detect, monkeypatch, tmp_path):
     scripts = tmp_path / "Scripts"
     scripts.mkdir()
     _scripts_dir(monkeypatch, scripts)
-    launcher = str(scripts / "claude-token-lens.exe")
-    assert detect(executable=str(tmp_path / "python.exe"), which={"claude-token-lens": launcher}) == "claude-token-lens"
+    launcher = str(scripts / "claudeglass.exe")
+    assert detect(executable=str(tmp_path / "python.exe"), which={"claudeglass": launcher}) == "claudeglass"
 
 
 def test_a_launcher_from_another_python_is_not_trusted(detect, monkeypatch, tmp_path):
     # An older install elsewhere on PATH would run different code.
     _scripts_dir(monkeypatch, tmp_path / "mine" / "Scripts")
     python = str(tmp_path / "mine" / "python.exe")
-    other = str(tmp_path / "other" / "Scripts" / "claude-token-lens.exe")
-    prefix = detect(executable=python, which={"claude-token-lens": other})
-    assert prefix.endswith(" -m claude_token_lens")
-    assert "claude-token-lens" not in prefix
+    other = str(tmp_path / "other" / "Scripts" / "claudeglass.exe")
+    prefix = detect(executable=python, which={"claudeglass": other})
+    assert prefix.endswith(" -m claudeglass")
+    assert other not in prefix and python in prefix
 
 
 def test_no_launcher_and_python_on_path_is_this_one(detect, tmp_path):
     python = str(tmp_path / "python.exe")
-    assert detect(executable=python, which={"python": python}) == "python -m claude_token_lens"
+    assert detect(executable=python, which={"python": python}) == "python -m claudeglass"
 
 
 def test_python3_on_path_counts_when_python_is_missing(detect, tmp_path):
     python = str(tmp_path / "bin" / "python3")
-    assert detect(executable=python, which={"python3": python}) == "python3 -m claude_token_lens"
+    assert detect(executable=python, which={"python3": python}) == "python3 -m claudeglass"
 
 
 def test_a_different_python_on_path_means_the_full_path(detect, tmp_path):
@@ -93,12 +93,12 @@ def test_a_different_python_on_path_means_the_full_path(detect, tmp_path):
     # (or none), so "python -m" would miss the package.
     python = str(tmp_path / "Python314" / "python.exe")
     other = str(tmp_path / "WindowsApps" / "python.exe")
-    assert detect(executable=python, which={"python": other}) == f"{python} -m claude_token_lens"
+    assert detect(executable=python, which={"python": other}) == f"{python} -m claudeglass"
 
 
 def test_the_pyz_runs_through_this_python(detect, tmp_path):
     python = str(tmp_path / "python.exe")
-    pyz = tmp_path / "claude-token-lens.pyz"
+    pyz = tmp_path / "claudeglass.pyz"
     assert detect(executable=python, which={"python": python}, pyz=pyz) == f"python {pyz}"
 
 
@@ -106,8 +106,8 @@ def test_the_pyz_wins_over_a_launcher_on_path(detect, monkeypatch, tmp_path):
     scripts = tmp_path / "Scripts"
     _scripts_dir(monkeypatch, scripts)
     python = str(tmp_path / "python.exe")
-    pyz = tmp_path / "claude-token-lens.pyz"
-    which = {"python": python, "claude-token-lens": str(scripts / "claude-token-lens.exe")}
+    pyz = tmp_path / "claudeglass.pyz"
+    which = {"python": python, "claudeglass": str(scripts / "claudeglass.exe")}
     assert detect(executable=python, which=which, pyz=pyz) == f"python {pyz}"
 
 
@@ -115,19 +115,19 @@ def test_pythonw_becomes_the_console_python_beside_it(detect, tmp_path):
     # The logon service runs windowless; pythonw prints nothing to a terminal.
     (tmp_path / "python.exe").write_bytes(b"")
     pythonw = str(tmp_path / "pythonw.exe")
-    assert detect(executable=pythonw) == f"{tmp_path / 'python.exe'} -m claude_token_lens"
+    assert detect(executable=pythonw) == f"{tmp_path / 'python.exe'} -m claudeglass"
 
 
 def test_pythonw_stays_when_no_console_python_sits_beside_it(detect, tmp_path):
     pythonw = str(tmp_path / "pythonw.exe")
-    assert detect(executable=pythonw) == f"{pythonw} -m claude_token_lens"
+    assert detect(executable=pythonw) == f"{pythonw} -m claudeglass"
 
 
 def test_the_detection_is_worked_out_once(detect, monkeypatch, tmp_path):
     python = str(tmp_path / "python.exe")
-    assert detect(executable=python, which={"python": python}) == "python -m claude_token_lens"
+    assert detect(executable=python, which={"python": python}) == "python -m claudeglass"
     monkeypatch.setattr(invocation.sys, "executable", str(tmp_path / "moved.exe"))
-    assert invocation.command_prefix() == "python -m claude_token_lens"
+    assert invocation.command_prefix() == "python -m claudeglass"
 
 
 @pytest.mark.parametrize(
@@ -151,37 +151,37 @@ def test_the_real_detection_names_a_form_that_runs_here(monkeypatch):
         prefix = invocation.command_prefix()
     finally:
         invocation._detected_prefix.cache_clear()
-    assert prefix == "claude-token-lens" or prefix.endswith((" -m claude_token_lens", ".pyz", '.pyz"'))
+    assert prefix == "claudeglass" or prefix.endswith((" -m claudeglass", ".pyz", '.pyz"'))
     assert "\n" not in prefix
 
 
 # -- rewrite -------------------------------------------------------------
 
-PREFIX = r'& "C:\Program Files\Python314\python.exe" -m claude_token_lens'
+PREFIX = r'& "C:\Program Files\Python314\python.exe" -m claudeglass'
 
 
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("claude-token-lens capture connect", f"{PREFIX} capture connect"),
-        ("Run 'claude-token-lens capture connect' to add them.", f"Run '{PREFIX} capture connect' to add them."),
-        ("claude-token-lens apply --dry-run", f"{PREFIX} apply --dry-run"),
-        ("claude-token-lens --version", f"{PREFIX} --version"),
-        ("First:\nclaude-token-lens report", f"First:\n{PREFIX} report"),
-        ("(claude-token-lens report)", f"({PREFIX} report)"),
+        ("claudeglass capture connect", f"{PREFIX} capture connect"),
+        ("Run 'claudeglass capture connect' to add them.", f"Run '{PREFIX} capture connect' to add them."),
+        ("claudeglass apply --dry-run", f"{PREFIX} apply --dry-run"),
+        ("claudeglass --version", f"{PREFIX} --version"),
+        ("First:\nclaudeglass report", f"First:\n{PREFIX} report"),
+        ("(claudeglass report)", f"({PREFIX} report)"),
         # Prose, file names and made-up words stay as they are.
-        ("claude-token-lens ships with no dependencies.", "claude-token-lens ships with no dependencies."),
-        ("Download claude-token-lens.pyz first.", "Download claude-token-lens.pyz first."),
-        ("claude-token-lens capture-foo", "claude-token-lens capture-foo"),
-        ("claude-token-lens reports", "claude-token-lens reports"),
-        ("~/.claude-token-lens capture", "~/.claude-token-lens capture"),
-        ("my-claude-token-lens capture", "my-claude-token-lens capture"),
+        ("claudeglass ships with no dependencies.", "claudeglass ships with no dependencies."),
+        ("Download claudeglass.pyz first.", "Download claudeglass.pyz first."),
+        ("claudeglass capture-foo", "claudeglass capture-foo"),
+        ("claudeglass reports", "claudeglass reports"),
+        ("~/.claudeglass capture", "~/.claudeglass capture"),
+        ("my-claudeglass capture", "my-claudeglass capture"),
         # A message's label names the command that is talking.
-        ("claude-token-lens update: installed.", "claude-token-lens update: installed."),
-        ("claude-token-lens serve --purge: will delete", "claude-token-lens serve --purge: will delete"),
-        ("claude-token-lens capture:\n", "claude-token-lens capture:\n"),
+        ("claudeglass update: installed.", "claudeglass update: installed."),
+        ("claudeglass serve --purge: will delete", "claudeglass serve --purge: will delete"),
+        ("claudeglass capture:\n", "claudeglass capture:\n"),
         # A colon further on is part of the command.
-        ("claude-token-lens apply --revert 2026-09-25T10:00:00", f"{PREFIX} apply --revert 2026-09-25T10:00:00"),
+        ("claudeglass apply --revert 2026-09-25T10:00:00", f"{PREFIX} apply --revert 2026-09-25T10:00:00"),
     ],
 )
 def test_rewrite_swaps_only_commands(text, expected):
@@ -189,45 +189,45 @@ def test_rewrite_swaps_only_commands(text, expected):
 
 
 def test_rewrite_leaves_every_subcommand_reachable():
-    from claude_token_lens.cli import SUBCOMMANDS
+    from claudeglass.cli import SUBCOMMANDS
 
     for word in SUBCOMMANDS:
-        assert invocation.rewrite(f"claude-token-lens {word}", "tl") == f"tl {word}", word
+        assert invocation.rewrite(f"claudeglass {word}", "tl") == f"tl {word}", word
 
 
 def test_the_short_form_changes_nothing():
-    value = {"a": ["claude-token-lens report"]}
-    assert invocation.rewrite_payload(value, "claude-token-lens") is value
+    value = {"a": ["claudeglass report"]}
+    assert invocation.rewrite_payload(value, "claudeglass") is value
 
 
 def test_rewrite_payload_reaches_nested_strings_and_leaves_keys():
     value = {
-        "claude-token-lens report": "claude-token-lens report",
-        "rows": [["claude-token-lens baseline", 3, None, True], ("claude-token-lens sessions",)],
+        "claudeglass report": "claudeglass report",
+        "rows": [["claudeglass baseline", 3, None, True], ("claudeglass sessions",)],
         "n": 1.5,
     }
     assert invocation.rewrite_payload(value, "tl") == {
-        "claude-token-lens report": "tl report",
+        "claudeglass report": "tl report",
         "rows": [["tl baseline", 3, None, True], ["tl sessions"]],
         "n": 1.5,
     }
 
 
 def test_rewrite_rendered_json_keeps_the_rendering():
-    text = json.dumps({"b": "claude-token-lens report\nclaude-token-lens baseline", "a": 1}, sort_keys=True, indent=2)
+    text = json.dumps({"b": "claudeglass report\nclaudeglass baseline", "a": 1}, sort_keys=True, indent=2)
     out = invocation.rewrite_rendered(text, "json", PREFIX)
     assert json.loads(out) == {"a": 1, "b": f"{PREFIX} report\n{PREFIX} baseline"}
     assert out == json.dumps(json.loads(out), sort_keys=True, indent=2)
 
 
 def test_rewrite_rendered_html_escapes_the_prefix():
-    out = invocation.rewrite_rendered("<code>claude-token-lens report</code>", "html", PREFIX)
+    out = invocation.rewrite_rendered("<code>claudeglass report</code>", "html", PREFIX)
     assert out == f"<code>{html.escape(PREFIX, quote=True)} report</code>"
 
 
 def test_rewrite_rendered_markdown_and_the_short_form():
-    assert invocation.rewrite_rendered("Run `claude-token-lens report`.", "markdown", "tl") == "Run `tl report`."
-    text = "<p>claude-token-lens report</p>"
+    assert invocation.rewrite_rendered("Run `claudeglass report`.", "markdown", "tl") == "Run `tl report`."
+    text = "<p>claudeglass report</p>"
     assert invocation.rewrite_rendered(text, "html", invocation.SHORT) is text
 
 
@@ -236,10 +236,10 @@ def test_rewriting_stream_rewrites_what_it_writes_and_passes_the_rest_on():
 
     target = io.StringIO()
     stream = invocation.RewritingStream(target, "tl")
-    stream.write("Run claude-token-lens report.\n")
-    stream.writelines(["claude-token-lens update: done.\n", "claude-token-lens baseline\n"])
+    stream.write("Run claudeglass report.\n")
+    stream.writelines(["claudeglass update: done.\n", "claudeglass baseline\n"])
     stream.flush()
-    assert stream.getvalue() == "Run tl report.\nclaude-token-lens update: done.\ntl baseline\n"
+    assert stream.getvalue() == "Run tl report.\nclaudeglass update: done.\ntl baseline\n"
 
 
 @pytest.mark.parametrize(
@@ -265,7 +265,7 @@ def test_shell_line_quotes_what_needs_it(monkeypatch, platform, argv, expected):
 
 @pytest.fixture
 def cli_form(monkeypatch):
-    from claude_token_lens import cli
+    from claudeglass import cli
 
     monkeypatch.setenv(invocation.ENV_VAR, "tl")
     return cli
@@ -275,8 +275,8 @@ def test_the_cli_prints_commands_in_this_installs_form(cli_form, monkeypatch, ca
     import sys
 
     def fake(args):
-        print("Next: claude-token-lens capture status")
-        print("claude-token-lens pricing-check: done", file=sys.stderr)
+        print("Next: claudeglass capture status")
+        print("claudeglass pricing-check: done", file=sys.stderr)
         return 0
 
     monkeypatch.setattr(cli_form, "_cmd_pricing_check", fake)
@@ -285,7 +285,7 @@ def test_the_cli_prints_commands_in_this_installs_form(cli_form, monkeypatch, ca
     assert (sys.stdout, sys.stderr) == before
     out, err = capsys.readouterr()
     assert out == "Next: tl capture status\n"
-    assert err == "claude-token-lens pricing-check: done\n"
+    assert err == "claudeglass pricing-check: done\n"
 
 
 def test_the_cli_runs_with_no_console_streams(cli_form, monkeypatch):
@@ -296,8 +296,8 @@ def test_the_cli_runs_with_no_console_streams(cli_form, monkeypatch):
     printed = []
 
     def fake(args):
-        print("Serving on http://127.0.0.1:8765 - claude-token-lens report")
-        print("claude-token-lens serve: started", file=sys.stderr)
+        print("Serving on http://127.0.0.1:8765 - claudeglass report")
+        print("claudeglass serve: started", file=sys.stderr)
         printed.append(True)
         return 0
 
@@ -334,18 +334,18 @@ def test_cli_help_comes_in_this_installs_form(cli_form, capsys):
 )
 def test_data_output_is_printed_as_written(cli_form, monkeypatch, capsys, argv, handler):
     def fake(args, **_kwargs):
-        print('{"command": "claude-token-lens report"}')
+        print('{"command": "claudeglass report"}')
         return 0
 
     monkeypatch.setattr(cli_form, handler, fake)
     cli_form.main(argv)
-    assert capsys.readouterr().out == '{"command": "claude-token-lens report"}\n'
+    assert capsys.readouterr().out == '{"command": "claudeglass report"}\n'
 
 
 # -- the service serves it ------------------------------------------------
 
 # A path with a space and a quote: it must survive JSON and HTML intact.
-SERVED = '& "C:\\Program Files\\Py\'s\\python.exe" -m claude_token_lens'
+SERVED = '& "C:\\Program Files\\Py\'s\\python.exe" -m claudeglass'
 
 
 @pytest.fixture
@@ -370,13 +370,13 @@ def test_the_page_carries_the_form_for_the_dashboards_own_commands(served):
     assert resp.status == 200
     page = raw.decode("utf-8")
     assert f'<meta name="tl-command" content="{html.escape(SERVED, quote=True)}">' in page
-    assert 'content="claude-token-lens"' not in page
+    assert 'content="claudeglass"' not in page
 
 
 def test_report_json_stays_valid_json_with_the_form_swapped_in(served):
-    from claude_token_lens.service import api as service_api
+    from claudeglass.service import api as service_api
 
-    rendered = json.dumps({"report": {"notes": ["Run claude-token-lens baseline.\nclaude-token-lens report"]}})
+    rendered = json.dumps({"report": {"notes": ["Run claudeglass baseline.\nclaudeglass report"]}})
     text = service_api._report_json_commands(rendered)
     assert json.loads(text) == {"report": {"notes": [f"Run {SERVED} baseline.\n{SERVED} report"]}}
     # Rendered the way render_json renders it.
@@ -390,14 +390,14 @@ def test_report_json_stays_valid_json_with_the_form_swapped_in(served):
 
 @pytest.mark.parametrize(("path", "form"), [("/api/report.md", SERVED), ("/api/report.html", html.escape(SERVED, quote=True))])
 def test_the_markdown_and_html_reports_come_in_this_installs_form(served, monkeypatch, path, form):
-    from claude_token_lens.service import api as service_api
+    from claudeglass.service import api as service_api
 
     rendered = service_api.invocation.rewrite_rendered
     seen = []
 
     def spy(text, kind, prefix=None):
         seen.append(kind)
-        return rendered(text + "\nclaude-token-lens baseline", kind, prefix)
+        return rendered(text + "\nclaudeglass baseline", kind, prefix)
 
     monkeypatch.setattr(service_api.invocation, "rewrite_rendered", spy)
     resp, raw = served.request("GET", path)
@@ -420,7 +420,7 @@ def _strings(value):
 
 
 def test_the_index_placeholder_matches_the_one_the_service_replaces():
-    from claude_token_lens.service import api as service_api
+    from claudeglass.service import api as service_api
 
     index = Path(invocation.__file__).parent / "service" / "static" / "index.html"
     assert index.read_bytes().count(service_api._COMMAND_META) == 1

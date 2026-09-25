@@ -11,10 +11,10 @@ grammar, the stratification rule, the "observed, not controlled" stance,
 and the Admin CSV column mapping (including which column names are
 assumed rather than confirmed).
 
-## `claude-token-lens compare`
+## `claudeglass compare`
 
 ```bash
-python -m claude_token_lens compare \
+python -m claudeglass compare \
   --a window:2026-08-01..2026-08-31 \
   --b window:2026-09-01..2026-09-30 \
   --stratify purpose,mode \
@@ -150,10 +150,10 @@ matching project directory, or no sessions at all in the window, exits
 1. Anything else — including fewer than `--min-sessions` sessions in
 either arm — still exits 0 with a full report.
 
-## `claude-token-lens reconcile`
+## `claudeglass reconcile`
 
 ```bash
-python -m claude_token_lens reconcile --admin-csv admin-export.csv --by day,model
+python -m claudeglass reconcile --admin-csv admin-export.csv --by day,model
 ```
 
 `reconcile` never makes a network call: it reads a CSV you already

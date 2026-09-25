@@ -14,9 +14,9 @@ Costs rise with depth, so capture comes in levels, each including every metric o
 |---|---|---|---|
 | Off | Nothing is captured and no tokens are used. | – | – |
 | Free | Local signals from hooks that log to a file. Uses no Claude tokens. | – | – |
-| Essentials | Claude tags each piece of work: what kind it was, how clear the request was, how hard, how big, and when the task changed. Subagents say whether they finished. | ~218 tokens | ~107 tokens |
-| Standard | Adds what the request lacked, planning, skills, research, and each subagent's view of its model, rules and brief. | ~336 tokens | ~190 tokens |
-| Deep | Adds how much earlier context was needed, how the change was checked, and a short rating after large tool outputs. Also turns on the /tl-feedback survey, its reminder note, and Claude's one-line reminder to run it when a piece of work is done. | ~420 tokens | ~190 tokens |
+| Essentials | Claude tags each piece of work: what kind it was, how clear the request was, how hard, how big, and when the task changed. Subagents say whether they finished. | ~219 tokens | ~108 tokens |
+| Standard | Adds what the request lacked, planning, skills, research, and each subagent's view of its model, rules and brief. | ~336 tokens | ~191 tokens |
+| Deep | Adds how much earlier context was needed, how the change was checked, and a short rating after large tool outputs. Also turns on the /tl-feedback survey, its reminder note, and Claude's one-line reminder to run it when a piece of work is done. | ~420 tokens | ~191 tokens |
 | Custom | Any other set of metrics, turned on one by one (`capture enable`/`capture disable`). | depends what's on | depends what's on |
 
 These are rough sizes — the note's characters divided by four, plus Claude Code's own hook-wrapper overhead (the system-reminder tags around it) — and don't include the tag Claude writes back (each metric below says roughly how many output tokens its own words cost). Setup › Capture replays your last 14 days of transcripts against each level before you turn it on, and once it's on, measures the real note and tag cost from what Claude Code actually recorded — read that number, not this one, when it matters.
@@ -73,7 +73,7 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 
 - **Level:** Essentials
 - **Captures:** What kind of work each of your messages asked for: feature, bugfix, refactor, debug, docs, review, test, research, plan, ops or chat.
-- **Why:** Cost per kind of task, and a profile tuned to each kind. Replaces Token Lens's guess from the session's shape.
+- **Why:** Cost per kind of task, and a profile tuned to each kind. Replaces ClaudeGlass's guess from the session's shape.
 - **Tag:** `task=feature|bugfix|refactor|debug|docs|review|test|research|plan|ops|chat`
 - **Costs:** about 3 output tokens each time
 - **Hook:** SessionStart
@@ -175,7 +175,7 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 
 - **Level:** Essentials
 - **Captures:** When Claude starts an agent again because its last run fell short, the reason: model, brief, tools, scope or other.
-- **Why:** Why agents are re-run, and a guard that stops Token Lens suggesting a cheaper model for work that needed a stronger one.
+- **Why:** Why agents are re-run, and a guard that stops ClaudeGlass suggesting a cheaper model for work that needed a stronger one.
 - **Tag:** `[retry: model|brief|tools|scope|other]`
 - **Costs:** about 1 output token each time
 - **Hook:** SessionStart, SubagentStart
@@ -265,7 +265,7 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 ### Large tool outputs (`big_output`)
 
 - **Level:** Deep
-- **Captures:** After a tool result of about 8,000 tokens or more, how much of it Claude needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or MCP result. 'claude-token-lens capture status' shows how long that has added, measured from your own sessions.
+- **Captures:** After a tool result of about 8,000 tokens or more, how much of it Claude needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or MCP result. 'claudeglass capture status' shows how long that has added, measured from your own sessions.
 - **Why:** Quieter commands, offset reads and output caps where big outputs weren't needed.
 - **Tag:** `out=needed|part|unneeded`
 - **Costs:** about 2 output tokens each time
@@ -434,7 +434,7 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 ### Rate sessions on the dashboard (`dashboard_rating`)
 
 - **Level:** Feedback, any level
-- **Captures:** The same checkboxes on Spend › Sessions, kept in Token Lens's own store.
+- **Captures:** The same checkboxes on Spend › Sessions, kept in ClaudeGlass's own store.
 - **Why:** Feedback without spending tokens.
 - **Tag:** No tag. Nothing is asked of Claude; see "Captures" above for how it is kept.
 - **Powers:** Cost per finished piece of work
@@ -443,7 +443,7 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 
 Every note (`capture-hook.py` builds the same text from `capture-catalogue.json`) opens with the same two lines, then the keys for whichever metrics are on:
 
-> The user turned on Token Lens metrics capture, to see where their tokens go.
+> The user turned on ClaudeGlass metrics capture, to see where their tokens go.
 >
 > End your final reply to each user message with one line, [tl: key=word ...], using only these keys and words:
 
@@ -469,16 +469,16 @@ Free local signals never involve Claude at all: a hook logs the session id (hash
 
 The hook script and its catalogue (`capture-hook.py`, `capture-catalogue.json`) live side by side under `<config-dir>/hooks/`. Only `capture on` and `capture connect` ever change `~/.claude/settings.json` — and only after showing the diff and asking first, unless you pass `--yes`. Every other change writes only this tool's own `config.toml`.
 
-- `claude-token-lens capture status` — the level, what's on, since when, and the cost measured so far. While big_output or web is on, it also prints Deep's actual measured wait (median and p90, over the last 7 days). It also flags any hook — Token Lens's own or one of yours — that failed on most of its calls over the last 14 days, naming it (event name only, never a matcher or tool name), where to find it in `settings.json`, the trade-off, and the undo; this is only ever a printed prompt, never an automatic change.
-- `claude-token-lens capture on [--level LEVEL] [--for DURATION | --until DATE | --no-limit] [--sample N] [--yes] [--dry-run]` — turn it on (default level: Essentials).
-- `claude-token-lens capture level LEVEL` — change the level.
+- `claudeglass capture status` — the level, what's on, since when, and the cost measured so far. While big_output or web is on, it also prints Deep's actual measured wait (median and p90, over the last 7 days). It also flags any hook — ClaudeGlass's own or one of yours — that failed on most of its calls over the last 14 days, naming it (event name only, never a matcher or tool name), where to find it in `settings.json`, the trade-off, and the undo; this is only ever a printed prompt, never an automatic change.
+- `claudeglass capture on [--level LEVEL] [--for DURATION | --until DATE | --no-limit] [--sample N] [--yes] [--dry-run]` — turn it on (default level: Essentials).
+- `claudeglass capture level LEVEL` — change the level.
 
 A fresh switch from off to on — at `init`, `capture on`/`level`, or the Capture page — gets a 14-day time-box by default, so turning it on doesn't mean it runs unattended forever: it switches itself back off on its own unless you say otherwise. `--for DURATION` (a number and `h`, `d` or `w`, e.g. `30d`) or `--until DATE` picks another length or end date; `--no-limit` turns the time-box off entirely, so capture runs until you switch it off yourself. `init` has the same three choices as `--capture-for DURATION`, `--capture-level LEVEL --capture-no-limit`, or (interactively, or under `--non-interactive` with neither given) the default. Changing the level of capture that's already on leaves an existing time-box (or the lack of one) exactly as it is — the default only ever applies to a fresh switch-on.
-- `claude-token-lens capture enable METRIC...` / `capture disable METRIC...` — turn individual metrics on or off; the level becomes Custom once the set no longer matches a preset.
-- `claude-token-lens capture off` — stop the notes and tags at once, without touching settings.json.
-- `claude-token-lens capture connect` — add the settings.json hook entries the metrics you've chosen need.
-- `claude-token-lens capture remove` — switch off and take those hook entries back out.
-- `claude-token-lens capture feedback on|off` — the `/tl-feedback` skill and its status-line reminder.
-- `claude-token-lens capture brief on|off` — the `/tl-brief` skill.
-- `claude-token-lens capture prune [--dry-run]` — delete signal files and `capture-log.jsonl` records past your configured retention (`retention_days` in `config.toml`, or a default when it's unset); `serve`'s watcher already runs this same cleanup on every tick, so this is for anyone not running it.
-- `claude-token-lens changes` and `claude-token-lens uninstall` also cover metrics capture: they list everything it installed and can remove all of it — hooks, skills and signal files included.
+- `claudeglass capture enable METRIC...` / `capture disable METRIC...` — turn individual metrics on or off; the level becomes Custom once the set no longer matches a preset.
+- `claudeglass capture off` — stop the notes and tags at once, without touching settings.json.
+- `claudeglass capture connect` — add the settings.json hook entries the metrics you've chosen need.
+- `claudeglass capture remove` — switch off and take those hook entries back out.
+- `claudeglass capture feedback on|off` — the `/tl-feedback` skill and its status-line reminder.
+- `claudeglass capture brief on|off` — the `/tl-brief` skill.
+- `claudeglass capture prune [--dry-run]` — delete signal files and `capture-log.jsonl` records past your configured retention (`retention_days` in `config.toml`, or a default when it's unset); `serve`'s watcher already runs this same cleanup on every tick, so this is for anyone not running it.
+- `claudeglass changes` and `claudeglass uninstall` also cover metrics capture: they list everything it installed and can remove all of it — hooks, skills and signal files included.

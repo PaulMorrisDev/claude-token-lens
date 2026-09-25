@@ -1,22 +1,22 @@
 # Exports and monthly reports
 
 There are two ways to get your numbers into other tools without
-asking every team member to run claude-token-lens by hand:
+asking every team member to run claudeglass by hand:
 
-- a one-shot, privacy-safe `export` (`src/claude_token_lens/exports.py`)
+- a one-shot, privacy-safe `export` (`src/claudeglass/exports.py`)
   for BI/observability pipelines;
-- a recurring `monthly-report` (`src/claude_token_lens/monthly.py`) for
+- a recurring `monthly-report` (`src/claudeglass/monthly.py`) for
   a habit-forming finance summary.
 
 Both are read-only over an already-loaded corpus — neither writes
 anywhere except the file(s) you point them at.
 
-## `claude-token-lens export`
+## `claudeglass export`
 
 ```bash
-python -m claude_token_lens export --format csv-flat --out team-usage.csv
-python -m claude_token_lens export --format json --per-session --no-hash-slugs --out my-usage.json
-python -m claude_token_lens export --format otel-jsonl --out usage.otel.jsonl
+python -m claudeglass export --format csv-flat --out team-usage.csv
+python -m claudeglass export --format json --per-session --no-hash-slugs --out my-usage.json
+python -m claudeglass export --format otel-jsonl --out usage.otel.jsonl
 ```
 
 `--format` is `csv-flat` (the default), `json` or `otel-jsonl`. The
@@ -136,7 +136,7 @@ column and `report`'s overview totals use — see the note above.
 no resource/scope metadata and no real collector transport, and the
 timestamp is the day's start, not the moment the tokens were actually
 used. It exists so an existing collector's dashboards built against those
-metric names can ingest a claude-token-lens corpus after the fact. This
+metric names can ingest a claudeglass corpus after the fact. This
 format carries no project/session dimension at all (the documented
 metric names don't have one), so `--aggregate-only`/`--hash-slugs` have
 no effect on it.
@@ -144,13 +144,13 @@ no effect on it.
 ### `--aggregate` (team documents)
 
 ```bash
-python -m claude_token_lens export --aggregate --out my-machine.json
-python -m claude_token_lens export --aggregate --include-projects --out my-machine.json
+python -m claudeglass export --aggregate --out my-machine.json
+python -m claudeglass export --aggregate --include-projects --out my-machine.json
 ```
 
 `--aggregate` writes a different, fixed shape from every other
-`--format`: a **team document** (`src/claude_token_lens/team.py`), built
-for `claude-token-lens import`/`team-report` on a team lead's machine
+`--format`: a **team document** (`src/claudeglass/team.py`), built
+for `claudeglass import`/`team-report` on a team lead's machine
 rather than a BI pipeline. It is always JSON regardless of `--format`,
 and `--aggregate-only`/`--per-session`/`--hash-slugs`/`--no-hash-slugs`
 have no effect on it — a team document is aggregate-only and hashes
@@ -189,14 +189,14 @@ See [docs/team.md](team.md) for the full `export --aggregate` ->
 `import` -> `team-report` flow, and
 [its guarantees](team.md#for-team-leads-the-guarantees) in one place.
 
-## `claude-token-lens monthly-report`
+## `claudeglass monthly-report`
 
 ```bash
-python -m claude_token_lens monthly-report --out ./monthly-reports
-python -m claude_token_lens monthly-report --out ./monthly-reports --month 2026-08
+python -m claudeglass monthly-report --out ./monthly-reports
+python -m claudeglass monthly-report --out ./monthly-reports --month 2026-08
 ```
 
-Writes `DIR/claude-token-lens-YYYY-MM.md` and the matching `.html` for
+Writes `DIR/claudeglass-YYYY-MM.md` and the matching `.html` for
 one calendar month (default: the previous calendar month relative to
 today). The body is deliberately just a finance summary, not the full
 multi-section `report` output:
@@ -287,7 +287,7 @@ empty-month note.
 ### `serve --monthly-report DIR`
 
 ```bash
-python -m claude_token_lens serve --monthly-report ./monthly-reports
+python -m claudeglass serve --monthly-report ./monthly-reports
 ```
 
 While the dashboard runs, it writes the previous calendar month's

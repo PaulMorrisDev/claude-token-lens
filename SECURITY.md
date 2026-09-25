@@ -1,6 +1,6 @@
 # Security policy
 
-claude-token-lens is a local analytics tool. It reads the files Claude
+claudeglass is a local analytics tool. It reads the files Claude
 Code writes; it never calls Claude or any other remote service. The one
 command that goes online is `update`, which runs pip to download a new
 version (see "No outbound network calls" below). It uses
@@ -12,7 +12,7 @@ document is a sign-off checklist for a corporate security review,
 written to be verifiable against the code rather than taken on trust.
 
 **Status note:** every guarantee below describes what the *current*
-code does. This includes the `claude-token-lens serve` service
+code does. This includes the `claudeglass serve` service
 (watcher, SQLite store, JSON API, static web UI) and its deployment
 artefacts — see [docs/deploy.md](docs/deploy.md).
 
@@ -45,7 +45,7 @@ artefacts — see [docs/deploy.md](docs/deploy.md).
   and installed plugins.
 
 - **On request only**, when you open Agents & context › Context or run
-  `claude-token-lens review claude-md|skills` or `check claude-md|skills`:
+  `claudeglass review claude-md|skills` or `check claude-md|skills`:
   the text of your CLAUDE.md-family files (user, project, local, rule
   files, nested CLAUDE.md files, auto memory `MEMORY.md` and one level of
   `@` imports), and the skill descriptions in the newest transcripts'
@@ -69,7 +69,7 @@ Nothing outside these locations is read.
 ## What is written, and where
 
 Everything this tool writes by itself lives under `<config-dir>`
-(default `~/.claude/token-lens`, or `$CLAUDE_CONFIG_DIR/token-lens`):
+(default `~/.claude/claudeglass`, or `$CLAUDE_CONFIG_DIR/claudeglass`):
 `config.toml`, `projects/`, `baselines/`, `snapshots/`, `cache/`,
 `usage-log.csv`, `statusline-keys.json`, `salt`, `service.db`,
 `hooks/snapshot-config.py`, `profiles/`, `backups/`,
@@ -115,8 +115,8 @@ change before making it:
 - **`install-service`** (and `init`'s last step, when you say yes):
   registers `serve` to start at logon. On Windows that is a Scheduled
   Task (`-RunLevel Limited`, no file written); on Linux it writes
-  `~/.config/systemd/user/claude-token-lens.service`; on macOS
-  `~/Library/LaunchAgents/com.claude-token-lens.plist`. `--dry-run`
+  `~/.config/systemd/user/claudeglass.service`; on macOS
+  `~/Library/LaunchAgents/com.claudeglass.plist`. `--dry-run`
   prints the plan and does nothing. `uninstall-service` removes it. See
   [docs/deploy.md](docs/deploy.md).
 - **`uninstall`**: removes this tool's hooks (including the capture
@@ -191,7 +191,7 @@ that was itself given a salt finds a different one on the entry —
 without this, a cache entry written before a salt rotation would go on
 being served afterward, quietly carrying hashes keyed to the old salt.
 
-**The `claude-token-lens serve` service's SQLite store**
+**The `claudeglass serve` service's SQLite store**
 (`<config-dir>/service.db`) is a narrow, documented exception to "no
 path fragment is ever stored": `transcripts.path`, `projects.root_path`
 and `profiles.toml_path` hold real local filesystem paths, including
@@ -243,7 +243,7 @@ value).
 
 ## Applying a profile
 
-`claude-token-lens apply` (`profiles/apply.py`) is the one command that
+`claudeglass apply` (`profiles/apply.py`) is the one command that
 changes how Claude Code behaves: it writes the settings and agent files
 a profile or `--set` names. It does so only when you run it yourself —
 never as a side effect of `report`, `snapshot-config`, the dashboard or
@@ -267,7 +267,7 @@ files, depending on `--scope`:
   file above, written *before* the new content, plus a `manifest.json`
   recording which backup corresponds to which target.
 - `<config-dir>/snapshots/<ts>.json` and `<config-dir>/active-profile`
-  — claude-token-lens's own bookkeeping, not a Claude Code config file.
+  — claudeglass's own bookkeeping, not a Claude Code config file.
 
 `--launch` writes only `<config-dir>/profiles/<id>.settings.json` (a
 one-session overlay) and nothing else. `apply` never writes an
@@ -281,7 +281,7 @@ override: writing to a file already tracked by git, at any scope
 (`--allow-tracked`; checked with `git ls-files`), and creating an agent
 frontmatter file that doesn't exist yet (`--force`). Every write is
 preceded by a byte-for-byte backup, so any apply can be undone exactly
-with `claude-token-lens apply --revert <ts>`: each file is restored from
+with `claudeglass apply --revert <ts>`: each file is restored from
 its backup, and a file the apply created is deleted. A revert checks
 each file's hash against the one `apply` recorded and refuses,
 restoring nothing, if a file was edited after the apply, so it never
@@ -294,7 +294,7 @@ place). Full detail:
 ## Metrics capture
 
 **Off by default, and reversible.** `init`'s last-but-one question and
-`claude-token-lens capture on|level` are the only ways this turns on;
+`claudeglass capture on|level` are the only ways this turns on;
 `capture off` (or letting the default 14-day time-box run out — see
 [docs/onboarding.md](docs/onboarding.md)) turns it off again without
 removing the settings.json hook entries or the `[capture]` config, so
@@ -371,7 +371,7 @@ all.
 
 **Hook health is bucketed, not named.** `hook_health.count_hook_errors`
 tallies every hook attachment Claude Code writes to a transcript —
-yours as well as Token Lens's own — by the closed hook-*event* name
+yours as well as ClaudeGlass's own — by the closed hook-*event* name
 only (`PreToolUse`, `PostToolUse`, and so on; `events._HOOK_EVENT_NAMES`,
 verified against Claude Code's own docs). The matcher/tool-name suffix
 after the `:` (e.g. the `Bash` in `PreToolUse:Bash`, or an MCP server's
@@ -394,12 +394,12 @@ asked, backed up) and removed.
 **The dashboard's one write into this.** `POST /api/capture` (see
 "What the dashboard can change" below) is the only way the local
 `serve` UI changes capture settings, and it can only ever change the
-`[capture]` table of Token Lens's *own* `config.toml` — never
+`[capture]` table of ClaudeGlass's *own* `config.toml` — never
 `settings.json`, never a skill file. It is refused (`403`) on anything
 but a loopback request, on top of the DNS-rebinding and cross-site
 checks every other `POST` route gets (see "What a web page can and
 can't do to the service" below); a config error comes back as `409`
-with the equivalent `claude-token-lens capture ...` command to run
+with the equivalent `claudeglass capture ...` command to run
 yourself instead (`service/api.py`'s `route_capture_post`).
 
 **Tested.** Besides the tests already named above,
@@ -428,7 +428,7 @@ does so through `pip`, not through this tool's own networking code:
 `_cmd_update` (`cli.py`) shells out to `pip install --upgrade
 --force-reinstall --no-deps <source>`, where `<source>` (`--from`)
 defaults to this project's own GitHub repository
-(`UPDATE_SOURCE = "git+https://github.com/PaulMorrisDev/claude-token-lens"`)
+(`UPDATE_SOURCE = "git+https://github.com/PaulMorrisDev/claudeglass"`)
 — pip clones whatever commit is at the tip of that repository's default
 branch when you run it (unpinned; pass `--from` a tag, a
 commit-pinned URL or a local folder for anything more reproducible).
@@ -442,7 +442,7 @@ succeeds) to the address and port it just registered
 (`127.0.0.1:8765` by default), never any other address, purely to
 print whether it came back up and on which version.
 
-Outside `src/claude_token_lens/service/` and `update`'s `pip`
+Outside `src/claudeglass/service/` and `update`'s `pip`
 subprocess above, no module imports `socket`, `urllib`, `http.client`,
 `requests` or equivalent — `cli.py`'s two `urllib.request.urlopen`
 calls (`_http_health_ok`, `_http_health_version`) are the only ones,
@@ -456,8 +456,8 @@ never a live lookup — there is no code path that could fetch it.
 
 For the CLI's analytics/report subcommands this is a structural
 guarantee: nothing to call out to, because they contain no networking
-code at all. **The `claude-token-lens serve` service** (a local
-`http.server` API and static UI, `src/claude_token_lens/service/`) is
+code at all. **The `claudeglass serve` service** (a local
+`http.server` API and static UI, `src/claudeglass/service/`) is
 the main exception: `service/api.py` and `service/serve.py` do import
 `http.server` (to listen on its own local socket) and `urllib.parse`
 (to parse request query strings — it never builds or fetches a URL).
@@ -532,7 +532,7 @@ it through your browser:
 The dashboard never changes your Claude Code configuration. A
 recommendation or profile gives you a prompt to paste into Claude Code
 (which asks your permission before editing anything under `.claude`)
-and a `claude-token-lens apply ... --dry-run` command to run yourself.
+and a `claudeglass apply ... --dry-run` command to run yourself.
 The service's few write routes touch only its own files: session tags
 (`mode`/`purpose`) and your `/tl-feedback` rating (`POST
 /api/sessions/<id>/feedback` — the same closed checkbox vocabulary the
@@ -541,7 +541,7 @@ field or value is `400`, and nothing ticked clears a rating) in the
 store, user profiles under `<config-dir>/profiles/` (`POST
 /api/profiles`, and `POST /api/profiles/from-current`, which saves the
 allowlisted keys of the latest config snapshot there), and the
-`[capture]` table of Token Lens's own `config.toml` (`POST
+`[capture]` table of ClaudeGlass's own `config.toml` (`POST
 /api/capture` — see "Metrics capture" above; it is the one dashboard
 route that can turn metrics capture on, change its level, or turn it
 off, and it never touches `settings.json` or a skill file). Profile
@@ -557,7 +557,7 @@ content.
 
 The service's on-disk SQLite store (`<config-dir>/service.db`) is
 always a derived cache rebuilt from the same transcripts the CLI
-already reads, never a second source of truth — `claude-token-lens
+already reads, never a second source of truth — `claudeglass
 serve --purge` deletes it safely at any time (it prints exactly which
 files it will delete and requires `--yes` before doing so).
 
@@ -573,9 +573,9 @@ active session). To purge it:
 
 ```bash
 # POSIX
-rm -rf ~/.claude/token-lens/cache
+rm -rf ~/.claude/claudeglass/cache
 # Windows
-Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\token-lens\cache"
+Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\claudeglass\cache"
 ```
 
 `--rebuild-cache` does this for you (purges the cache, then repopulates
@@ -600,8 +600,8 @@ exclude_projects = ["^confidential-", "client-acme$"]
 
 ## Aggregate exports (`export`, `monthly-report`)
 
-`claude-token-lens export` (`src/claude_token_lens/exports.py`) and
-`claude-token-lens monthly-report` (`src/claude_token_lens/monthly.py`)
+`claudeglass export` (`src/claudeglass/exports.py`) and
+`claudeglass monthly-report` (`src/claudeglass/monthly.py`)
 read the same in-memory corpus every other subcommand does — no
 additional file access, no network access — and write only counts, token
 totals, and costs; never a prompt, a tool result, or a file path.
@@ -653,8 +653,8 @@ state. No prompt text, file paths or command text.
 
 ### Payload key recording (`statusline-keys.json`)
 
-`claude-token-lens`'s statusline integration
-(`src/claude_token_lens/statusline.py`) records the *key names* of the
+`claudeglass`'s statusline integration
+(`src/claudeglass/statusline.py`) records the *key names* of the
 JSON payload Claude Code writes to it on every refresh —
 recursively, dotted (e.g. `context_window.used_tokens`), capped at 200
 names — to `<config-dir>/statusline-keys.json`, and only when that set
@@ -670,7 +670,7 @@ field-name lists against the real payload shape).
 Please open a private security advisory on the GitHub repository (or,
 if that isn't available, open an issue asking for a private contact
 channel) rather than a public issue, so a fix can land before the
-details are public. Include the claude-token-lens version
-(`claude-token-lens --version`), your OS, and — since transcripts are
+details are public. Include the claudeglass version
+(`claudeglass --version`), your OS, and — since transcripts are
 never meant to leave your machine — a minimal *synthetic* reproduction
 rather than a real transcript excerpt.

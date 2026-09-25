@@ -1,42 +1,83 @@
-# claude-token-lens
+# ClaudeGlass
 
-See where your Claude Code tokens go, and what to change to spend less,
-from the transcripts already on your machine.
+**Are you using Claude Code well, or just burning tokens?**
 
-No telemetry, no runtime dependencies, and a dashboard that runs only on
-your own computer.
+ClaudeGlass reads the transcripts Claude Code already keeps on your
+machine and shows where your tokens went: which sessions, subagents,
+cache rebuilds, CLAUDE.md files and habits cost the most, and the one
+change that would save the most next. Every suggestion comes with the
+evidence from your own sessions, what it trades away, and how to undo
+it.
 
-[![Latest release](https://img.shields.io/github/v/release/PaulMorrisDev/claude-token-lens?label=release)](https://github.com/PaulMorrisDev/claude-token-lens/releases/latest)
-[![CI](https://github.com/PaulMorrisDev/claude-token-lens/actions/workflows/ci.yml/badge.svg)](https://github.com/PaulMorrisDev/claude-token-lens/actions/workflows/ci.yml)
-[![Python 3.11 or newer](https://img.shields.io/badge/python-3.11%2B-3776ab)](pyproject.toml)
-[![MIT licence](https://img.shields.io/badge/licence-MIT-2ea44f)](LICENSE)
+It runs entirely on your computer: no telemetry, no API key, no
+account, and no runtime dependencies.
+
+[![PyPI](https://img.shields.io/pypi/v/claudeglass?label=pypi)](https://pypi.org/project/claudeglass/)
+[![Python 3.11 or newer](https://img.shields.io/badge/python-3.11%2B-3776ab)](https://github.com/PaulMorrisDev/claudeglass/blob/main/pyproject.toml)
+[![Tested with Claude Code 2.1](https://img.shields.io/badge/tested%20with-Claude%20Code%202.1-d97757)](#what-it-cant-measure)
+[![CI](https://github.com/PaulMorrisDev/claudeglass/actions/workflows/ci.yml/badge.svg)](https://github.com/PaulMorrisDev/claudeglass/actions/workflows/ci.yml)
+[![MIT licence](https://img.shields.io/badge/licence-MIT-2ea44f)](https://github.com/PaulMorrisDev/claudeglass/blob/main/LICENSE)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/images/overview-light.png">
-  <img alt="The Overview page for the last 30 days. The headline says you used about 277.5% of your weekly usage limit, and 2 changes are worth making. Cards show spend, the available saving, what the cache saved and 53 sessions. Below them, a daily spend chart splits the main session from subagents." src="docs/images/overview-light.png" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/PaulMorrisDev/claudeglass/main/docs/images/overview-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/PaulMorrisDev/claudeglass/main/docs/images/overview-light.png">
+  <img alt="The Overview page for the last 30 days. The headline says you used about 277.5% of your weekly usage limit, and 2 changes are worth making. Cards show spend, the available saving, what the cache saved and 53 sessions. Below them, a daily spend chart splits the main session from subagents." src="https://raw.githubusercontent.com/PaulMorrisDev/claudeglass/main/docs/images/overview-light.png" width="100%">
 </picture>
 
 <sub><i>The Overview page. Synthetic data, 30-day window, subscription billing.</i></sub>
 
-[Quick start](#quick-start) · [What each page answers](#what-each-page-answers) · [Privacy](#privacy) · [Documentation](#documentation)
+**Try it in a minute.** `check` reads your history and prints what to
+change. It sets nothing up and changes nothing:
 
-## Why use it
+```bash
+python -m pip install claudeglass
+python -m claudeglass check --all-projects
+```
 
-- **See where your tokens went.** Every session, subagent and cache
-  rebuild is priced, and you can split them by project, model and day.
-- **Know what to change next.** Each recommendation names the setting,
-  the file, the expected effect and what you give up.
-- **One check per way of saving.** Models, effort, conversation
-  summaries, cache, tools, skills, CLAUDE.md, tool output and habits,
-  each answered from your own sessions.
-- **See whether a change worked.** It records your settings as each
-  session starts, and compares the sessions before a change with those
-  after it.
-- **Amounts in your billing mode.** On a Pro or Max plan they're a share
-  of your usage limits. On pay-per-token billing they're dollars.
-- **Nothing changes by itself.** Every change is a prompt you give Claude
-  or a command you run, and you can preview the command with `--dry-run`.
+With [uv](https://docs.astral.sh/uv/), `uvx claudeglass check --all-projects`
+does the same without installing anything.
+
+[What it finds](#what-it-finds) · [Quick start](#quick-start) · [What each page answers](#what-each-page-answers) · [Privacy](#privacy) · [Documentation](#documentation)
+
+## What it finds
+
+The questions people ask after a month of heavy Claude Code use,
+answered from your own sessions:
+
+- **"Which sessions were expensive, and why?"** Every session and
+  subagent run is priced, and the expensive ones say what drove the
+  cost: a long context, a cache rebuild, a large tool output, or
+  thinking.
+- **"Am I on the right model?"** It finds agents on Opus or Sonnet doing
+  work a cheaper model finishes just as well, and checks whether cheaper
+  runs had to be redone by a larger model.
+- **"Why did my cache miss?"** Each prompt-cache rebuild is dated and
+  explained: a pause longer than the cache lifetime, a conversation
+  summary, or a change early in the context.
+- **"What am I paying for on every reply?"** CLAUDE.md files, skills and
+  tool definitions go out with every request. It prices each one and
+  says what to trim, move or hide.
+- **"Are my habits costing me?"** Work habits turns each of your
+  requests, and everything Claude did for it, into habits worth
+  changing, with a rough saving for each.
+- **"Did my change work?"** It records your settings as each session
+  starts, and compares the sessions before a change with those after
+  it.
+
+Amounts follow how you pay: a share of your usage limits on a Pro or Max
+plan, dollars on pay-per-token billing.
+
+**Nothing changes by itself.** Every recommendation is a prompt you give
+Claude or a command you run, and every command has a `--dry-run`.
+
+## Who it's for
+
+- **Developers who use Claude Code all day** and keep reaching their Pro
+  or Max usage limits.
+- **Engineers on API billing** who want a smaller bill without worse
+  work.
+- **Team leads** who want to see how a team uses Claude Code without
+  collecting anyone's sessions: see [For team leads](#for-team-leads).
 
 ## Quick start
 
@@ -46,55 +87,44 @@ below are for **Windows PowerShell**. On macOS or Linux, type them in
 Terminal with `python3` in place of `python`.
 
 > [!NOTE]
-> Every command here starts `python -m claude_token_lens`. The shorter
-> `claude-token-lens` works only when pip's Scripts folder is on your
-> `PATH`, which on Windows it often isn't. pip prints a yellow WARNING
-> when it isn't.
+> Every command here starts `python -m claudeglass`. The shorter
+> `claudeglass` works only when pip's Scripts folder is on your
+> `PATH`, which on Windows it often isn't.
 
-### Where to install it
-
-Anywhere. You don't install it into a repository, and it doesn't matter
-which folder your terminal is in. Claude Code keeps a transcript of
-every session, for every repository, in one folder:
-`%USERPROFILE%\.claude\projects` on Windows, `~/.claude/projects`
-elsewhere. claude-token-lens reads that folder, so the dashboard shows
-all your repositories at once.
-
-Only two commands care where you run them. `init` names the repository
-you're in as "this project". `report` and `check` look at only that
-repository unless you add `--all-projects`. Also run Claude Code inside
-WSL? Still install it on Windows; see
-[Using Claude Code in WSL too](#using-claude-code-in-wsl-too).
+Install it anywhere: it doesn't go into a repository. Claude Code keeps
+a transcript of every session, for every repository, in one folder
+(`%USERPROFILE%\.claude\projects` on Windows, `~/.claude/projects`
+elsewhere), and ClaudeGlass reads that folder, so the dashboard shows
+all your repositories at once. Also run Claude Code inside WSL? Install
+it on Windows; see
+[Using Claude Code in WSL too](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/first-run.md#using-claude-code-in-wsl-too).
 
 ### 1. Check Python
-
-Open PowerShell and run:
 
 ```powershell
 python --version
 ```
 
-It should print `Python 3.11` or higher. If it says `python` isn't
-recognized, or shows an older version, install Python from
+It should print `Python 3.11` or higher. If `python` isn't recognized,
+or the version is older, install Python from
 [python.org](https://www.python.org/downloads/). Tick **Add python.exe
 to PATH** in the installer, then open a new PowerShell window.
 
 ### 2. Install
 
 ```powershell
-python -m pip install git+https://github.com/PaulMorrisDev/claude-token-lens
-python -m claude_token_lens --version
+python -m pip install claudeglass
+python -m claudeglass --version
 ```
 
-The second line should print `claude-token-lens 0.8.0` or later.
-
-No git on this machine, or no pip at all? See
-[Other ways to install](#other-ways-to-install) below.
+The second line should print `claudeglass 0.9.0` or later. Prefer an
+isolated install? `pipx install claudeglass` or
+`uv tool install claudeglass` work too.
 
 ### 3. Set up
 
 ```powershell
-python -m claude_token_lens init
+python -m claudeglass init
 ```
 
 It asks up to four questions:
@@ -115,13 +145,10 @@ It asks up to four questions:
 
 Then it lists every change and asks once: **Go ahead? [Y/n/d]**. Type
 `d` to see the exact `settings.json` change first, or `n` to change
-nothing. It backs `settings.json` up before changing it. It ends with a
-checklist of what's set up and what to open next; run
-`python -m claude_token_lens status` to see it again any time.
-
-It finds your WSL sessions itself, if you have any, and includes them.
-`init --advanced` also asks about the rest: projects to leave out, the
-time zone, and the full metrics capture choices.
+nothing. It backs `settings.json` up before changing it, and ends with a
+checklist of what's set up; `python -m claudeglass status` shows it
+again any time. `init --advanced` also asks about projects to leave out,
+the time zone, and the full metrics capture choices.
 
 > [!WARNING]
 > Claude Code deletes old transcripts, after 30 days by default. The
@@ -136,77 +163,47 @@ seconds to a few minutes, and figures fill in as it goes.
 
 Start with **Next best actions** on the Overview page. Then open
 **Actions › Checks**, which answers one question per way of saving, such
-as "Is each agent on the cheapest model that does the job?". The bottom
-of the sidebar shows the version that is running.
-
-It only runs on your machine; nobody else can open it.
-
-### Only want a quick look?
-
-You can skip `init` and the dashboard:
-
-```powershell
-python -m claude_token_lens check --all-projects
-python -m claude_token_lens report --all-projects
-```
-
-`check` answers the quick-action questions, and `report` prints the full
-analysis. Both print to the terminal and change nothing.
+as "Is each agent on the cheapest model that does the job?". The
+dashboard only runs on your machine; nobody else can open it.
 
 ### Other ways to install
 
 <details>
-<summary>No git, no pip, a local copy, or pipx</summary>
+<summary>No PyPI access, no pip, a local copy, or the latest code</summary>
 
 | Route | Command | Needs |
 |---|---|---|
-| From GitHub | `python -m pip install git+https://github.com/PaulMorrisDev/claude-token-lens` | pip, git and network |
-| From GitHub, without git | `python -m pip install https://github.com/PaulMorrisDev/claude-token-lens/archive/refs/heads/main.zip` | pip and network |
-| From a local copy | `python -m pip install <folder>`, or `pipx install <folder>` to keep it apart from other Python tools | pip |
-| Single file | Download [`claude-token-lens.pyz`](https://github.com/PaulMorrisDev/claude-token-lens/releases/latest/download/claude-token-lens.pyz) from the latest release, then run `python claude-token-lens.pyz` wherever this page says `python -m claude_token_lens` | Python only |
+| From PyPI | `python -m pip install claudeglass` | pip and network |
+| Latest code from GitHub | `python -m pip install git+https://github.com/PaulMorrisDev/claudeglass` | pip, git and network |
+| From GitHub, without git | `python -m pip install https://github.com/PaulMorrisDev/claudeglass/archive/refs/heads/main.zip` | pip and network |
+| From a local copy | `python -m pip install <folder>`, or `pipx install <folder>` | pip |
+| Single file | Download [`claudeglass.pyz`](https://github.com/PaulMorrisDev/claudeglass/releases/latest/download/claudeglass.pyz) from the latest release, then run `python claudeglass.pyz` wherever this page says `python -m claudeglass` | Python only |
 
 The package has no runtime Python dependencies. `rich` is an optional
 extra for nicer terminal output. The dashboard's d3 and fonts ship
 inside the package, pinned by sha256.
-
-[`docs/first-run.md`](docs/first-run.md) walks through each route on a
-locked-down work machine. Building the `.pyz` yourself is covered in
-[`docs/deploy.md`](docs/deploy.md#distribution-without-pip-the-pyz-build).
+[`docs/first-run.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/first-run.md) walks through each route on a
+locked-down work machine.
 
 </details>
 
-## Using Claude Code in WSL too
+### Coming from claude-token-lens
 
-If you also run Claude Code inside WSL (Ubuntu on Windows), its sessions
-are kept inside Linux, in
-`\\wsl.localhost\<distro>\home\<you>\.claude\projects`. Install
-claude-token-lens on **Windows** as above, not inside WSL, and run
-`python -m claude_token_lens init`. It finds those folders itself and
-includes them, naming each distro when it starts. The dashboard then
-shows your Windows and WSL sessions together. A **Where** column on
-**Spend › Sessions** says which is which ("This computer" or
-"WSL: Ubuntu").
+ClaudeGlass was called claude-token-lens up to version 0.8.0. 0.9.0 is a
+fresh install, not an upgrade: remove the old tool first, then follow
+the quick start above.
 
-- It only reads those folders, the same as your Windows one. It changes
-  nothing inside WSL.
-- While the dashboard runs, it looks in them every 30 seconds, which
-  keeps WSL running in the background. If WSL is shut down, the
-  dashboard carries on with what it already has. It picks up the rest
-  when WSL is back.
-- The "Connect to Claude Code" hook is for Claude Code on Windows. The
-  copy of Claude Code inside WSL has its own settings and doesn't need
-  it.
-- Added a WSL distro later? Run `init` again. To list the folders by
-  hand, put them in `config.toml` (in `%USERPROFILE%\.claude\token-lens`)
-  and restart the dashboard with
-  `python -m claude_token_lens install-service`:
+```powershell
+python -m claude_token_lens uninstall --dry-run
+python -m claude_token_lens uninstall
+python -m pip uninstall claude-token-lens
+```
 
-  ```toml
-  extra_projects_roots = ['\\wsl.localhost\Ubuntu\home\alice\.claude\projects']
-  ```
-
-  A one-off command can take several folders too:
-  `python -m claude_token_lens report --all-projects --projects-root <folder> --projects-root <another>`.
+The first command shows what the second removes: its hooks and status
+line in `settings.json` (backed up first), its skills and its logon
+task. Setting changes you made through it stay as they are. To keep your
+history, move `%USERPROFILE%\.claude\token-lens` to
+`%USERPROFILE%\.claude\claudeglass` before you run `init`.
 
 ## What each page answers
 
@@ -264,9 +261,9 @@ billing, amounts are what you pay.
 ## Acting on a recommendation
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/recommendation-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/images/recommendation-light.png">
-  <img alt="A recommendation card: a cheaper model could do some of this work. It explains the saving and lists each agent type with the model to set. Below, a prompt to paste into Claude Code, with a tab for the dry-run command." src="docs/images/recommendation-light.png">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/PaulMorrisDev/claudeglass/main/docs/images/recommendation-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/PaulMorrisDev/claudeglass/main/docs/images/recommendation-light.png">
+  <img alt="A recommendation card: a cheaper model could do some of this work. It explains the saving and lists each agent type with the model to set. Below, a prompt to paste into Claude Code, with a tab for the dry-run command." src="https://raw.githubusercontent.com/PaulMorrisDev/claudeglass/main/docs/images/recommendation-light.png">
 </picture>
 
 <sub><i>A recommendation on the Actions page. Synthetic data.</i></sub>
@@ -285,7 +282,7 @@ trade-off, and how to undo it. There are two ways to make the change:
   such as:
 
   ```powershell
-  python -m claude_token_lens apply --set effortLevel=medium --scope user --dry-run
+  python -m claudeglass apply --set effortLevel=medium --scope user --dry-run
   ```
 
   `--dry-run` explains the change and prints the diff without writing
@@ -308,12 +305,12 @@ Profiles on **Setup › Profiles** work the same way for several settings
 at once. Each gives you a prompt, an `apply <profile> --dry-run`
 command, or a one-session trial (`apply <profile> --launch`) that leaves
 your settings files alone. See
-[`docs/profiles.md`](docs/profiles.md#applying-a-profile).
+[`docs/profiles.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/profiles.md#applying-a-profile).
 
 ## Updating
 
 ```powershell
-python -m claude_token_lens update
+python -m claudeglass update
 ```
 
 That one command:
@@ -330,114 +327,40 @@ That one command:
 
 Add `--dry-run` to see what it would do, or `--yes` to answer yes to
 every question. On macOS, restart the dashboard afterwards with
-`launchctl kickstart -k gui/$(id -u)/com.claude-token-lens`.
-
-**Updating from 0.6.0 or older**, `update` installs the new version but
-not the steps after it. Run them once, and from then on `update` alone
-does everything:
-
-```powershell
-python -m claude_token_lens update
-python -m claude_token_lens update --finish
-```
-
-**On version 0.4 or older** (`update` says it's an invalid choice),
-install by hand once, then finish:
-
-```powershell
-python -m pip install --upgrade --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens
-python -m claude_token_lens update --finish
-```
+`launchctl kickstart -k gui/$(id -u)/com.claudeglass`.
 
 `update` is the one command that goes online: pip downloads the new
-version from GitHub. Check that the foot of the dashboard's sidebar
-shows the new version. After an update the dashboard may read your
+version from GitHub. The foot of the dashboard's sidebar shows the
+version that is running. After an update the dashboard may read your
 history again once, so the first page load can be slow.
-[`CHANGELOG.md`](CHANGELOG.md) lists what changed.
+[`CHANGELOG.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/CHANGELOG.md) lists what changed.
 
 ## Uninstalling
 
 Look at what would be removed first:
 
 ```powershell
-python -m claude_token_lens uninstall --revert-changes --delete-data --dry-run
+python -m claudeglass uninstall --revert-changes --delete-data --dry-run
 ```
 
-Then run the same command without `--dry-run`. It removes the hook and
-the logon service, undoes any setting changes you made through this
-tool, and deletes its data, asking before each step. Finally:
+Then run the same command without `--dry-run`. It stops the dashboard,
+removes its logon task, the hooks and the status line, undoes any
+setting changes you made through this tool, and deletes its data,
+asking before each step. Leave out `--revert-changes` to keep your
+setting changes, or `--delete-data` to keep your history. Finally:
 
 ```powershell
-python -m pip uninstall claude-token-lens
+python -m pip uninstall claudeglass
 ```
 
 ## If something goes wrong
 
-| What you see | What to do |
-|---|---|
-| pip stops with "Failed to write executable" and `[WinError 2] ... claude-token-lens.exe' -> '...claude-token-lens.exe.deleteme'` | pip couldn't create the `claude-token-lens.exe` launcher in your Python's `Scripts` folder. Either you can't write to that folder, or antivirus blocked the new `.exe`, which is common on work machines. Nothing here needs that launcher. Install for your user instead: `python -m pip install --user --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens`. If that stops the same way, use the single-file [`claude-token-lens.pyz`](https://github.com/PaulMorrisDev/claude-token-lens/releases/latest/download/claude-token-lens.pyz), which pip never touches. Run `python claude-token-lens.pyz` wherever this guide says `python -m claude_token_lens` |
-| `claude-token-lens` "is not recognized as a name of a cmdlet" or "command not found" | pip's Scripts folder isn't on your `PATH`. Use `python -m claude_token_lens` instead; everything else stays the same. The dashboard's own commands already use the form that runs on your machine (from 0.6.1). Set `CLAUDE_TOKEN_LENS_COMMAND` where the service runs to pick another |
-| The dashboard still looks old after updating (the foot of its sidebar shows an old version, or none at all) | Something else is still serving port 8765, such as an older copy started by hand, from another Python install, or from Docker. See [An old dashboard won't go away](#an-old-dashboard-wont-go-away). If `--version` shows the new version but the dashboard doesn't, it runs from another Python: see [An update doesn't take](#an-update-doesnt-take-more-than-one-python) |
-| http://127.0.0.1:8765 doesn't open | With 0.6.1 on Windows, the logon task can't start the dashboard: run `python -m claude_token_lens update` to get the fix. Otherwise, run `python -m claude_token_lens serve` in a PowerShell window and leave it open; any error prints there. "Already in use by another serve" names the process that has the dashboard's database open: stop that one first |
-| A banner says the dashboard is **not updating** or its **last scan failed** | The background scan has stopped or keeps failing, so figures are frozen at the time shown. Restart the dashboard: `python -m claude_token_lens install-service` (or stop and start `serve`) |
-| Sessions you ran in WSL are missing | Run `python -m claude_token_lens init` again: it adds any WSL folder it finds. It only finds a distro that is installed for your Windows user; `wsl -l -v` lists them. See [Using Claude Code in WSL too](#using-claude-code-in-wsl-too) |
-| Amounts are in dollars but you're on a plan | Run `python -m claude_token_lens init` again and answer `1` to "How do you pay for Claude Code?" |
-| Not sure setup worked | Run `python -m claude_token_lens status`. It says what's done, what's off and what needs attention, with the command that fixes each. The Overview page shows the same list until everything essential is set up |
-| `capture status` or **Setup › Capture** says your organisation allows only the hooks it deploys, or that hooks are turned off | A managed policy (`allowManagedHooksOnly` or `disableAllHooks`), or `disableAllHooks` in your own settings.json, stops Claude Code running any hook you add yourself. So capture, the config-snapshot hook and the status line can't run. Reports and the dashboard still work from your transcripts. Only your administrator can lift a managed policy |
-
-[`docs/first-run.md`](docs/first-run.md#troubleshooting) has more.
-
-### An old dashboard won't go away
-
-Only one program can use port 8765. If an old copy holds it, the new one
-can't start, and your browser keeps showing the old one. See what is
-using the port:
-
-```powershell
-Get-NetTCPConnection -LocalPort 8765 -State Listen | ForEach-Object { Get-Process -Id $_.OwningProcess } | Format-Table Id, ProcessName, Path
-```
-
-- **`python`, `pythonw` or `py`:** an old copy. Stop it, then start the
-  new one:
-
-  ```powershell
-  Get-NetTCPConnection -LocalPort 8765 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
-  python -m claude_token_lens install-service
-  ```
-
-- **Anything with `docker` in its name:** the old Docker setup. Run
-  `docker compose down` in the folder you started it from, or stop the
-  container in Docker Desktop. Then run
-  `python -m claude_token_lens install-service`.
-
-Then reload http://127.0.0.1:8765 and check the version at the foot of
-the sidebar.
-
-### An update doesn't take (more than one Python)
-
-`update` and `pip install` change only the Python you run them with. If
-the dashboard was set up from a different Python, it keeps running the
-old copy. Run the update with the Python you want to keep; the one
-`python` finds is the easiest. Use a normal PowerShell window, not
-Administrator; nothing here needs it:
-
-```powershell
-python -m claude_token_lens update
-```
-
-From 0.6.1 it points the logon task and the status line at this Python.
-It fixes hook entries that name a Python that no longer exists, and
-offers to remove the copies for other Pythons. Updating from 0.6.0 or
-older, follow it with `python -m claude_token_lens update --finish`.
-Your settings and history live in `%USERPROFILE%\.claude\token-lens`,
-which every copy shares, so nothing is lost.
-
-To see which Python the dashboard runs, and which one `python` is:
-
-```powershell
-(Get-ScheduledTask ClaudeTokenLens).Actions | Format-List Execute, Arguments
-(Get-Command python).Source
-```
+Run `python -m claudeglass status` first: it says what's done, what's
+off and what needs attention, with the command that fixes each.
+[Troubleshooting](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/first-run.md#troubleshooting) covers the rest,
+including [an old dashboard that won't go away](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/first-run.md#an-old-dashboard-wont-go-away),
+[an update that doesn't take](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/first-run.md#an-update-doesnt-take-more-than-one-python)
+and [missing WSL sessions](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/first-run.md#using-claude-code-in-wsl-too).
 
 ## What it does to Claude Code, and how to undo it
 
@@ -446,7 +369,7 @@ To see which Python the dashboard runs, and which one `python` is:
   Metrics capture is the one opt-in exception, and it's off by default.
   While it's on, Claude spends a few tokens in your own sessions,
   reading a short note and writing a tag. See
-  [`docs/capture.md`](docs/capture.md).
+  [`docs/capture.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/capture.md).
 - **It changes nothing on its own.** `init` offers two optional
   additions, and shows each one and asks first:
   - a SessionStart hook that copies your settings into a local
@@ -456,7 +379,7 @@ To see which Python the dashboard runs, and which one `python` is:
     tokens, and Claude Code runs it only in a terminal session, not in
     the desktop app.
 - **Settings change only when you say so**, through a prompt you give
-  Claude or `python -m claude_token_lens apply`. `apply` backs the file
+  Claude or `python -m claudeglass apply`. `apply` backs the file
   up first and prints the command that undoes it. Flags such as `--yes`
   and `--connect` say yes for you, so leave them off to be asked.
 - **Cheaper isn't free.** A cheaper model, lower effort or an earlier
@@ -464,7 +387,7 @@ To see which Python the dashboard runs, and which one `python` is:
   away. Try one change at a time. After a few sessions, check **Your
   changes and what they did** on **Setup › Settings**.
 
-To see everything it installed, run `python -m claude_token_lens changes`
+To see everything it installed, run `python -m claudeglass changes`
 or open the Data quality page; both say how to undo each item. To remove
 it completely, see [Uninstalling](#uninstalling).
 
@@ -476,7 +399,7 @@ it completely, see [Uninstalling](#uninstalling).
   environment variable names, never their values, apart from a few
   numeric limits.
 - **What it keeps.** Counts, token totals, costs and short labels such
-  as tool and model names, in `~/.claude/token-lens`. Never message
+  as tool and model names, in `~/.claude/claudeglass`. Never message
   text, tool output, file contents, full paths or full commands. A test
   checks every field it reads from a transcript.
 - **What goes online.** Only `update`, which runs pip to download the
@@ -489,14 +412,14 @@ it completely, see [Uninstalling](#uninstalling).
   Anthropic with the rest of the session. Claude's tags come back in its
   replies, and this tool reads them from your transcripts.
 
-[`SECURITY.md`](SECURITY.md) is the full checklist for a security
+[`SECURITY.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/SECURITY.md) is the full checklist for a security
 review, with the tests that back each point.
 
 ## What it can't measure
 
 - **Your bill.** There's no API to read back what a Claude Code session
   cost. Amounts come from the prices in
-  [`pricing.toml`](src/claude_token_lens/pricing.toml), which you can
+  [`pricing.toml`](https://github.com/PaulMorrisDev/claudeglass/blob/main/src/claudeglass/pricing.toml), which you can
   edit. The tool never fetches prices.
 - **Dollars on a plan.** On Pro or Max you don't pay per token, so
   amounts are a share of your usage limits. Until the status line has
@@ -507,11 +430,13 @@ review, with the tests that back each point.
 - **Anything in an undocumented format, for certain.** Claude Code's
   docs call the transcript format internal, and it changes between
   versions. The parser skips what it doesn't know rather than failing.
+  It is tested against transcripts from Claude Code 2.1 (2.1.242 to
+  2.1.280), on Windows and Linux with Python 3.11 and 3.12.
 - **Quality, fully.** A what-if estimate can't see whether a cheaper
   setting makes Claude less thorough. The quality signals on
   **Agents & context › Quality** help you check after a change.
 
-[`docs/reference.md`](docs/reference.md#what-it-reads-and-what-it-cant)
+[`docs/reference.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/reference.md#what-it-reads-and-what-it-cant)
 has the detail.
 
 ## For team leads
@@ -519,37 +444,38 @@ has the detail.
 - **Exports.** `export` writes CSV or JSON for a BI tool or an
   OpenTelemetry collector. By default it's aggregate-only, with project
   names hashed. See
-  [`docs/exports.md`](docs/exports.md).
+  [`docs/exports.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/exports.md).
 - **Team comparison.** `export --aggregate`, `import` and `team-report`
   compare several people's machines without collecting anyone's
   sessions. Nobody is included unless they export and hand over the
-  file. See [`docs/team.md`](docs/team.md).
+  file. See [`docs/team.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/team.md).
 - **Monthly reports.** `monthly-report`, or `serve --monthly-report DIR`
   while the dashboard runs, writes a one-month finance summary as
   Markdown and HTML.
 - **Confidential projects.** `exclude_projects` in `config.toml` keeps a
   project out of everything; its transcripts are never read. See
-  [Settings for teams and enterprise](docs/team.md#settings-for-teams-and-enterprise).
+  [Settings for teams and enterprise](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/team.md#settings-for-teams-and-enterprise).
 
 ## Documentation
 
 | I want to… | Read |
 |---|---|
-| install on a locked-down work machine | [`docs/first-run.md`](docs/first-run.md) |
-| look up a command or a flag | [`docs/cli.md`](docs/cli.md), or `python -m claude_token_lens <command> --help` |
-| understand how the cache and the numbers work | [`docs/concepts.md`](docs/concepts.md) |
-| see what each report section works out | [`docs/sections-reference.md`](docs/sections-reference.md) |
-| know what it reads, and how the hook and status line work | [`docs/reference.md`](docs/reference.md) |
-| run the dashboard as a service, or in Docker | [`docs/deploy.md`](docs/deploy.md) |
-| answer `init`'s questions, or read a baseline | [`docs/onboarding.md`](docs/onboarding.md) |
-| try or apply a profile | [`docs/profiles.md`](docs/profiles.md) |
-| turn on metrics capture | [`docs/capture.md`](docs/capture.md) |
-| get hints during a session in the desktop app | [`docs/coaching.md`](docs/coaching.md) |
-| compare two setups, or check against an Admin API export | [`docs/compare.md`](docs/compare.md) |
-| export numbers, or compare a team | [`docs/exports.md`](docs/exports.md), [`docs/team.md`](docs/team.md) |
-| check what it reads, stores and sends | [`SECURITY.md`](SECURITY.md) |
-| build on the JSON API or the dashboard | [`docs/api.md`](docs/api.md), [`docs/ui.md`](docs/ui.md) |
-| see what changed | [`CHANGELOG.md`](CHANGELOG.md) |
+| install on a locked-down work machine | [`docs/first-run.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/first-run.md) |
+| fix something that isn't working | [`docs/first-run.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/first-run.md#troubleshooting) |
+| look up a command or a flag | [`docs/cli.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/cli.md), or `python -m claudeglass <command> --help` |
+| understand how the cache and the numbers work | [`docs/concepts.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/concepts.md) |
+| see what each report section works out | [`docs/sections-reference.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/sections-reference.md) |
+| know what it reads, and how the hook and status line work | [`docs/reference.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/reference.md) |
+| run the dashboard as a service, or in Docker | [`docs/deploy.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/deploy.md) |
+| answer `init`'s questions, or read a baseline | [`docs/onboarding.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/onboarding.md) |
+| try or apply a profile | [`docs/profiles.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/profiles.md) |
+| turn on metrics capture | [`docs/capture.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/capture.md) |
+| get hints during a session in the desktop app | [`docs/coaching.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/coaching.md) |
+| compare two setups, or check against an Admin API export | [`docs/compare.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/compare.md) |
+| export numbers, or compare a team | [`docs/exports.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/exports.md), [`docs/team.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/team.md) |
+| check what it reads, stores and sends | [`SECURITY.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/SECURITY.md) |
+| build on the JSON API or the dashboard | [`docs/api.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/api.md), [`docs/ui.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/ui.md) |
+| see what changed | [`CHANGELOG.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/CHANGELOG.md) |
 
 ## Glossary
 
@@ -589,8 +515,8 @@ The dashboard's Glossary page uses the same words, term for term.
 - **CLAUDE.md**: Instruction files Claude reads at the start of every session, and of most subagents: yours, each project's, and rule files. Every line is paid for on every reply that re-reads it.
 - **Skill**: A packaged set of instructions Claude can load when a task needs it. Its name and description are listed to Claude at the start of every session, used or not.
 - **Quality signal**: A sign of whether the work went well, not only what it cost: tool calls that failed, agent runs that didn't finish, your corrections. Compared across models and efforts, and before and after each change you make.
-- **Metrics capture**: An opt-in feature, off by default: Claude adds a one-line tag saying what a piece of work was and how it went. It costs tokens while it's on. `init`'s last questions and `claude-token-lens capture` turn it on, change what it asks for, or turn it off.
-- **Capture level**: How much metrics capture asks for: `off`, `free`, `essentials`, `standard` or `deep`, each adding more of it. Set at `init` or with `claude-token-lens capture level`.
+- **Metrics capture**: An opt-in feature, off by default: Claude adds a one-line tag saying what a piece of work was and how it went. It costs tokens while it's on. `init`'s last questions and `claudeglass capture` turn it on, change what it asks for, or turn it off.
+- **Capture level**: How much metrics capture asks for: `off`, `free`, `essentials`, `standard` or `deep`, each adding more of it. Set at `init` or with `claudeglass capture level`.
 - **Tag**: The one-line, closed-vocabulary note metrics capture has Claude add to a reply, such as `[tl: task=bugfix brief=clear]` or `[result: done fit=right]`. Only words from a fixed list are kept; nothing Claude writes in its own words is.
 - **Prompt cycle**: One message of yours and everything Claude did to answer it, subagents at any depth included. The unit metrics capture and the Work habits page measure by.
 - **Work habits**: The page (and report section) that turns prompt cycles into habits worth trying, with a rough saving for each. Each shows where its evidence came from: reported by Claude, inferred from the transcript, or your own feedback.
@@ -604,22 +530,22 @@ The dashboard's Glossary page uses the same words, term for term.
 ## Related tools
 
 - **[ccusage](https://github.com/ryoppippi/ccusage)**: daily and
-  monthly cost tables across several coding tools. claude-token-lens
+  monthly cost tables across several coding tools. ClaudeGlass
   covers only Claude Code, and goes deeper there. It splits the 5-minute
   and 1-hour cache, explains cache rebuilds, prices each subagent type
   and makes recommendations that know your settings.
 - **[token-dashboard](https://github.com/nateherkai/token-dashboard)**:
   the closest relative, with stdlib Python, SQLite and a web page. It
   removes duplicate replies by message id, prices each prompt and gives
-  tips. claude-token-lens adds a cache lifetime (TTL) simulation, the
+  tips. ClaudeGlass adds a cache lifetime (TTL) simulation, the
   cause of each cache rebuild, costs per subagent type and
   before-and-after comparisons of your settings.
 - **[cache-ttl-analyzer](https://github.com/cebert/cache-ttl-analyzer)**:
   replays the main conversation under a 5-minute and a 1-hour cache
-  lifetime. claude-token-lens does the same for each subagent type, and
+  lifetime. ClaudeGlass does the same for each subagent type, and
   adds the wasted-write and near-miss measures.
 - **[Claude-Code-Usage-Monitor](https://github.com/Maciek-roboblog/Claude-Code-Usage-Monitor)**:
-  watches your live usage against the five-hour window. claude-token-lens
+  watches your live usage against the five-hour window. ClaudeGlass
   works alongside it: it explains why a session cost what it did,
   rather than watching the live burn rate.
 
@@ -631,13 +557,13 @@ python -m pytest -q
 ```
 
 Use conventional commits (`feat(parse): ...`, `docs(readme): ...`), one
-focused change per commit. [`tests/helpers.py`](tests/helpers.py) has
+focused change per commit. [`tests/helpers.py`](https://github.com/PaulMorrisDev/claudeglass/blob/main/tests/helpers.py) has
 the fixture builders the tests use, such as `turn_line` and
 `write_jsonl`; start there before writing a fixture by hand. Dashboard
-copy follows [`docs/writing-help.md`](docs/writing-help.md). Report a
-security issue as [`SECURITY.md`](SECURITY.md#reporting-a-vulnerability)
+copy follows [`docs/writing-help.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/docs/writing-help.md). Report a
+security issue as [`SECURITY.md`](https://github.com/PaulMorrisDev/claudeglass/blob/main/SECURITY.md#reporting-a-vulnerability)
 describes.
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/PaulMorrisDev/claudeglass/blob/main/LICENSE).

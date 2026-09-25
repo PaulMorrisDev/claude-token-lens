@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from claude_token_lens import events
-from claude_token_lens.model import EventKind, TranscriptMeta
-from claude_token_lens.parse import parse_transcript
+from claudeglass import events
+from claudeglass.model import EventKind, TranscriptMeta
+from claudeglass.parse import parse_transcript
 
 from helpers import (
     attachment_line,
@@ -126,7 +126,7 @@ def test_hook_output_capture_note_detail_has_no_hook_name_key():
         "hook_additional_context",
         hookName="SessionStart",
         hookEvent="SessionStart",
-        content=["Token Lens metrics capture (tl-cap v1 task): ..."],
+        content=["ClaudeGlass metrics capture (tl-cap v1 task): ..."],
     )
     event = events.classify_line(line)
     assert event.subkind == "capture_note"
@@ -152,7 +152,7 @@ def test_hook_output_non_numeric_duration_is_dropped():
     assert "durationMs" not in events.classify_line(line).detail
 
 
-def test_hook_output_flags_a_call_that_ran_token_lens_own_hook_script():
+def test_hook_output_flags_a_call_that_ran_claudeglass_own_hook_script():
     command = '"C:\\Python311\\python.exe" -I -S "C:\\Users\\me\\scratch\\tl\\hooks\\capture-hook.py" --config-dir "C:\\Users\\me\\scratch\\tl"'
     line = attachment_line("hook_success", hookName="PostToolUse:Bash", durationMs=210, command=command)
     detail = events.classify_line(line).detail
@@ -278,7 +278,7 @@ def test_instructions_split_by_file_type_without_paths():
 
 
 def test_instruction_files_carry_a_salted_path_hash_never_the_path(monkeypatch):
-    from claude_token_lens import parse
+    from claudeglass import parse
 
     monkeypatch.setattr(parse, "_SALT", b"s" * 32)
     line = attachment_line(
@@ -290,7 +290,7 @@ def test_instruction_files_carry_a_salted_path_hash_never_the_path(monkeypatch):
 
 
 def test_nested_memory_records_a_path_scoped_rule(monkeypatch):
-    from claude_token_lens import parse
+    from claudeglass import parse
 
     monkeypatch.setattr(parse, "_SALT", b"s" * 32)
     line = attachment_line(

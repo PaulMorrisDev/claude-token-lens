@@ -1,5 +1,5 @@
 """Tests for the ``autoCompactWindow`` sweep
-(``src/claude_token_lens/compaction_sim.py``).
+(``src/claudeglass/compaction_sim.py``).
 
 Replay arithmetic is exercised on hand-built ``model.Turn`` instances
 (the ``_turn`` helper below, matching ``test_ttl.py``'s convention) with
@@ -18,8 +18,8 @@ from dataclasses import replace
 
 import pytest
 
-from claude_token_lens import model
-from claude_token_lens.compaction_sim import (
+from claudeglass import model
+from claudeglass.compaction_sim import (
     ASSUMPTIONS,
     CANDIDATE_WINDOWS,
     RULES,
@@ -32,9 +32,9 @@ from claude_token_lens.compaction_sim import (
     build_section,
     simulate_compaction_windows,
 )
-from claude_token_lens.model import Event, EventKind, ReportModel, ReportMeta, TranscriptMeta, TranscriptResult
-from claude_token_lens.pricing import load_pricing, price_turn
-from claude_token_lens.units import Units
+from claudeglass.model import Event, EventKind, ReportModel, ReportMeta, TranscriptMeta, TranscriptResult
+from claudeglass.pricing import load_pricing, price_turn
+from claudeglass.units import Units
 
 from helpers import assert_privacy, elasticity_with_slope
 
@@ -436,7 +436,7 @@ def test_only_the_main_session_row_says_to_set_the_window(monkeypatch):
     whose own replay is cheapest at a smaller window says so without
     telling you to set it, so it never contradicts the main session's
     row or the compaction-window rule."""
-    from claude_token_lens.compaction_sim import CompactionSimTypeStats
+    from claudeglass.compaction_sim import CompactionSimTypeStats
 
     stats = simulate_compaction_windows([], SONNET_RATES, {})
     monkeypatch.setattr(stats, "by_key", lambda: {
@@ -507,7 +507,7 @@ def test_by_task_needs_min_task_sessions_before_it_reports_a_task():
     tallied but never surfaced -- same "small group" gate as
     habits.MIN_GROUP (kept local to this module; see MIN_TASK_SESSIONS's
     docstring)."""
-    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+    from claudeglass.compaction_sim import MIN_TASK_SESSIONS
 
     results = [
         _top_level_transcript(f"sess-{i}", _tag_task(_synthetic_20_turn_transcript(), "review"))
@@ -518,7 +518,7 @@ def test_by_task_needs_min_task_sessions_before_it_reports_a_task():
 
 
 def test_by_task_reports_once_min_task_sessions_is_reached():
-    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+    from claudeglass.compaction_sim import MIN_TASK_SESSIONS
 
     results = [
         _top_level_transcript(f"sess-{i}", _tag_task(_synthetic_20_turn_transcript(), "review"))
@@ -542,7 +542,7 @@ def test_by_task_ignores_subagent_transcripts():
     """A subagent run's ``cap.task`` is never tallied: task aggregation is
     restricted to main sessions in ``add_transcript`` (a subagent has no
     self-reported "kind of task" of its own)."""
-    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+    from claudeglass.compaction_sim import MIN_TASK_SESSIONS
 
     results = [
         TranscriptResult(
@@ -558,7 +558,7 @@ def test_by_task_ignores_subagent_transcripts():
 def test_by_task_ignores_a_session_with_fewer_than_two_tagged_turns():
     """A single tagged turn never counts toward any task -- mirrors
     ``classify.reported_task``'s own ``len(tasks) < 2`` gate exactly."""
-    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+    from claudeglass.compaction_sim import MIN_TASK_SESSIONS
 
     results = []
     for i in range(MIN_TASK_SESSIONS):
@@ -573,7 +573,7 @@ def test_by_task_ignores_a_session_with_no_majority_task():
     """Three tagged turns split three ways never reaches "at least half,
     twice or more" for any one task -- mirrors ``classify.reported_task``'s
     own majority gate exactly."""
-    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+    from claudeglass.compaction_sim import MIN_TASK_SESSIONS
 
     results = []
     for i in range(MIN_TASK_SESSIONS):
@@ -587,7 +587,7 @@ def test_by_task_ignores_a_session_with_no_majority_task():
 
 
 def test_build_section_by_task_table_renders_rows_and_recommendation():
-    from claude_token_lens.compaction_sim import MIN_TASK_SESSIONS
+    from claudeglass.compaction_sim import MIN_TASK_SESSIONS
 
     results = [
         _top_level_transcript(f"sess-{i}", _tag_task(_synthetic_20_turn_transcript(), "review"))
@@ -673,7 +673,7 @@ def test_rule_fires_when_saving_clears_both_thresholds():
 
 
 def test_rule_names_the_env_variable_while_it_overrides_the_setting():
-    from claude_token_lens.snapshots import Snapshot
+    from claudeglass.snapshots import Snapshot
 
     snap = Snapshot(
         path=None,

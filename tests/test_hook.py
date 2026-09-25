@@ -1,4 +1,4 @@
-"""Subprocess tests for src/claude_token_lens/hooks/snapshot-config.py (WP7).
+"""Subprocess tests for src/claudeglass/hooks/snapshot-config.py (WP7).
 
 The hook is standalone stdlib and imports nothing from the package, so it
 is exercised the way it actually runs: as a separate ``python`` process
@@ -22,7 +22,7 @@ from helpers import assert_privacy_deep
 _HOOK_PATH = (
     Path(__file__).resolve().parent.parent
     / "src"
-    / "claude_token_lens"
+    / "claudeglass"
     / "hooks"
     / "snapshot-config.py"
 )
@@ -181,7 +181,7 @@ def test_assert_privacy_is_blind_to_a_nested_dict_leak_but_deep_variant_catches_
 
 
 def test_hook_writes_redacted_snapshot(tmp_path, home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     # Personal MCP servers actually live in ~/.claude.json (COV-03/D6 fix
     # -- see the comment in _build_home).
     (home / ".claude" / ".claude.json").write_text(
@@ -250,7 +250,7 @@ def test_hook_writes_redacted_snapshot(tmp_path, home, project):
 
 
 def test_hook_flattens_nested_agent_frontmatter(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert result.returncode == 0
@@ -274,7 +274,7 @@ def test_hook_flattens_nested_agent_frontmatter(home, project):
 
 
 def test_env_names_only_never_values(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert result.returncode == 0
@@ -294,7 +294,7 @@ def test_env_names_only_never_values(home, project):
 
 
 def test_exit_zero_on_malformed_stdin(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     result = _run_hook(
         config_dir=config_dir, cwd=project, stdin_text="{not valid json!!!"
     )
@@ -303,13 +303,13 @@ def test_exit_zero_on_malformed_stdin(home, project):
 
 
 def test_exit_zero_on_empty_stdin(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text="")
     assert result.returncode == 0
 
 
 def test_print_flag_emits_json_without_writing(tmp_path, home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(
         config_dir=config_dir,
@@ -324,7 +324,7 @@ def test_print_flag_emits_json_without_writing(tmp_path, home, project):
 
 
 def test_min_interval_skips_identical_content(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s1", "cwd": str(project)})
 
     first = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
@@ -342,7 +342,7 @@ def test_min_interval_skips_identical_content(home, project):
 
 
 def test_content_change_writes_a_second_snapshot(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s1", "cwd": str(project)})
 
     first = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
@@ -377,7 +377,7 @@ def test_content_change_writes_a_second_snapshot(home, project):
 
 
 def test_managed_settings_captured_and_redacted_with_keys_recorded(tmp_path, home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     managed_path = tmp_path / "managed-settings.json"
     managed_settings = {
         "model": "sonnet",
@@ -406,7 +406,7 @@ def test_managed_settings_captured_and_redacted_with_keys_recorded(tmp_path, hom
 
 
 def test_managed_settings_absent_file_degrades_to_empty(tmp_path, home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     # Point --managed-path at a file that doesn't exist -- must never fail
     # the hook, and must degrade to an empty dict/list.
@@ -427,7 +427,7 @@ def test_managed_settings_default_platform_path_used_when_no_override(home, proj
     # Without --managed-path, the hook falls back to the platform default
     # (default_managed_settings_path()); on a machine with no such file it
     # must still degrade cleanly rather than erroring.
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert result.returncode == 0
@@ -502,7 +502,7 @@ def test_autocompact_enabled_and_model_pricing_kept_safe(home, project):
     reduces to a present flag plus the model ids it overrides -- never the
     overridden numbers themselves (the whole point of pricing.toml staying
     user-editable and out of the tool's own reporting)."""
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     settings_path = home / ".claude" / "settings.json"
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     settings["autoCompactEnabled"] = False
@@ -548,7 +548,7 @@ def test_model_settings_and_max_effort_level_kept_safe(home, project):
     plain safe scalar like effortLevel itself. Both flow into the raw
     per-layer redaction, the named schema-2 scalars, and effective/
     effective_provenance."""
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     settings_path = home / ".claude" / "settings.json"
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     settings["maxEffortLevel"] = "high"
@@ -598,7 +598,7 @@ def test_model_settings_absent_reduces_to_empty_dict():
 
 
 def test_effort_level_env_set_is_recorded_as_a_flag_never_a_value(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
 
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
@@ -647,7 +647,7 @@ Body.
 
 
 def test_desktop_session_cleanup_period_days_kept_verbatim(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     settings_path = home / ".claude" / "settings.json"
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     settings["desktopSessionCleanupPeriodDays"] = 45
@@ -664,7 +664,7 @@ def test_desktop_session_cleanup_period_days_kept_verbatim(home, project):
 
 
 def test_widened_env_names_are_captured_by_name_only(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(
         config_dir=config_dir,
@@ -714,7 +714,7 @@ def test_widened_env_names_are_captured_by_name_only(home, project):
 
 
 def test_env_numeric_caps_record_the_integer_value(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(
         config_dir=config_dir,
@@ -743,7 +743,7 @@ def test_env_numeric_caps_record_the_integer_value(home, project):
 
 
 def test_env_numeric_cap_non_numeric_value_is_skipped(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(
         config_dir=config_dir,
@@ -759,7 +759,7 @@ def test_env_numeric_cap_non_numeric_value_is_skipped(home, project):
 
 
 def test_env_numeric_caps_absent_when_unset(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert result.returncode == 0
@@ -785,7 +785,7 @@ def test_snapshot_filenames_are_collision_proof_within_the_same_second(
     first's) and passes after it.
     """
     hook = _load_hook_module()
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
 
     project_a = tmp_path / "project-a"
     project_b = tmp_path / "project-b"
@@ -840,7 +840,7 @@ def test_project_slug_is_redacted_hash_not_the_raw_cwd(home, project):
     neither the path nor its structure.
     """
     hook = _load_hook_module()
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert result.returncode == 0
@@ -860,7 +860,7 @@ def test_project_slug_is_redacted_hash_not_the_raw_cwd(home, project):
 
 def test_project_slug_honours_project_dir_name_env_override(home, project):
     hook = _load_hook_module()
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(
         config_dir=config_dir,
@@ -879,7 +879,7 @@ def test_project_slug_honours_project_dir_name_env_override(home, project):
 
 
 def test_settings_layers_presence_and_precedence(tmp_path, home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     managed_path = tmp_path / "managed-settings.json"
     managed_path.write_text(json.dumps({"effortLevel": "low"}), encoding="utf-8")
 
@@ -922,7 +922,7 @@ def test_settings_layers_presence_and_precedence(tmp_path, home, project):
 
 def test_settings_layer_absent_when_file_missing(home, project):
     # project has no settings.local.json in the base fixture.
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert result.returncode == 0
@@ -932,7 +932,7 @@ def test_settings_layer_absent_when_file_missing(home, project):
 
 
 def test_settings_layer_permissions_and_hooks_are_counts_only(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     settings_path = home / ".claude" / "settings.json"
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
     settings["permissions"] = {
@@ -974,7 +974,7 @@ def test_effective_env_permissions_hooks_plugins_mcpjson_deep_merge(tmp_path, ho
     enabledPlugins, additive union for hooks, unique-string union for
     permissions, and union-with-rejection-wins for the mcpjson lists.
     """
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
 
     managed_path = tmp_path / "managed-settings.json"
     managed_path.write_text(
@@ -1073,7 +1073,7 @@ def test_effective_env_permissions_hooks_plugins_mcpjson_deep_merge(tmp_path, ho
 
 
 def test_effective_agents_reduced_shape(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert result.returncode == 0
@@ -1093,7 +1093,7 @@ def test_effective_agents_reduced_shape(home, project):
 
 
 def test_project_agent_shadows_user_agent_of_the_same_name(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     project_agents_dir = project / ".claude" / "agents"
     project_agents_dir.mkdir(parents=True)
     (project_agents_dir / "claude-implementer.md").write_text(
@@ -1148,7 +1148,7 @@ def test_claude_json_matches_project_by_normcase_realpath(home, project):
     POSIX), where ``FOO`` and ``foo`` are genuinely different paths, so
     only fold the key's case when normcase itself would fold it.
     """
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     weird_key = str(project).replace("\\", "/") + "/"
     if os.path.normcase("A") == os.path.normcase("a"):
         # normcase actually folds case here (Windows) -- exercise that too.
@@ -1212,7 +1212,7 @@ def test_claude_json_matches_project_by_normcase_realpath(home, project):
 
 
 def test_claude_json_no_matching_project_entry(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     (home / ".claude" / ".claude.json").write_text(
         json.dumps({"projects": {"/some/other/project": {}}}), encoding="utf-8"
     )
@@ -1224,7 +1224,7 @@ def test_claude_json_no_matching_project_entry(home, project):
 
 
 def test_claude_json_missing_file_degrades_cleanly(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert result.returncode == 0
@@ -1233,7 +1233,7 @@ def test_claude_json_missing_file_degrades_cleanly(home, project):
 
 
 def test_claude_json_corrupt_file_never_raises(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     (home / ".claude" / ".claude.json").write_text("{not valid json!!!", encoding="utf-8")
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
@@ -1246,7 +1246,7 @@ def test_claude_json_corrupt_file_never_raises(home, project):
 
 
 def test_content_layers_claude_md_rules_commands_and_skills(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
 
     (home / ".claude" / "CLAUDE.md").write_text("user memory " * 5, encoding="utf-8")
     (project / "CLAUDE.md").write_text("project root memory " * 3, encoding="utf-8")
@@ -1324,7 +1324,7 @@ def test_skill_frontmatter_summary_kept_as_closed_scalars(tmp_path, home, projec
     to a count -- and the skill's body/description text never appears
     anywhere in the snapshot.
     """
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     skill_dir = project / ".claude" / "skills" / "tuned-skill"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
@@ -1366,7 +1366,7 @@ def test_claude_md_import_references_counted_not_stored(home, project):
     and an @ inside a fenced code block or inline code span is not an
     import reference at all (docs/en/memory.md), so it must not count.
     """
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     (project / "CLAUDE.md").write_text(
         "Reference a README: @README.md and a guide: @docs/guide.md\n\n"
         "```\nNot an import: @fake/inside/fence.md\n```\n\n"
@@ -1392,7 +1392,7 @@ def test_managed_mcp_looked_up_in_managed_settings_directory(tmp_path, home, pro
     directory (docs/en/managed-settings.md), reached here via
     --managed-path's own directory.
     """
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     managed_dir = tmp_path / "system-managed"
     managed_dir.mkdir()
     managed_path = managed_dir / "managed-settings.json"
@@ -1428,7 +1428,7 @@ def test_agents_scanned_recursively_into_subfolders(home, project):
     (docs/en/sub-agents.md) -- a project agent nested under a subfolder
     must still be discovered, not just files directly under agents/.
     """
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     nested_agents_dir = project / ".claude" / "agents" / "review"
     nested_agents_dir.mkdir(parents=True)
     (nested_agents_dir / "security.md").write_text(
@@ -1456,7 +1456,7 @@ Body.
 def test_plugin_content_skills_and_agents_counted(home, project):
     """COV-10: installed plugins' own skills (names) and agents (count)
     are scanned using each plugin's default layout."""
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     plugin_dir = home / ".claude" / "plugins" / "my-plugin"
     (plugin_dir / "skills" / "reviewer").mkdir(parents=True)
     (plugin_dir / "skills" / "reviewer" / "SKILL.md").write_text(
@@ -1476,7 +1476,7 @@ def test_plugin_content_skills_and_agents_counted(home, project):
 
 
 def test_content_layers_mcp_json_and_claude_config_dir_flag(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     (project / ".mcp.json").write_text(
         json.dumps({"mcpServers": {"stripe": {}, "sentry": {}}}), encoding="utf-8"
     )
@@ -1496,7 +1496,7 @@ def test_content_layers_mcp_json_and_claude_config_dir_flag(home, project):
 
 
 def test_content_layers_absent_content_degrades_to_zero_counts(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s", "cwd": str(project)})
     result = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
     assert result.returncode == 0
@@ -1510,7 +1510,7 @@ def test_content_layers_absent_content_degrades_to_zero_counts(home, project):
 
 
 def test_min_interval_zero_always_writes_even_with_identical_content(home, project):
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     stdin = json.dumps({"session_id": "s1", "cwd": str(project)})
 
     first = _run_hook(config_dir=config_dir, cwd=project, stdin_text=stdin)
@@ -1532,7 +1532,7 @@ def test_min_interval_zero_always_writes_even_with_identical_content(home, proje
 def test_snapshot_project_key_matches_the_hooks_stored_slug():
     import importlib.util
 
-    from claude_token_lens import snapshots as snap_mod
+    from claudeglass import snapshots as snap_mod
 
     spec = importlib.util.spec_from_file_location("snapshot_config_hook", _HOOK_PATH)
     hook = importlib.util.module_from_spec(spec)
@@ -1555,7 +1555,7 @@ def _load_hook_module():
 
 def test_hook_command_runs_python_isolated_and_without_site():
     hook = _load_hook_module()
-    script = Path("C:/token-lens/hooks/snapshot-config.py")
+    script = Path("C:/claudeglass/hooks/snapshot-config.py")
     command = hook.hook_command(python="C:/Python311/python.exe", script=script)
     assert command == f'"C:/Python311/python.exe" -I -S "{script}"'
 
@@ -1581,7 +1581,7 @@ def test_hook_fragment_text_explains_when_the_command_cant_be_built():
 
 def test_hook_with_config_dir_elsewhere_reads_claude_settings_not_its_parent(tmp_path, home, project):
     # init adds --config-dir to the hook command when the data folder is
-    # not <claude folder>/token-lens; settings.json and agents/ still come
+    # not <claude folder>/claudeglass; settings.json and agents/ still come
     # from Claude Code's own folder ($CLAUDE_CONFIG_DIR), not the parent.
     data = tmp_path / "elsewhere" / "tl-data"
     data.mkdir(parents=True)
@@ -1599,7 +1599,7 @@ def test_hook_health_managed_dir_matches_the_snapshot_hooks(monkeypatch, platfor
     # hook_health.managed_settings_dir mirrors the standalone script's
     # default_managed_settings_dir (the package can't import the script);
     # conftest stubs the package copy, and keeps the real one aside.
-    from claude_token_lens import hook_health
+    from claudeglass import hook_health
 
     hook = _load_hook_module()
     monkeypatch.setattr(sys, "platform", platform)

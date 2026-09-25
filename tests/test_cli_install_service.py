@@ -1,6 +1,6 @@
 """CLI wiring tests for the v3 ``install-service``/``uninstall-service``
 subcommands and ``init``'s "start the dashboard at logon?" question
-(``src/claude_token_lens/cli.py``'s ``_cmd_install_service``/
+(``src/claudeglass/cli.py``'s ``_cmd_install_service``/
 ``_cmd_uninstall_service``, and ``setup_flow``).
 
 Every test here either uses ``--dry-run`` (the real code path, which by
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import io
 
-from claude_token_lens import cli, installer as installer_mod
+from claudeglass import cli, installer as installer_mod
 
 
 # --------------------------------------------------------------------
@@ -76,7 +76,8 @@ def test_uninstall_service_dry_run_removes_nothing(tmp_path, capsys):
     )
     assert exit_code == 0
     out = capsys.readouterr().out
-    assert "uninstall-service" in out
+    assert "uninstall-service: Stop the dashboard and remove its logon service" in out
+    assert "Register" not in out and "will write" not in out
     assert "Dry run" in out
 
 
@@ -199,7 +200,7 @@ def test_init_non_interactive_defaults_to_not_installing_the_service(tmp_path, c
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "(derived) run_service" in out
-    assert "Dashboard at logon: not now. Run 'claude-token-lens install-service' any time to add it." in out
+    assert "Dashboard at logon: not now. Run 'claudeglass install-service' any time to add it." in out
     assert calls == []
 
 

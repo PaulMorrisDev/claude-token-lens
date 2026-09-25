@@ -8,11 +8,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from claude_token_lens import compaction_sim, counterfactual, impact, ttl
-from claude_token_lens.change_points import ChangePoint
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.pricing import load_pricing, price_turn
-from claude_token_lens.units import Units
+from claudeglass import compaction_sim, counterfactual, impact, ttl
+from claudeglass.change_points import ChangePoint
+from claudeglass.corpus import load_corpus
+from claudeglass.pricing import load_pricing, price_turn
+from claudeglass.units import Units
 
 from helpers import turn_line, write_jsonl
 

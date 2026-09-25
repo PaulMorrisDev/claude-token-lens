@@ -7,12 +7,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from claude_token_lens import impact
-from claude_token_lens.change_points import ChangePoint
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.impact import Measure, SessionFacts, _Transcript
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.units import Units
+from claudeglass import impact
+from claudeglass.change_points import ChangePoint
+from claudeglass.corpus import load_corpus
+from claudeglass.impact import Measure, SessionFacts, _Transcript
+from claudeglass.pricing import load_pricing
+from claudeglass.units import Units
 
 from helpers import turn_line, write_jsonl
 
@@ -131,7 +131,7 @@ def test_without_is_asked_about_each_change_with_its_own_sides():
 
 
 def test_quality_compares_the_changed_agents_runs_before_and_after():
-    from claude_token_lens import quality
+    from claudeglass import quality
 
     def runs(errors: int) -> list:
         return [quality.Run(group="Explore", kind="subagent", replies=10, tool_calls=50, tool_errors=errors,
@@ -152,7 +152,7 @@ def test_quality_compares_the_changed_agents_runs_before_and_after():
 
 
 def test_a_group_with_too_few_runs_is_not_judged():
-    from claude_token_lens import quality
+    from claudeglass import quality
 
     sessions = [_session(-d / 10, 2.0) for d in range(1, 7)] + [_session(0.1, 1.0)]
     for session in sessions:
@@ -163,7 +163,7 @@ def test_a_group_with_too_few_runs_is_not_judged():
 
 
 def test_scheduled_main_sessions_are_left_out_of_the_quality_check():
-    from claude_token_lens import quality
+    from claudeglass import quality
 
     sessions = [_session(-d / 10, 2.0) for d in range(1, 7)] + [_session(d / 10, 1.0) for d in range(1, 7)]
     for i, session in enumerate(sessions):
@@ -262,7 +262,7 @@ def test_harder_work_after_a_change_doesnt_read_as_the_change_costing_more(tmp_p
 def test_session_facts_reads_how_hard_and_how_big_from_capture_tags(tmp_path):
     from helpers import attachment_line, user_str_line
 
-    note_text = "Token Lens metrics capture (tl-cap v1 task,level,size): ..."
+    note_text = "ClaudeGlass metrics capture (tl-cap v1 task,level,size): ..."
     note = attachment_line(
         "hook_additional_context",
         rendered=f"<system-reminder>\nSessionStart hook additional context: {note_text}\n</system-reminder>",

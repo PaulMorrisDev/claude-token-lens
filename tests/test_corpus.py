@@ -1,4 +1,4 @@
-"""Tests for WP11's corpus assembly (``src/claude_token_lens/corpus.py``):
+"""Tests for WP11's corpus assembly (``src/claudeglass/corpus.py``):
 a tmp project tree with two sessions and one subagent, ``jobs=1`` vs
 ``jobs=2`` producing equal ``to_jsonable`` output, cold-then-warm cache
 behaviour, ``exclude_projects``, and window filters.
@@ -11,9 +11,9 @@ import os
 import time
 from pathlib import Path
 
-from claude_token_lens.cache import DigestCache
-from claude_token_lens.corpus import Corpus, SessionBundle, load_corpus
-from claude_token_lens.render.json_out import to_jsonable
+from claudeglass.cache import DigestCache
+from claudeglass.corpus import Corpus, SessionBundle, load_corpus
+from claudeglass.render.json_out import to_jsonable
 
 from helpers import turn_line, write_jsonl
 

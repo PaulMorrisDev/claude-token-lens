@@ -1,4 +1,4 @@
-"""Tests for WP4: TTL break-even simulation (``src/claude_token_lens/ttl.py``).
+"""Tests for WP4: TTL break-even simulation (``src/claudeglass/ttl.py``).
 
 Most branches are exercised on hand-built ``model.Turn`` instances (the
 ``_turn`` helper below, matching ``test_pricing.py``'s convention) with
@@ -17,11 +17,11 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import model, recache
-from claude_token_lens.model import TranscriptMeta, TranscriptResult
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing, price_turn
-from claude_token_lens.ttl import (
+from claudeglass import model, recache
+from claudeglass.model import TranscriptMeta, TranscriptResult
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing, price_turn
+from claudeglass.ttl import (
     ASSUMPTIONS,
     POLICY_1H,
     POLICY_5M,
@@ -823,7 +823,7 @@ def test_real_fixture_no_row_recommends_its_own_current_policy():
     already dominates that same row's own observed traffic (previously
     possible since ``recommendation()`` didn't compare against the
     dominant *observed* split at all)."""
-    from claude_token_lens import discovery
+    from claudeglass import discovery
 
     top_paths = list(_REAL_SESSION_A.glob("*.jsonl"))
     assert len(top_paths) == 1, f"expected exactly one top-level jsonl, found {top_paths}"
@@ -1770,7 +1770,7 @@ def test_cache_tokens_at_input_rate_folds_in_fast_long_context_and_geo():
     (e.g. dropping the geo uplift) would show up here even though it
     wouldn't in the plain-``SONNET_RATES`` tests above.
     """
-    from claude_token_lens.pricing import FastRule, LongContextRule, ModelRates, ResolvedRates
+    from claudeglass.pricing import FastRule, LongContextRule, ModelRates, ResolvedRates
 
     model_rates = ModelRates(
         canonical_id="test-model",

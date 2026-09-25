@@ -1,0 +1,54 @@
+# claudeglass serve -- systemd USER unit (deliverable 2.d), the
+# POSIX counterpart to scripts/windows/Register-ClaudeGlassTask.ps1: a
+# native, non-Docker hosting path that needs no root/admin rights.
+#
+# Install (as the same user who owns ~/.claude -- never as root, and
+# never with `systemctl` without `--user`):
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/systemd/claudeglass.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now claudeglass.service
+#
+# For the service to keep running after the user logs out (e.g. on a
+# headless server), also run once: `loginctl enable-linger $USER`
+# (see docs/deploy.md).
+#
+# Logs: `journalctl --user -u claudeglass.service -f`
+
+[Unit]
+Description=claudeglass: local token/prompt-cache analytics service
+Documentation=https://github.com/PaulMorrisDev/claudeglass
+After=network.target
+
+[Service]
+Type=simple
+# --exit-on-code-change: after an update lands without a restart, serve
+# exits with status 3 and Restart=on-failure starts it on the new code.
+ExecStart=%h/.local/bin/claudeglass serve --projects-root %h/.claude/projects --config-dir %h/.claude/claudeglass --exit-on-code-change
+Restart=on-failure
+RestartSec=5
+
+# Hardening: the service only ever reads %h/.claude/projects and
+# reads/writes %h/.claude/claudeglass -- nothing else under the user's
+# home directory needs to be visible to it. ProtectHome=read-only makes
+# the whole home directory read-only by default; ReadWritePaths then
+# carves out the one directory the store/watcher actually write to.
+ProtectHome=read-only
+ReadWritePaths=%h/.claude/claudeglass
+ProtectSystem=strict
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Left enabled (the default) rather than PrivateNetwork=yes: unlike the
+# Docker image (which drops all outbound connectivity as a defence in
+# depth, see docker-compose.yml), this unit runs directly on the host
+# and needs its bound port reachable the ordinary way -- the service's
+# own code, not the network namespace, is what enforces "never opens an
+# outbound connection" here (docs/api.md's "Local only" section, and
+# tests/test_service_egress.py). Uncomment to sandbox further if this
+# unit is ever bound to a non-loopback address:
+# PrivateNetwork=no
+
+[Install]
+WantedBy=default.target

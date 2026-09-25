@@ -18,15 +18,15 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import elasticity, helptext
-from claude_token_lens.config import Config
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.render.html import render_html
-from claude_token_lens.render.json_out import render_json
-from claude_token_lens.render.markdown import render_markdown
-from claude_token_lens.report import build_report
-from claude_token_lens.snapshots import Snapshot
+from claudeglass import elasticity, helptext
+from claudeglass.config import Config
+from claudeglass.corpus import load_corpus
+from claudeglass.pricing import load_pricing
+from claudeglass.render.html import render_html
+from claudeglass.render.json_out import render_json
+from claudeglass.render.markdown import render_markdown
+from claudeglass.report import build_report
+from claudeglass.snapshots import Snapshot
 
 FIXTURES = Path(__file__).parent / "fixtures"
 REAL = FIXTURES / "real" / "session-a"

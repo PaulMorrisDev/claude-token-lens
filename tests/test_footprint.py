@@ -1,5 +1,5 @@
 """Tests for ``footprint.py`` and ``init``'s connect question, ``changes``
-and ``uninstall`` commands: what claude-token-lens installs, and taking
+and ``uninstall`` commands: what claudeglass installs, and taking
 every part of it back out, always showing the change and backing up
 settings.json first."""
 
@@ -12,12 +12,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from claude_token_lens import cli, footprint, hook_health, installer, setup_flow
-from claude_token_lens.profiles import apply as apply_mod
+from claudeglass import cli, footprint, hook_health, installer, setup_flow
+from claudeglass.profiles import apply as apply_mod
 
 NOW = datetime(2026, 9, 23, 12, 0, tzinfo=timezone.utc)
-HOOK_CMD = f'"{sys.executable}" "C:/x/token-lens/hooks/snapshot-config.py"'
-STATUS_CMD = f'"{sys.executable}" -m claude_token_lens.statusline'
+HOOK_CMD = f'"{sys.executable}" "C:/x/claudeglass/hooks/snapshot-config.py"'
+STATUS_CMD = f'"{sys.executable}" -m claudeglass.statusline'
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +30,7 @@ def _claude_folder(tmp_path, monkeypatch):
 
 def _claude(tmp_path, settings=None):
     claude = tmp_path / "claude"
-    config_dir = claude / "token-lens"
+    config_dir = claude / "claudeglass"
     config_dir.mkdir(parents=True)
     if settings is not None:
         (claude / "settings.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
@@ -122,7 +122,7 @@ def test_inventory_lists_every_part_with_an_undo(tmp_path):
     assert items["statusline"].status == "installed"
     assert items["service"].status == "unknown"
     assert items["apply:20260920T000000Z"].status == "in place"
-    assert items["apply:20260920T000000Z"].undo == "claude-token-lens apply --revert 20260920T000000Z"
+    assert items["apply:20260920T000000Z"].undo == "claudeglass apply --revert 20260920T000000Z"
     assert items["apply:20260920T000000Z"].title.startswith("Applied one-off change")
     assert items["apply:20260921T000000Z"].status == "undone"
     assert items["data"].status == "installed"
@@ -149,7 +149,7 @@ def test_changes_command_prints_undo_commands(tmp_path, monkeypatch, capsys):
     assert rc == 0
     assert "Statusline: installed" in out
     assert "Tokens: None." in out
-    assert "claude-token-lens uninstall" in out
+    assert "claudeglass uninstall" in out
 
 
 def test_uninstall_dry_run_changes_nothing(tmp_path, monkeypatch, capsys):
@@ -197,7 +197,7 @@ def test_uninstall_yes_removes_entries_and_data(tmp_path, monkeypatch, capsys):
     assert rc == 0, out
     assert json.loads((config_dir.parent / "settings.json").read_text(encoding="utf-8")) == {"model": "opus"}
     assert not config_dir.exists()
-    assert "pip uninstall claude-token-lens" in out
+    assert "pip uninstall claudeglass" in out
 
 
 def test_uninstall_asks_and_a_no_changes_nothing(tmp_path, monkeypatch, capsys):

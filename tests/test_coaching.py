@@ -18,16 +18,16 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from claude_token_lens import capture, capture_catalogue as cat, cli, coaching, hook_health, ignores, installer, parse
-from claude_token_lens.config import load_config
-from claude_token_lens.model import Recommendation, TranscriptMeta
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.service.coaching_job import CoachingJob
+from claudeglass import capture, capture_catalogue as cat, cli, coaching, hook_health, ignores, installer, parse
+from claudeglass.config import load_config
+from claudeglass.model import Recommendation, TranscriptMeta
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing
+from claudeglass.service.coaching_job import CoachingJob
 
 from helpers import attachment_line, turn_line, user_str_line, write_jsonl
 
-SCRIPT = Path(str(resources.files("claude_token_lens") / "hooks" / cat.HOOK_SCRIPT))
+SCRIPT = Path(str(resources.files("claudeglass") / "hooks" / cat.HOOK_SCRIPT))
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
 
@@ -93,7 +93,7 @@ def _transcript(tmp_path: Path, records: list[dict], name: str = "session.jsonl"
 
 
 def _config_dir(tmp_path: Path) -> Path:
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir(exist_ok=True)
     return config_dir
 
@@ -193,7 +193,7 @@ def test_an_approved_plan_after_a_lot_of_planning_gets_the_fresh_session_hint(tm
     note = _coach(tmp_path, plan)
     # 90k less the 15k start (16k less the 1k message) less the 1k plan.
     assert _kind(note) == "plan_fresh" and "about 74k tokens" in note
-    (tmp_path / "token-lens" / cat.COACHING_FILE).write_text(json.dumps({"plan_fresh": False}), encoding="utf-8")
+    (tmp_path / "claudeglass" / cat.COACHING_FILE).write_text(json.dumps({"plan_fresh": False}), encoding="utf-8")
     assert _coach(tmp_path, {**plan, "session_id": "s2"}) == ""
 
 
@@ -487,7 +487,7 @@ def test_a_failing_build_is_logged_and_never_raises(tmp_path):
 def _claude_folder(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     monkeypatch.setattr(installer, "is_registered", lambda *a, **k: False)
-    config_dir = tmp_path / "claude" / "token-lens"
+    config_dir = tmp_path / "claude" / "claudeglass"
     config_dir.mkdir(parents=True)
     return config_dir
 
@@ -525,8 +525,8 @@ def test_off_leaves_coaching_notes_on_and_remove_turns_them_off(_claude_folder):
 
 
 def test_the_footprint_says_coaching_notes_cost_tokens_with_capture_off():
-    from claude_token_lens import footprint
-    from claude_token_lens.config import CaptureConfig
+    from claudeglass import footprint
+    from claudeglass.config import CaptureConfig
 
     coach = footprint.expectations(CaptureConfig(coaching=["coaching_notes"]))
     assert coach[0] == ("It uses a few of your Claude tokens while coaching notes are on", footprint.COACHING_COST)
@@ -545,8 +545,8 @@ def test_the_hook_list_says_when_the_coaching_entries_run():
 
 
 def test_setup_capture_shows_what_coaching_notes_cost(tmp_path):
-    from claude_token_lens import capture_view
-    from claude_token_lens.config import CaptureConfig
+    from claudeglass import capture_view
+    from claudeglass.config import CaptureConfig
 
     use = capture.CoachingUsage(since="", sessions=2, notes=3, note_tokens=240, cost=0.02, by_kind={"quiet_output": 3})
     data = capture_view.view(CaptureConfig(coaching=["coaching_notes"]), coaching_use=use)

@@ -21,9 +21,9 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import discovery
-from claude_token_lens.model import EventKind, TranscriptMeta
-from claude_token_lens.parse import parse_transcript
+from claudeglass import discovery
+from claudeglass.model import EventKind, TranscriptMeta
+from claudeglass.parse import parse_transcript
 
 from helpers import assert_privacy
 

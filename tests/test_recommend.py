@@ -18,10 +18,10 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import recommend, report
-from claude_token_lens.config import Config
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.model import (
+from claudeglass import recommend, report
+from claudeglass.config import Config
+from claudeglass.corpus import load_corpus
+from claudeglass.model import (
     Column,
     Diagnostics,
     PricingMeta,
@@ -30,13 +30,13 @@ from claude_token_lens.model import (
     Section,
     Table,
 )
-from claude_token_lens.recommend import (
+from claudeglass.recommend import (
     RecommendThresholds,
     effective_min_sample,
     recommend as recommend_fn,
     render_patch_set,
 )
-from claude_token_lens.snapshots import Snapshot
+from claudeglass.snapshots import Snapshot
 
 from helpers import assert_privacy, turn_line, write_jsonl
 
@@ -140,8 +140,8 @@ def test_repeated_keys_get_a_suffix_from_their_first_evidence_row():
     """``spawn-shared-claude-md`` fires once per CLAUDE.md source with no
     agent type, so the ids repeat; every card of the group gets its own
     key, and a lone card keeps its id."""
-    from claude_token_lens.model import Recommendation
-    from claude_token_lens.recommend import _unique_keys
+    from claudeglass.model import Recommendation
+    from claudeglass.recommend import _unique_keys
 
     def rec(row, key="spawn-shared-claude-md"):
         r = Recommendation(
@@ -2381,7 +2381,7 @@ def test_render_patch_set_top_level_agent_type_stays_a_settings_key_not_a_file()
 
 
 def _make_recommendation(**overrides):
-    from claude_token_lens.model import Recommendation
+    from claudeglass.model import Recommendation
 
     fields = dict(
         id="x",
@@ -2446,7 +2446,7 @@ def test_every_recommendation_evidence_resolves_against_the_report(tmp_path: Pat
     write_jsonl(project_dir / "session-recommend.jsonl", lines)
 
     corpus = load_corpus([project_dir])
-    from claude_token_lens.pricing import load_pricing
+    from claudeglass.pricing import load_pricing
 
     pricing = load_pricing()
     model = report.build_report(corpus, pricing, Config(), projects=("proj-recommend",), window="test", phases=True)
@@ -2470,7 +2470,7 @@ def test_real_fixture_recommendation_evidence_resolves(tmp_path: Path):
     for the same skipif convention).
     """
     corpus = load_corpus([REAL_SESSION_A])
-    from claude_token_lens.pricing import load_pricing
+    from claudeglass.pricing import load_pricing
 
     pricing = load_pricing()
     model = report.build_report(corpus, pricing, Config(), projects=("session-a",), window="real fixture")
@@ -2502,10 +2502,10 @@ def test_v4_module_rules_fire_via_recommend_and_evidence_resolves(tmp_path: Path
     evidence-resolves walk as the two tests above runs across every
     recommendation produced.
     """
-    from claude_token_lens import carry, compaction_sim, model_swap, waste
-    from claude_token_lens.model import Turn, TranscriptMeta, TranscriptResult
-    from claude_token_lens.parse import parse_transcript
-    from claude_token_lens.pricing import load_pricing
+    from claudeglass import carry, compaction_sim, model_swap, waste
+    from claudeglass.model import Turn, TranscriptMeta, TranscriptResult
+    from claudeglass.parse import parse_transcript
+    from claudeglass.pricing import load_pricing
 
     from helpers import tool_result_block, tool_use_block, user_block_line
 
@@ -2646,7 +2646,7 @@ def test_v4_module_rules_fire_via_recommend_and_evidence_resolves(tmp_path: Path
 
 
 def test_render_patch_set_prefers_setting_changes_with_now_and_after():
-    from claude_token_lens.model import SettingChange
+    from claudeglass.model import SettingChange
 
     rec = dataclasses.replace(
         _make_recommendation(),
@@ -2669,9 +2669,9 @@ def test_render_patch_set_prefers_setting_changes_with_now_and_after():
 def test_pricing_coverage_names_unknown_models_from_a_built_report(tmp_path):
     # End to end: build_report attaches usage.pricing_unknown_models, and
     # the recommendation names the unpriced model from it.
-    from claude_token_lens.corpus import load_corpus
-    from claude_token_lens.pricing import load_pricing
-    from claude_token_lens.report import build_report
+    from claudeglass.corpus import load_corpus
+    from claudeglass.pricing import load_pricing
+    from claudeglass.report import build_report
 
     from helpers import turn_line, write_jsonl
 
@@ -2697,14 +2697,14 @@ def test_pricing_coverage_names_unknown_models_from_a_built_report(tmp_path):
 
 
 def _habits_section(cycles):
-    from claude_token_lens import habits
+    from claudeglass import habits
 
     return habits.section_from(habits.Habits(cycles=cycles))
 
 
 def _easy_cycles(n: int, effort: str = "high", thinking: float = 0.6, output: float = 1.0):
-    from claude_token_lens.habits import CycleFact
-    from claude_token_lens.model import CaptureTag
+    from claudeglass.habits import CycleFact
+    from claudeglass.model import CaptureTag
 
     return [
         CycleFact(session_id="s", ts=None, week="", cost=1.0, turns=1, tag=CaptureTag(level="easy"), effort=effort,

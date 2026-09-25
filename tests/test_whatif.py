@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace as NS
 
-from claude_token_lens import whatif
-from claude_token_lens.units import Units
+from claudeglass import whatif
+from claudeglass.units import Units
 
 UNITS = Units(billing_mode="api", currency="USD")
 PERIOD = "over the last 14 days"

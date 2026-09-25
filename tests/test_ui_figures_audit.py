@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 
-from claude_token_lens import helptext
+from claudeglass import helptext
 from test_service_static import (
     _app_js,
     _chart_specs,

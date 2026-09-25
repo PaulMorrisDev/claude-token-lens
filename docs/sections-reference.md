@@ -13,7 +13,7 @@ subscription billing with usage-log readings), `sessions`, `recache`, `ttl`,
 `compactions`, `agent_startup`, `agents`, `run_split`, `hooks`, `quality`, `workstyle`, `habits`,
 `workflows`, `phases` (CLI only with `--phases`; the dashboard always has it), `config` (only when config
 snapshots exist), `context_budget`, `capture`, `scorecard`, and
-`baseline_comparison` (only with `--baseline`). `claude-token-lens
+`baseline_comparison` (only with `--baseline`). `claudeglass
 report` prints it. This file groups sections by topic, so its order
 differs.
 
@@ -32,11 +32,11 @@ file does.
 
 ## Sections at a glance
 
-`python -m claude_token_lens report` prints every section below, in the
+`python -m claudeglass report` prints every section below, in the
 order of this table: Markdown by default, or `--json`, `--html` and
 `--csv-dir` for the other formats (see [`cli.md`](cli.md#report)). Each
 section is also, on its own, a `build_section(...)` function returning a
-`Section` of `Table`s ([`model.py`](../src/claude_token_lens/model.py)),
+`Section` of `Table`s ([`model.py`](../src/claudeglass/model.py)),
 fully tested and runnable from a short Python script against your own
 transcripts. That is how the [worked example](#worked-example) was made,
 and it's still useful when you want one section by itself.
@@ -210,7 +210,7 @@ not real invoice lines.
 
 Per-session `mode`/`purpose` overrides live in
 `<config-dir>/sessions.toml` (`<config-dir>` defaults to
-`~/.claude/token-lens`) and always win over the rule engine
+`~/.claude/claudeglass`) and always win over the rule engine
 (`config.load_session_overrides`). Tags set in the dashboard's session
 drawer (Spend › Sessions) win over `sessions.toml`, in the dashboard and
 in the CLI's `report`, `compare` and `config-diff`, which read them from
@@ -941,9 +941,9 @@ capture is off or no feedback has been given.
   `capture_view`'s "Enough collected" note also uses) *and*
   `habits.d_level_stability` needs to say the self-report calibration
   signal that evidence backs has settled, not just have enough of it. A
-  note spells it out with a runnable `claude-token-lens capture level
+  note spells it out with a runnable `claudeglass capture level
   <lower> --dry-run` command and the command that undoes it -- this
-  never changes `config.toml` itself ("no apply button": Token Lens
+  never changes `config.toml` itself ("no apply button": ClaudeGlass
   never lowers the level on its own). The dashboard's capture banner
   shows a cheaper, unstable-signal-agnostic version of the same command
   (`capture_view._step_down_note`) once the dropped metrics alone have
@@ -1026,7 +1026,7 @@ When snapshots exist it also adds:
   whose observed value (for example the model) differs from the
   snapshot's.
 
-The standalone `claude-token-lens config-diff` subcommand, described
+The standalone `claudeglass config-diff` subcommand, described
 next, is a separate, narrower consumer of the same underlying table
 function for when you want exactly one key (or every changed key)
 outside a full report run.
@@ -1056,7 +1056,7 @@ whose timestamp is at or before the session's start; `diff_keys` and
 
 ## `compare` (`compare.py`) — CLI-only
 
-`claude-token-lens compare --a <spec> --b <spec>` (v0.3 "Feature
+`claudeglass compare --a <spec> --b <spec>` (v0.3 "Feature
 expansion" item 6). Not part of `report.build_report`'s fixed section
 list — a standalone comparison of two independently-selected arms of
 sessions, each named by a `window:<since>..<until>`, `key:<key>=<value>`
@@ -1106,7 +1106,7 @@ currently matches zero sessions in any real corpus.
 
 ## `reconcile` (`reconcile.py`) — CLI-only
 
-`claude-token-lens reconcile --admin-csv <file> [--by day|model|day,model]`
+`claudeglass reconcile --admin-csv <file> [--by day|model|day,model]`
 (plan "Enterprise use"/"Finance"). Also not part of the assembled
 report — an entirely offline comparison of this tool's own per-turn
 accounting against a CSV export you already pulled from the Anthropic
@@ -1152,12 +1152,12 @@ Not to be confused with the report's own [`usage`](#usage-usagepy)
 section above (`usage.py`, day/week/month/project/entrypoint cost from
 transcripts) — this section is about your Claude Code *subscription's*
 5-hour/7-day plan percentages, from an entirely different data source:
-`~/.claude/token-lens/usage-log.csv` rows appended by the statusline
-logger, or by `python -m claude_token_lens.tools.log_usage` from a
+`~/.claude/claudeglass/usage-log.csv` rows appended by the statusline
+logger, or by `python -m claudeglass.tools.log_usage` from a
 pasted `get_usage` result, deduped by session/reset-time/used
 percentage. It has a `build_section` function like every other section
 here, but nothing in `report.py`/`cli.py` calls it yet, so it doesn't
-appear in `claude-token-lens report`'s output — call it directly:
+appear in `claudeglass report`'s output — call it directly:
 
 - `usage_windows_latest` — per window (`five_hour`/`seven_day`/
   `spend_limit`), the
@@ -1247,10 +1247,10 @@ when the corpus has no top-level transcripts at all.
   session (last reported used tokens, window size, used percentage),
   present only once at least one usage-log row carries `context_window`
   fields (see `statusline.py`'s module docstring for how those columns
-  get there — `python -m claude_token_lens.statusline` appends them to
+  get there — `python -m claudeglass.statusline` appends them to
   the same usage-log CSV `usage_windows` already reads, as three new
   trailing columns old-format rows simply don't have). Empty with a note
-  otherwise. `claude-token-lens report` (S1-exports) now loads
+  otherwise. `claudeglass report` (S1-exports) now loads
   `<config_dir>/usage-log.csv`, when present, with a tolerant reader and
   passes the resulting rows into `build_report` as `usage_log_rows` —
   so both this table and `cache_ground_truth` above populate for the
@@ -1365,7 +1365,7 @@ numbers.
 
 ## `team_report` (`team.py`) — CLI-only
 
-`claude-token-lens team-report` compares the team documents each
+`claudeglass team-report` compares the team documents each
 machine saved (see [`docs/team.md`](team.md)). One column per machine,
 keyed by its hashed machine id, never a hostname.
 
@@ -1599,10 +1599,10 @@ call the same functions directly:
 
 ```python
 from pathlib import Path
-from claude_token_lens import discovery, recache, compaction
-from claude_token_lens.model import TranscriptMeta
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing
+from claudeglass import discovery, recache, compaction
+from claudeglass.model import TranscriptMeta
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing
 
 fixture_dir = Path("tests/fixtures/real/session-a")
 top_path = next(fixture_dir.glob("*.jsonl"))

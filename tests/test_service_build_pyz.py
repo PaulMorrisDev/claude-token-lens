@@ -33,7 +33,7 @@ def _load_build_module():
 @pytest.fixture(scope="module")
 def built_pyz(tmp_path_factory) -> Path:
     build_pyz = _load_build_module()
-    output = tmp_path_factory.mktemp("pyz-build") / "claude-token-lens.pyz"
+    output = tmp_path_factory.mktemp("pyz-build") / "claudeglass.pyz"
     return build_pyz.build(output)
 
 
@@ -51,17 +51,17 @@ def test_built_pyz_includes_the_static_ui_directory(built_pyz: Path) -> None:
     with zipfile.ZipFile(built_pyz) as zf:
         names = set(zf.namelist())
     for expected in (
-        "claude_token_lens/service/static/index.html",
-        "claude_token_lens/service/static/app.js",
-        "claude_token_lens/service/static/app.css",
-        "claude_token_lens/service/static/core.js",
-        "claude_token_lens/service/static/grid.js",
-        "claude_token_lens/service/static/page-overview.js",
-        "claude_token_lens/service/static/page-setup.js",
-        "claude_token_lens/service/static/icons.js",
-        "claude_token_lens/service/static/THIRD_PARTY.sha256",
-        "claude_token_lens/service/static/vendor/d3-7.9.0.min.js",
-        "claude_token_lens/service/static/fonts/InterVariable-4.1.woff2",
+        "claudeglass/service/static/index.html",
+        "claudeglass/service/static/app.js",
+        "claudeglass/service/static/app.css",
+        "claudeglass/service/static/core.js",
+        "claudeglass/service/static/grid.js",
+        "claudeglass/service/static/page-overview.js",
+        "claudeglass/service/static/page-setup.js",
+        "claudeglass/service/static/icons.js",
+        "claudeglass/service/static/THIRD_PARTY.sha256",
+        "claudeglass/service/static/vendor/d3-7.9.0.min.js",
+        "claudeglass/service/static/fonts/InterVariable-4.1.woff2",
     ):
         assert expected in names, f"{expected!r} missing from pyz contents: {sorted(names)[:20]}..."
 
@@ -90,7 +90,7 @@ def test_build_skips_dot_files_and_dot_folders(tmp_path: Path) -> None:
     finally:
         build_pyz.PACKAGE_DIR = original
     copied = sorted(p.relative_to(tmp_path / "out").as_posix() for p in (tmp_path / "out").rglob("*"))
-    assert "claude_token_lens/static/app.js" in copied
+    assert "claudeglass/static/app.js" in copied
     assert not any("/." in name for name in copied), copied
 
 
@@ -101,8 +101,8 @@ def test_built_pyz_carries_pyc_files_next_to_their_source(built_pyz: Path) -> No
     # right next to "module.py".
     with zipfile.ZipFile(built_pyz) as zf:
         names = set(zf.namelist())
-    assert "claude_token_lens/cli.pyc" in names
-    assert "claude_token_lens/__main__.pyc" in names
+    assert "claudeglass/cli.pyc" in names
+    assert "claudeglass/__main__.pyc" in names
 
 
 def test_built_pyz_still_imports_with_only_the_pyc_present(built_pyz: Path, tmp_path: Path) -> None:
@@ -122,7 +122,7 @@ def test_built_pyz_still_imports_with_only_the_pyc_present(built_pyz: Path, tmp_
         [sys.executable, str(pyc_only), "--version"], capture_output=True, text=True, timeout=30
     )
     assert result.returncode == 0
-    assert "claude-token-lens" in result.stdout
+    assert "claudeglass" in result.stdout
 
 
 def test_built_pyz_runs_version_and_exits_zero(built_pyz: Path) -> None:
@@ -133,7 +133,7 @@ def test_built_pyz_runs_version_and_exits_zero(built_pyz: Path) -> None:
         timeout=30,
     )
     assert result.returncode == 0
-    assert "claude-token-lens" in result.stdout
+    assert "claudeglass" in result.stdout
 
 
 def test_built_pyz_propagates_a_non_zero_exit_code(built_pyz: Path) -> None:

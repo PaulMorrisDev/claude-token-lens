@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import context_files, parse
-from claude_token_lens.model import TranscriptMeta, TranscriptResult, Turn
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import effective_rates, load_pricing
+from claudeglass import context_files, parse
+from claudeglass.model import TranscriptMeta, TranscriptResult, Turn
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import effective_rates, load_pricing
 
 from helpers import attachment_line, tool_use_block, turn_line, write_jsonl
 

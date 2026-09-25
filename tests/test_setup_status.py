@@ -1,4 +1,4 @@
-"""Tests for ``src/claude_token_lens/setup_status.py`` and the ``status``
+"""Tests for ``src/claudeglass/setup_status.py`` and the ``status``
 command: each part of the setup reads as done, waiting, off or needing
 attention, and ``status`` exits 1 only for an essential problem."""
 
@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import cli, installer, setup_status
-from claude_token_lens.config import set_capture
+from claudeglass import cli, installer, setup_status
+from claudeglass.config import set_capture
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
 
@@ -24,7 +24,7 @@ def _claude_folder(tmp_path, monkeypatch):
 
 def _dirs(tmp_path) -> tuple[Path, Path]:
     claude = tmp_path / "claude"
-    config_dir = claude / "token-lens"
+    config_dir = claude / "claudeglass"
     config_dir.mkdir(parents=True)
     return config_dir, claude
 
@@ -140,7 +140,7 @@ def test_capture_off_and_missing_hooks(tmp_path):
     item = _items(config_dir, claude)["capture"]
     assert (item.state, item.essential) == ("problem", True)
     assert item.detail.startswith("Essentials")
-    assert item.fix == "claude-token-lens capture connect"
+    assert item.fix == "claudeglass capture connect"
 
 
 def test_capture_past_its_time_box_is_off(tmp_path):
@@ -183,12 +183,12 @@ def test_verdict_counts_problems():
 def test_lines_show_words_and_fixes_not_ticks():
     items = [
         setup_status.SetupItem("a", "Short", "ok", "Fine.", "never shown"),
-        setup_status.SetupItem("b", "A longer label", "problem", "Broken.", "claude-token-lens init"),
+        setup_status.SetupItem("b", "A longer label", "problem", "Broken.", "claudeglass init"),
     ]
     assert setup_status.lines(items) == [
         "  Short           Done: Fine.",
         "  A longer label  Needs attention: Broken.",
-        "                  Fix: claude-token-lens init",
+        "                  Fix: claudeglass init",
     ]
 
 
@@ -203,7 +203,7 @@ def test_status_exits_1_for_an_essential_problem(tmp_path, capsys, monkeypatch):
     config_dir, claude = _dirs(tmp_path)
     rc, out = _run_status(config_dir, claude, capsys)
     assert rc == 1
-    assert out.startswith("Token Lens setup")
+    assert out.startswith("ClaudeGlass setup")
     assert "2 things need attention." in out
 
 

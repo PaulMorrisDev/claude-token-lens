@@ -157,7 +157,7 @@ and one tip when some runs are set elsewhere.
 ## API and wiring
 
 ```python
-from claude_token_lens import model_swap
+from claudeglass import model_swap
 
 stats = model_swap.compute_model_swap(results, pricing)          # pure; hand in every transcript at once
 section = model_swap.build_section(stats)                        # -> Section(key="model_swap", ...)

@@ -4,9 +4,9 @@ Never run `init` on this machine before? [`docs/first-run.md`](first-run.md)
 is the short walkthrough, including what each question below actually
 means in one line. This document is the full reference.
 
-`claude-token-lens init` (`src/claude_token_lens/setup_flow.py`, asking
-the questions in `src/claude_token_lens/onboarding.py`) and
-`claude-token-lens baseline` (`src/claude_token_lens/baseline.py`) are
+`claudeglass init` (`src/claudeglass/setup_flow.py`, asking
+the questions in `src/claudeglass/onboarding.py`) and
+`claudeglass baseline` (`src/claudeglass/baseline.py`) are
 the onboarding pair: `init` asks a few questions this codebase genuinely
 cannot infer on its own, shows every change it will make, makes them
 after one yes, and ends with a summary of what works; `baseline` turns
@@ -44,7 +44,7 @@ Then it lists every change in one review, `Ready to set up:`, and asks
 `Go ahead? (d shows the exact changes) [Y/n/d]`. `d` prints the
 `settings.json` diff, the skill's file and the logon task's commands,
 then asks again; `n` writes nothing. After a yes it makes the changes
-and prints `Your setup`: the same checklist `claude-token-lens status`
+and prints `Your setup`: the same checklist `claudeglass status`
 prints, and what to open next.
 
 `init --advanced` also asks the rest: projects to leave out, extra
@@ -57,7 +57,7 @@ is already done is skipped (an existing connection, a dashboard that
 answers), and the capture window you are part-way through carries on.
 `--dry-run` shows the review and every exact change, and writes nothing.
 For scripts or CI, run
-`python -m claude_token_lens init --non-interactive --no-install`. It
+`python -m claudeglass init --non-interactive --no-install`. It
 asks nothing and needs no yes, works out the unanswered questions from
 what it found, and prints what it chose and why.
 
@@ -69,7 +69,7 @@ dashboard that is running keeps their figures.
 The full sequence, step by step:
 
 ```
-python -m claude_token_lens init [--advanced] [--answers FILE] [--non-interactive] [--no-install]
+python -m claudeglass init [--advanced] [--answers FILE] [--non-interactive] [--no-install]
                                   [--repair-hook] [--connect]
                                   [--install-service | --no-service] [--dry-run]
                                   [--capture-level LEVEL] [--capture-for DURATION | --capture-no-limit]
@@ -84,7 +84,7 @@ python -m claude_token_lens init [--advanced] [--answers FILE] [--non-interactiv
    projects are discoverable under the projects root, WSL folders
    `config.toml` doesn't list yet, and whether the SessionStart hook is
    set up (`hook_health.check`).
-2. **Print the header**: `Token Lens setup`, that everything stays on
+2. **Print the header**: `ClaudeGlass setup`, that everything stays on
    this computer, and how many projects have Claude Code history,
    naming any WSL distro found. Only counts and distro names are
    printed, never a path or session content.
@@ -201,8 +201,8 @@ python -m claude_token_lens init [--advanced] [--answers FILE] [--non-interactiv
       The hook command names the base Python install (not a virtual
       environment's, since the script is stdlib-only) and the script by
       full path. The statusline command names the running Python with
-      `-m claude_token_lens.statusline`, or the `.pyz` by full path.
-      When `<config_dir>` is not the default `<Claude folder>/token-lens`,
+      `-m claudeglass.statusline`, or the `.pyz` by full path.
+      When `<config_dir>` is not the default `<Claude folder>/claudeglass`,
       both commands end with `--config-dir "<config_dir>"`, so the hook
       and the statusline write where the CLI and dashboard read.
    4. The `/tl-feedback` skill, written or removed.
@@ -220,16 +220,16 @@ python -m claude_token_lens init [--advanced] [--answers FILE] [--non-interactiv
       `Reading this project's history for a first baseline... N sessions.`
       Skipped without a word when no project directory has ever been
       recorded for the current folder. Ctrl-C stops it and keeps
-      everything else (`claude-token-lens baseline` takes it later).
+      everything else (`claudeglass baseline` takes it later).
       `--all-projects`, `--project` and `--project-family` choose what
       it reads.
 7. **Summarise**: `Your setup` (`setup_status.check_setup`, as
-   `claude-token-lens status` prints it): each part `Done`, `Waiting`,
+   `claudeglass status` prints it): each part `Done`, `Waiting`,
    `Off` or `Needs attention`, with a fix, then `Everything's set up.`
    or `N things need attention.`, what to open next, a reminder to run
    `/tl-feedback` after a piece of work when the skill is in, the
    restart note when `settings.json` changed, and
-   `Check your setup any time: claude-token-lens status`.
+   `Check your setup any time: claudeglass status`.
 
 ### The full capture and feedback questions
 
@@ -257,7 +257,7 @@ is unless a level is given.
 Turning a level on asks one more question: capture switches itself off
 in `DEFAULT_CAPTURE_TIMEBOX_DAYS` (14) days by default, and the prompt
 says the exact date and how to change it — keep it on longer with
-`claude-token-lens capture on --for 30d` once it's running, or answer
+`claudeglass capture on --for 30d` once it's running, or answer
 this question **yes** to turn the time limit off entirely so capture
 runs until you switch it off yourself. `--capture-for DURATION` (a
 number and `h`, `d` or `w`, e.g. `30d`) picks a different length up
@@ -277,7 +277,7 @@ limit (or the lack of one) that capture, already on, already has.
 The level's `settings.json` entries are part of the one `settings.json`
 change (step 6.3) when `init` connects. With `--no-install`, or
 `--non-interactive` without `--connect`, the review says to add them
-later with `claude-token-lens capture connect`.
+later with `claudeglass capture connect`.
 
 **Feedback** (`onboarding.ask_feedback`, through `cli.py`'s
 `_init_feedback_choice`), whatever the capture level (including off):
@@ -293,7 +293,7 @@ turns the survey on, so the question isn't asked then. Feedback already
 on is left as it is unless `--feedback`/the answers file says otherwise;
 on without its skill file, the skill is written. With `--no-install`, or
 `--non-interactive` without `--connect`, the review gives the
-`claude-token-lens capture feedback on` command instead of writing the
+`claudeglass capture feedback on` command instead of writing the
 skill.
 
 ### The question set
@@ -358,7 +358,7 @@ in place of sharper tips:
 ## `baseline`
 
 ```
-python -m claude_token_lens baseline [--days N] [--finalise] [--list] [--show ID]
+python -m claudeglass baseline [--days N] [--finalise] [--list] [--show ID]
 ```
 
 With no flags: builds a report over the given window (or all time),
@@ -438,7 +438,7 @@ any `/tl-feedback` handoff answers (see
 [docs/profiles.md](profiles.md)).
 
 The baseline never applies the suggested profile. The report names the
-profile id and reason only; preview it with `claude-token-lens apply
+profile id and reason only; preview it with `claudeglass apply
 <id> --dry-run` (see [docs/profiles.md](profiles.md#applying-a-profile)).
 
 ### Billing-mismatch warning

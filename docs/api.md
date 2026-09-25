@@ -1,6 +1,6 @@
 # v0.2 service JSON API
 
-`claude-token-lens serve` runs a local, read-only HTTP service
+`claudeglass serve` runs a local, read-only HTTP service
 (`http.server`, stdlib only — plan Milestone v0.2, "Docker service and
 web UI") in front of the SQLite store `service/store.py`'s `Store`
 maintains. This file is the frozen contract every `/api/*` route
@@ -41,11 +41,11 @@ want to parse the body: `200` for `ok: true` on every route except
 `service.contracts.ApiError.to_envelope()`'s shape.
 
 Commands inside a response (a `connect_command`, a fix's `command`, help
-text that says "run `claude-token-lens baseline`") come in the form that
-runs this install, since the short `claude-token-lens` needs pip's
-Scripts folder on `PATH`: `python -m claude_token_lens ...`, the `.pyz`
+text that says "run `claudeglass baseline`") come in the form that
+runs this install, since the short `claudeglass` needs pip's
+Scripts folder on `PATH`: `python -m claudeglass ...`, the `.pyz`
 path, or the interpreter's full path when the `python` on `PATH` is
-another one (`invocation.py`). `CLAUDE_TOKEN_LENS_COMMAND`, set where
+another one (`invocation.py`). `CLAUDEGLASS_COMMAND`, set where
 `serve` runs, overrides it word for word. `/api/report.json` gets the
 same swap; the Markdown and HTML reports keep the short form, like the
 CLI's own output.
@@ -137,7 +137,7 @@ below):
 - **`--monthly-report DIR`** sets `ServeOptions.monthly_report_dir`.
   While `serve` runs, it writes the previous calendar month's report
   into `DIR` when either of its two files is missing — the same report
-  `claude-token-lens monthly-report --out DIR` writes
+  `claudeglass monthly-report --out DIR` writes
   ([docs/exports.md](exports.md#serve---monthly-report-dir)). It checks
   at startup and hourly, on its own thread, so requests are never held
   up; `--once` checks once after its watcher tick.
@@ -165,7 +165,7 @@ below):
   again on the new code: systemd's `Restart=on-failure` and launchd's
   `KeepAlive` do that themselves; Task Scheduler reruns nothing by exit
   status, so on Windows `serve` first starts a hidden helper that waits
-  for it to exit and starts the `ClaudeTokenLens` task again
+  for it to exit and starts the `ClaudeGlass` task again
   (`installer.relaunch_after_exit`). When that task isn't registered,
   `serve` stays up and only reports the change. `install-service`
   registers `serve` with this flag.
@@ -269,7 +269,7 @@ finished scan did: `running` (the background thread is alive),
 in parallel; only on a scan with many changed files) and `"storing"`
 (sessions folded into the store). `phase` is `null` between scans.
 
-`version` is the running code's version (`claude-token-lens
+`version` is the running code's version (`claudeglass
 --version`), also shown on the dashboard's status line: after an update, a
 dashboard still showing the old one hasn't been restarted, or runs from
 another Python install.
@@ -297,7 +297,7 @@ a path. See `serve --exit-on-code-change` above for restarting by
 itself.
 
 `service_registered` (v3) is whether `serve` is currently registered to
-start at logon/boot (`claude-token-lens install-service` — see
+start at logon/boot (`claudeglass install-service` — see
 [docs/deploy.md](deploy.md)): `true`/`false` when the platform's own
 query command (`schtasks`/`systemctl --user is-enabled`/`launchctl
 print`) ran and gave a clear answer, `null` when it couldn't be run at
@@ -406,7 +406,7 @@ Without one, every session. Newest first (by `first_ts`).
 
 `source` says where the session ran: `"This computer"`, or
 `"WSL: <distro>"` for one read from a WSL distro's folder (see
-`extra_projects_roots` in [configuration](../README.md#using-claude-code-in-wsl-too)).
+`extra_projects_roots` in [configuration](first-run.md#using-claude-code-in-wsl-too)).
 It never carries the path itself.
 
 ### `GET /api/session/<id>`
@@ -847,8 +847,8 @@ today.
 
 `apply_command`/`launch_command` are the two lines
 `profiles.diff.apply_command` returns, split apart — the exact
-host-side `claude-token-lens apply` invocation and the
-`claude-token-lens apply <id> --launch` one-session-overlay alternative
+host-side `claudeglass apply` invocation and the
+`claudeglass apply <id> --launch` one-session-overlay alternative
 respectively (it writes the overlay, then prints the
 `claude --settings <path>` command with the real path). `dry_run_command` is
 `apply_command` plus `--dry-run`, which the dashboard shows first.
@@ -879,7 +879,7 @@ still open.
 where a `Baseline` is `{"id", "project_slug", "window_start", "window_end", "archetype", "created_at", "record": dict|null}`
 (`"record"` — only present on `"baseline"`, not on `history` entries —
 is the captured baseline JSON record itself, already redacted the same
-way `claude-token-lens baseline`'s own on-disk record is: no message
+way `claudeglass baseline`'s own on-disk record is: no message
 text, no raw paths, `projects` a list of already-redacted slugs).
 `"baseline"` is `null` and `"history"` is `[]` when no baseline has ever
 been captured. `capture_status.summary` is the same one-line status
@@ -1035,7 +1035,7 @@ ratio-test reading (`lower`, `possibly_lower`, `higher`,
 state, or `null` once `enough` is true. `before`/`after` are display
 text in the billing mode's units; `direction` is `lower`, `higher`,
 `same` or `null`. For an `apply` that is not yet undone, `backup_ts` is
-what `claude-token-lens apply --revert <backup_ts>` takes.
+what `claudeglass apply --revert <backup_ts>` takes.
 
 `without` is what the sessions after the change would have cost
 without it (`counterfactual.py`), or `null` with fewer than
@@ -1103,7 +1103,7 @@ costs in tokens and how to undo it, plus what to expect
 
 Whether each part of the setup works (`setup_status.check_setup`), for
 the Overview's Setup card and Data quality: the same checklist
-`claude-token-lens status` prints. This dashboard answering is proof it
+`claudeglass status` prints. This dashboard answering is proof it
 runs, so only whether it starts at logon is asked, through the same
 cached probe as `/api/health`'s `service_registered`; `null` from that
 probe means "couldn't tell", never a problem.
@@ -1201,7 +1201,7 @@ one is built in the background.
 - `commands`: the `status`, `connect`, `feedback` and `brief` CLI
   commands.
 
-`409` with the `claude-token-lens capture status` command in
+`409` with the `claudeglass capture status` command in
 `error.commands` when `config.toml` can't be read.
 
 ### `GET /api/report.md` / `GET /api/report.html` / `GET /api/report.json`
@@ -1357,7 +1357,7 @@ bound to `0.0.0.0` for a container still can't be switched from
 another machine). `400` on an unknown key or value, both `level` and
 `metrics`, or a past `until`. `409` when `config.toml` can't be read
 or written (such as a read-only file system); its `error.commands`
-lists the `claude-token-lens capture ...` commands that make the
+lists the `claudeglass capture ...` commands that make the
 same change from a terminal. The message never quotes the error,
 which can hold a path.
 
@@ -1567,7 +1567,7 @@ snapshot insert/update moves it, forcing a rebuild on the next request.
 body on `200` is the renderer's own native output (`render_json`/
 `render_markdown`/`render_html`), not the `{"ok": ..., "data": ...}`
 envelope — this is what makes `/api/report.json` byte-equivalent to
-`claude-token-lens report --json` for the same window, and matches this
+`claudeglass report --json` for the same window, and matches this
 document's own "the raw rendered document" language for `.md`/`.html`.
 A request error on one of these three routes (a bad `window_days`,
 `since` or `until`, or an unexpected exception) still falls back to the

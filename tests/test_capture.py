@@ -17,10 +17,10 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from claude_token_lens import capture, capture_catalogue as catalogue, parse
-from claude_token_lens.model import TranscriptMeta
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing
+from claudeglass import capture, capture_catalogue as catalogue, parse
+from claudeglass.model import TranscriptMeta
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing
 
 from helpers import (
     attachment_line,
@@ -292,7 +292,7 @@ def test_a_feedback_run_cycle_is_left_out_of_the_coverage_denominator(tmp_path, 
             "<command-message>tl-feedback</command-message>\n<command-name>/tl-feedback</command-name>",
             timestamp=_ts(1),
         ),
-        _reply(2, text="Thanks: Token Lens will use this for your savings tips."),
+        _reply(2, text="Thanks: ClaudeGlass will use this for your savings tips."),
         _ask(3),
         _reply(4, text="Done.\n[tl: task=bugfix]"),
     ])

@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import capture_catalogue as cat
-from claude_token_lens import capture_tags
-from claude_token_lens.model import TranscriptMeta
-from claude_token_lens.parse import parse_transcript
+from claudeglass import capture_catalogue as cat
+from claudeglass import capture_tags
+from claudeglass.model import TranscriptMeta
+from claudeglass.parse import parse_transcript
 
 from helpers import attachment_line, turn_line, user_str_line, write_jsonl
 
@@ -214,16 +214,16 @@ def test_every_hook_file_ships_in_the_package():
     from pathlib import Path
 
     pyproject = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
-    declared = set(pyproject["tool"]["setuptools"]["package-data"]["claude_token_lens"])
-    hooks = resources.files("claude_token_lens") / "hooks"
+    declared = set(pyproject["tool"]["setuptools"]["package-data"]["claudeglass"])
+    hooks = resources.files("claudeglass") / "hooks"
     shipped = {f"hooks/{p.name}" for p in hooks.iterdir() if p.is_file() and not p.name.startswith("__")}
     assert shipped <= declared, f"add {sorted(shipped - declared)} to package-data in pyproject.toml"
 
 
 def test_the_packaged_json_is_the_catalogue_export():
-    packaged = resources.files("claude_token_lens") / "hooks" / cat.CATALOGUE_FILE
+    packaged = resources.files("claudeglass") / "hooks" / cat.CATALOGUE_FILE
     assert packaged.read_text(encoding="utf-8") == cat.catalogue_json_text(), (
-        "regenerate src/claude_token_lens/hooks/capture-catalogue.json from capture_catalogue.catalogue_json_text()"
+        "regenerate src/claudeglass/hooks/capture-catalogue.json from capture_catalogue.catalogue_json_text()"
     )
     data = json.loads(cat.catalogue_json_text())
     known = {m["id"] for m in data["metrics"]}
@@ -329,7 +329,7 @@ def test_the_brief_skill_is_user_invoked_names_no_model_and_holds_every_checklis
     text = cat.brief_skill_text()
     front, body = text.split("---\n", 2)[1:]
     assert "name: tl-brief" in front and "disable-model-invocation: true" in front
-    assert "Claude Token Lens" in front and "model:" not in front
+    assert "ClaudeGlass" in front and "model:" not in front
     for task, keys in cat.BRIEF_CHECKLISTS.items():
         assert f"   - {task}: " + ", ".join(cat.BRIEF_LINES[k][0] for k in keys) in body
     for _label, template in cat.BRIEF_LINES.values():

@@ -1,4 +1,4 @@
-"""Tests for ``src/claude_token_lens/hook_health.py``: finding the
+"""Tests for ``src/claudeglass/hook_health.py``: finding the
 SessionStart snapshot hook in ``settings.json``, spotting a Windows path
 broken by JSON escaping, and repairing only that command after a backup
 (also through ``init --repair-hook``)."""
@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import cli, helptext, hook_health, setup_flow
-from claude_token_lens.model import Diagnostics, Event, EventKind, TranscriptResult
+from claudeglass import cli, helptext, hook_health, setup_flow
+from claudeglass.model import Diagnostics, Event, EventKind, TranscriptResult
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
 
@@ -31,11 +31,11 @@ def _claude_folder(tmp_path, monkeypatch):
 
 
 def _claude_dir(tmp_path, command=None, *, script=True):
-    """``<tmp>/claude`` with ``token-lens/`` as the config dir and a
+    """``<tmp>/claude`` with ``claudeglass/`` as the config dir and a
     ``settings.json`` whose one SessionStart hook runs ``command``
     (``None`` means a good command pointing at the real script)."""
     claude = tmp_path / "claude"
-    config_dir = claude / "token-lens"
+    config_dir = claude / "claudeglass"
     script_path = config_dir / "hooks" / "snapshot-config.py"
     script_path.parent.mkdir(parents=True)
     if script:
@@ -50,8 +50,11 @@ def _claude_dir(tmp_path, command=None, *, script=True):
 
 
 def _broken(good: str) -> str:
-    # Backslash-t decodes to a tab, so "\token-lens" becomes TAB + "oken-lens".
-    return good.replace("\\token-lens", "\token-lens")
+    # Backslash-t decodes to a tab. pytest names each test's tmp_path
+    # after the test ("test_..."), so that folder becomes TAB + "est_...".
+    broken = good.replace("\\test_", "\test_")
+    assert broken != good
+    return broken
 
 
 def _write_snapshot(config_dir, ts: str) -> None:
@@ -110,7 +113,7 @@ def test_missing_script_has_no_fix(tmp_path):
 
 
 def test_no_hook_and_no_settings(tmp_path):
-    config_dir = tmp_path / "claude" / "token-lens"
+    config_dir = tmp_path / "claude" / "claudeglass"
     config_dir.mkdir(parents=True)
     health = hook_health.check(config_dir, now=NOW)
     assert health.command is None
@@ -260,14 +263,14 @@ def test_a_hook_command_prefers_the_base_interpreter_over_a_venv(monkeypatch, tm
 
 
 def test_hook_command_runs_python_isolated_and_without_site():
-    script = Path("C:/token-lens/hooks/capture-hook.py")
+    script = Path("C:/claudeglass/hooks/capture-hook.py")
     command = hook_health.hook_command(script, python="C:/Python311/python.exe")
     assert command == f'"C:/Python311/python.exe" -I -S "{script}"'
 
 
 @pytest.mark.parametrize("bad_python", ['C:/weird"quote/python.exe', "C:/weird$var/python.exe", "C:/weird`tick/python.exe"])
 def test_hook_command_refuses_a_python_path_with_an_unsafe_character(bad_python):
-    assert hook_health.hook_command(Path("C:/token-lens/hooks/capture-hook.py"), python=bad_python) is None
+    assert hook_health.hook_command(Path("C:/claudeglass/hooks/capture-hook.py"), python=bad_python) is None
 
 
 @pytest.mark.parametrize("bad_script", ['C:/weird"quote/capture-hook.py', "C:/weird$var/capture-hook.py", "C:/weird`tick/capture-hook.py"])
@@ -277,7 +280,7 @@ def test_hook_command_refuses_a_script_path_with_an_unsafe_character(bad_script)
 
 def test_hook_command_refuses_a_unc_path():
     assert hook_health.hook_command(
-        Path(r"\\server\share\token-lens\hooks\capture-hook.py"), python="C:/Python311/python.exe"
+        Path(r"\\server\share\claudeglass\hooks\capture-hook.py"), python="C:/Python311/python.exe"
     ) is None
 
 
@@ -293,7 +296,7 @@ def _with_statusline(tmp_path, rows=()):
     config_dir, _ = _claude_dir(tmp_path)
     settings_path = config_dir.parent / "settings.json"
     data = json.loads(settings_path.read_text(encoding="utf-8"))
-    data["statusLine"] = {"type": "command", "command": "python -m claude_token_lens.statusline"}
+    data["statusLine"] = {"type": "command", "command": "python -m claudeglass.statusline"}
     settings_path.write_text(json.dumps(data), encoding="utf-8")
     lines = ["logged_at,session_id,window,used_percentage,resets_at,source"] + list(rows)
     (config_dir / "usage-log.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -325,7 +328,7 @@ def test_repair_keeps_arguments_after_the_script(tmp_path, monkeypatch):
     # A hook command for a non-default data folder carries --config-dir;
     # rebuilding it around a working Python must keep that.
     claude = tmp_path / "claude"
-    config_dir = claude / "token-lens"
+    config_dir = claude / "claudeglass"
     script = config_dir / "hooks" / "snapshot-config.py"
     script.parent.mkdir(parents=True)
     script.write_text("", encoding="utf-8")
@@ -467,7 +470,7 @@ def test_measure_deep_wait_ignores_a_post_tool_use_call_without_the_capture_flag
 
 
 def test_measure_deep_wait_ignores_own_hook_calls_under_a_different_event():
-    # Token Lens's own SessionStart/SubagentStart calls aren't Deep's wait.
+    # ClaudeGlass's own SessionStart/SubagentStart calls aren't Deep's wait.
     results = [_result(_call_event("SessionStart", 140))]
     assert hook_health.measure_deep_wait(results) == hook_health.DeepWaitStats()
 
@@ -574,7 +577,7 @@ def test_snapshot_hook_health_under_a_policy_is_not_ok_and_says_why(tmp_path):
 
 
 def test_hooks_block_under_a_policy_offers_no_connect_command(tmp_path):
-    from claude_token_lens import capture_view
+    from claudeglass import capture_view
 
     claude_root, managed_dir = _policy_roots(tmp_path, managed={"disableAllHooks": True})
     health = hook_health.check_capture(hook_health.capture_specs(["task"]), claude_root=claude_root, managed_dir=managed_dir)

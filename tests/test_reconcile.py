@@ -1,4 +1,4 @@
-"""Tests for V3-compare's ``reconcile.py`` (``claude-token-lens
+"""Tests for V3-compare's ``reconcile.py`` (``claudeglass
 reconcile``): the tolerant Admin-CSV header mapper (standard headers,
 alternate spellings, ``_5m``/``_1h`` cache-creation splits (never added on
 top of the flat total), timestamp dates, ``cost_cents``,
@@ -16,11 +16,11 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import cli
-from claude_token_lens import reconcile as reconcile_mod
-from claude_token_lens.config import Config
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.pricing import load_pricing, price_turn
+from claudeglass import cli
+from claudeglass import reconcile as reconcile_mod
+from claudeglass.config import Config
+from claudeglass.corpus import load_corpus
+from claudeglass.pricing import load_pricing, price_turn
 
 from helpers import assert_privacy, ignorable_line, turn_line, write_jsonl
 
@@ -514,7 +514,7 @@ def _sig4_capture_on(config_dir: Path, level: str = "free") -> None:
 
 
 def _sig4_signal(config_dir: Path, session_id: str, cost_usd: float, now) -> None:
-    from claude_token_lens import statusline
+    from claudeglass import statusline
 
     statusline._write_ground_truth_signal(config_dir, {"session_id": session_id, "cost": {"total_cost_usd": cost_usd}}, now)
 
@@ -522,7 +522,7 @@ def _sig4_signal(config_dir: Path, session_id: str, cost_usd: float, now) -> Non
 def test_cost_ground_truth_gaps_prefers_cost_state_over_statusline(tmp_path):
     from datetime import datetime, timezone
 
-    from claude_token_lens.parse import load_or_create_salt
+    from claudeglass.parse import load_or_create_salt
 
     root = tmp_path / "projects"
     project_dir = root / "proj"
@@ -552,7 +552,7 @@ def test_cost_ground_truth_gaps_prefers_cost_state_over_statusline(tmp_path):
 def test_cost_ground_truth_gaps_falls_back_to_statusline_without_cost_state(tmp_path):
     from datetime import datetime, timezone
 
-    from claude_token_lens.parse import load_or_create_salt
+    from claudeglass.parse import load_or_create_salt
 
     root = tmp_path / "projects"
     project_dir = root / "proj"
@@ -607,7 +607,7 @@ def test_cost_ground_truth_gaps_never_creates_the_salt(tmp_path):
 def test_cost_ground_truth_gaps_passes_privacy_scan(tmp_path):
     from datetime import datetime, timezone
 
-    from claude_token_lens.parse import load_or_create_salt
+    from claudeglass.parse import load_or_create_salt
 
     root = tmp_path / "projects"
     project_dir = root / "proj"
@@ -680,7 +680,7 @@ def test_build_cost_ground_truth_gap_table_says_nothing_below_five_percent():
 
 
 def test_build_cost_ground_truth_gap_table_median_note_uses_billing_mode_units(tmp_path):
-    from claude_token_lens.units import Units
+    from claudeglass.units import Units
 
     # Each session's gap is $0.50 (cc=$1.00, local=$1.50); the note phrases
     # the *median* per-session gap, not a sum across sessions.
@@ -699,7 +699,7 @@ def test_reconcile_adds_the_gap_table_only_when_config_dir_has_ground_truth(tmp_
     -- so it is deliberately left out of this fixture.)"""
     from datetime import datetime, timezone
 
-    from claude_token_lens.parse import load_or_create_salt
+    from claudeglass.parse import load_or_create_salt
 
     root = tmp_path / "projects"
     project_dir = root / "proj"
@@ -765,7 +765,7 @@ def test_cli_reconcile_malformed_csv_exits_2_without_echoing_row(tmp_path, capsy
     )
     assert exit_code == 2
     err = capsys.readouterr().err
-    assert "claude-token-lens reconcile:" in err
+    assert "claudeglass reconcile:" in err
     assert "cannot parse admin CSV at line 3" in err
     assert "not-a-number" not in err
 
@@ -786,7 +786,7 @@ def test_cli_reconcile_missing_csv_exits_2(tmp_path, capsys):
     )
     assert exit_code == 2
     err = capsys.readouterr().err
-    assert "claude-token-lens reconcile:" in err
+    assert "claudeglass reconcile:" in err
 
 
 def test_cli_reconcile_end_to_end_json(tmp_path, capsys):

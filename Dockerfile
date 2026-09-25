@@ -1,4 +1,4 @@
-# claude-token-lens service image (deliverable 2.a -- see docs/deploy.md
+# claudeglass service image (deliverable 2.a -- see docs/deploy.md
 # for the full deployment picture: this is the third of three hosting
 # paths, behind the native Windows Scheduled Task and systemd user unit).
 #
@@ -22,19 +22,19 @@ RUN pip install --no-cache-dir .
 # --projects-root and reads/writes its own SQLite store under
 # --config-dir, both bind-mounted by the operator (see
 # docker-compose.yml) -- it never needs root inside the container.
-RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 token-lens
+RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 claudeglass
 
 # Review finding 4 (blocking): docker-compose.yml mounts the SQLite
-# store's own directory (/data/token-lens) as a *named* volume. Docker
+# store's own directory (/data/claudeglass) as a *named* volume. Docker
 # only ever seeds a named volume's ownership/contents from what already
 # exists at that path in the image at first-create time -- if the path
 # doesn't exist yet, the daemon (running as root) creates the mount
-# point owned by root, and the non-root `token-lens` user below gets
+# point owned by root, and the non-root `claudeglass` user below gets
 # "Permission denied" the first time it tries to create service.db.
 # Pre-creating and chowning both mount points here (root, before USER
 # switches away) means the *image* already owns them correctly, so a
 # fresh named volume (or a bind mount an operator points at an
-# already-token-lens-owned host directory) is writable from the first
+# already-claudeglass-owned host directory) is writable from the first
 # container start, not just after a manual `chown` on the host.
 # /data/claude is read-only at the compose level (see
 # docker-compose.yml), but is still created/chowned here for the same
@@ -42,9 +42,9 @@ RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 token-lens
 # consistency, and so a local `docker run` smoke test that bind-mounts
 # a plain host directory there (docs/deploy.md's `--network none` test)
 # doesn't depend on that directory happening to be world-readable.
-RUN mkdir -p /data/token-lens /data/claude && chown -R token-lens:token-lens /data/token-lens /data/claude
-USER token-lens
-WORKDIR /home/token-lens
+RUN mkdir -p /data/claudeglass /data/claude && chown -R claudeglass:claudeglass /data/claudeglass /data/claude
+USER claudeglass
+WORKDIR /home/claudeglass
 
 # --bind 0.0.0.0 is required here so the container's own port can be
 # published to the host at all (a process bound to 127.0.0.1 inside a
@@ -54,8 +54,8 @@ WORKDIR /home/token-lens
 # loopback-only from the host's own perspective. --allow-remote is
 # required alongside it because serve.run() refuses a non-loopback
 # --bind otherwise (see docs/api.md's "Local only" section).
-ENTRYPOINT ["claude-token-lens", "serve"]
-CMD ["--projects-root", "/data/claude/projects", "--config-dir", "/data/token-lens", \
+ENTRYPOINT ["claudeglass", "serve"]
+CMD ["--projects-root", "/data/claude/projects", "--config-dir", "/data/claudeglass", \
      "--bind", "0.0.0.0", "--allow-remote", "--port", "8765"]
 
 EXPOSE 8765

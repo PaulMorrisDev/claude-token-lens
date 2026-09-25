@@ -7,7 +7,7 @@ retention).
 The headline test (``test_watcher_then_rebuild_matches_fresh_corpus_report``)
 is the round-trip requirement from this work package's brief: load
 ``tests/fixtures/real/session-a`` and every ``tests/fixtures/diversity/*``
-fixture as a fresh :class:`~claude_token_lens.corpus.Corpus`, build a
+fixture as a fresh :class:`~claudeglass.corpus.Corpus`, build a
 report from it, then separately copy the same fixture files into a
 temporary ``projects_root``, run one :class:`FileWatcher` tick into a
 temporary store, rebuild a corpus from *that* store with
@@ -28,15 +28,15 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens.config import Config
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.report import build_report
-from claude_token_lens.render.json_out import render_json
-from claude_token_lens.service.contracts import ServeOptions
-from claude_token_lens.service.rebuild import corpus_from_store
-from claude_token_lens.service.store import Store
-from claude_token_lens.service.watcher import FileWatcher
+from claudeglass.config import Config
+from claudeglass.corpus import load_corpus
+from claudeglass.pricing import load_pricing
+from claudeglass.report import build_report
+from claudeglass.render.json_out import render_json
+from claudeglass.service.contracts import ServeOptions
+from claudeglass.service.rebuild import corpus_from_store
+from claudeglass.service.store import Store
+from claudeglass.service.watcher import FileWatcher
 
 from helpers import assert_privacy, turn_line, write_jsonl
 

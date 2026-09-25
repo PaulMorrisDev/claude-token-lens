@@ -1,6 +1,6 @@
 # Profiles
 
-`claude_token_lens.profiles` is the schema, shipped catalogue, diff
+`claudeglass.profiles` is the schema, shipped catalogue, diff
 renderer and apply/revert code for a **profile**. A profile is a small,
 allowlisted bundle of Claude Code settings/agent-frontmatter/environment-variable
 levers that a user can apply to a project. This document is the
@@ -167,7 +167,7 @@ Setup › Profiles also shows one card per profile with the settings it
 changes by their plain labels. Opening one shows a table of Setting /
 Now / After / Set in for the scope you pick, then three ways to use it:
 a prompt that asks Claude to make the changes and show you the diff
-first (`fixes.profile_prompt`), the `claude-token-lens apply <id>
+first (`fixes.profile_prompt`), the `claudeglass apply <id>
 --dry-run` command, and a one-session `--launch` trial that changes no
 Claude Code settings file (it writes only its own overlay under
 `<config-dir>/profiles/`). "Save my current settings as a profile"
@@ -507,14 +507,14 @@ left implicit, per this project's "report deviations" convention.
 apply_command(profile_id: str, scope: "user" | "project-local" | "repo", project_path: str | None = None) -> str
 ```
 
-Two lines: the exact `claude-token-lens apply <id> [--scope <scope>]
+Two lines: the exact `claudeglass apply <id> [--scope <scope>]
 [--project-dir <path>] [--allow-tracked]` invocation (`--scope` appears
 for every scope but `user`, since `apply` otherwise falls back to user
 scope; `--project-dir` only appears when
 `project_path` is given; `--allow-tracked` is only added for
 `scope="repo"`, matching that scope writing a version-controlled
 `.claude/settings.json`), and the `--launch` one-session-overlay
-alternative, `claude-token-lens apply <id> --launch` (which writes the
+alternative, `claudeglass apply <id> --launch` (which writes the
 overlay and prints the `claude --settings <path>` command: the file
 doesn't exist until it runs).
 Raises `ValueError` for an unrecognised `scope`.
@@ -609,8 +609,8 @@ only callers that write; the dashboard only reads the backups (to list
 your changes) and never calls `execute` or `revert`.
 
 ```
-python -m claude_token_lens apply <profile> [--scope user|project-local|repo]
-python -m claude_token_lens apply --set KEY=VALUE [--set ...] [--agent NAME]
+python -m claudeglass apply <profile> [--scope user|project-local|repo]
+python -m claudeglass apply --set KEY=VALUE [--set ...] [--agent NAME]
                                              [--scope user|project-local|repo]
                                              [--project-dir PATH]
                                              [--dry-run] [--launch]
@@ -622,19 +622,19 @@ For example:
 
 ```bash
 # Preview the exact diff, nothing written:
-python -m claude_token_lens apply interactive-chat --dry-run
+python -m claudeglass apply interactive-chat --dry-run
 
 # Apply it to the current project (writes .claude/settings.local.json):
-python -m claude_token_lens apply interactive-chat --project-dir .
+python -m claudeglass apply interactive-chat --project-dir .
 
 # Undo it, naming the timestamp the apply printed:
-python -m claude_token_lens apply --revert 20260919T100252Z
+python -m claudeglass apply --revert 20260919T100252Z
 
 # A one-session overlay instead of a persisted apply:
-python -m claude_token_lens apply interactive-chat --launch
+python -m claudeglass apply interactive-chat --launch
 
 # One setting, no profile (the command a recommendation card shows):
-python -m claude_token_lens apply --set omitClaudeMd=true --agent code-reviewer --scope user --dry-run
+python -m claudeglass apply --set omitClaudeMd=true --agent code-reviewer --scope user --dry-run
 ```
 
 Every flag is described in [`docs/cli.md`](cli.md#apply).
@@ -659,9 +659,9 @@ alone.
 `user` scope targets `<claude-root>`, resolved by `cli._resolve_claude_root`
 in this order: the explicit `--claude-root PATH` flag, else
 `$CLAUDE_CONFIG_DIR`, else `~/.claude`. This is *not* derived from
-`--config-dir`/`config_dir` (this tool's own `token-lens` subdirectory,
+`--config-dir`/`config_dir` (this tool's own `claudeglass` subdirectory,
 which may be pointed anywhere) — the two started out coincidentally
-related (`config_dir` used to default to `<claude-root>/token-lens`,
+related (`config_dir` used to default to `<claude-root>/claudeglass`,
 so `config_dir.parent` happened to equal `<claude-root>`), but deriving
 one from the other broke the moment `--config-dir` pointed somewhere
 else, silently targeting `<config-dir-parent>/.claude/settings.json`
@@ -742,7 +742,7 @@ leaves a half-written target). It also writes a small stamp snapshot to
 file `hooks/snapshot-config.py`'s `_read_active_profile` already reads
 on its next run).
 
-`claude-token-lens apply --revert <ts>` restores every file from that
+`claudeglass apply --revert <ts>` restores every file from that
 apply's manifest to its exact pre-apply state — byte for byte, deleting
 a file the apply had created rather than emptying it. The manifest
 also records, per file, the keys changed (old and new values) and the

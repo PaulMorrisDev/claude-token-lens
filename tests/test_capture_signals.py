@@ -5,7 +5,7 @@ holds the time, a salted hash of the session id and one word, tool name
 or (SIG-4, written by ``statusline.py`` instead) a plain number; never a
 message, a tool's input, a path, ``last_assistant_message``,
 ``error_details`` or a cron's ``prompt``. Nothing is logged while the
-metric is off, without Token Lens's salt, or for a session capture
+metric is off, without ClaudeGlass's salt, or for a session capture
 skips.
 """
 
@@ -17,11 +17,11 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import signals
-from claude_token_lens.parse import load_or_create_salt
-from claude_token_lens.service.contracts import ServeOptions
-from claude_token_lens.service.store import Store
-from claude_token_lens.service.watcher import FileWatcher
+from claudeglass import signals
+from claudeglass.parse import load_or_create_salt
+from claudeglass.service.contracts import ServeOptions
+from claudeglass.service.store import Store
+from claudeglass.service.watcher import FileWatcher
 
 from test_capture_hook import CATALOGUE, HOOK, _config, _run, _session_id
 
@@ -30,7 +30,7 @@ SECRET = "C:/Users/someone/secret-project/.env"
 
 
 def _setup(tmp_path: Path, capture: str = 'level = "free"') -> Path:
-    config_dir = _config(tmp_path / "token-lens", f"[capture]\n{capture}\n")
+    config_dir = _config(tmp_path / "claudeglass", f"[capture]\n{capture}\n")
     load_or_create_salt(config_dir)
     return config_dir
 

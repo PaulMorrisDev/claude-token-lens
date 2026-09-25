@@ -1,5 +1,5 @@
 """Tests for WP (v4-carry-cost): context carry cost per tool
-(``src/claude_token_lens/carry.py``).
+(``src/claudeglass/carry.py``).
 
 Most branches are exercised on hand-built ``model.Turn``/
 ``model.TranscriptResult`` instances (the ``_turn``/``_transcript``
@@ -13,17 +13,17 @@ from __future__ import annotations
 
 import pytest
 
-from claude_token_lens import model
-from claude_token_lens.carry import (
+from claudeglass import model
+from claudeglass.carry import (
     ASSUMPTIONS,
     RULES,
     CarryThresholds,
     build_section,
     compute_carry,
 )
-from claude_token_lens.model import EventKind, ReportModel, Section, TranscriptMeta, TranscriptResult
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.units import Units
+from claudeglass.model import EventKind, ReportModel, Section, TranscriptMeta, TranscriptResult
+from claudeglass.pricing import load_pricing
+from claudeglass.units import Units
 
 from helpers import assert_privacy, elasticity_with_slope
 
@@ -328,7 +328,7 @@ def _naive_carried_costs(turns: list[model.Turn], lookup) -> dict[tuple[int, str
     bisect rewrite). Used to cross-check :func:`compute_carry`'s output
     is unchanged (equal within 1e-12) after that rewrite, independently
     of carry.py's own (now optimized) internals."""
-    from claude_token_lens.pricing import price_turn
+    from claudeglass.pricing import price_turn
 
     priced = [t for t in turns if t.turn_index > 0]
     by_index = {t.turn_index: t for t in priced}

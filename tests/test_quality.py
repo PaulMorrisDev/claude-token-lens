@@ -9,11 +9,11 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from claude_token_lens import capture_catalogue as catalogue, events, parse, quality
-from claude_token_lens.model import EventKind, TranscriptMeta
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.units import Units
+from claudeglass import capture_catalogue as catalogue, events, parse, quality
+from claudeglass.model import EventKind, TranscriptMeta
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing
+from claudeglass.units import Units
 
 from helpers import (
     attachment_line,

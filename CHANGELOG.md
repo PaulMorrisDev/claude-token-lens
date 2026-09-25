@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **claude-token-lens is now ClaudeGlass.** The package, its command and
+  module (`claudeglass`, `python -m claudeglass`), the data folder
+  (`~/.claude/claudeglass`), the logon service (Scheduled Task
+  `ClaudeGlass`, `claudeglass.service`, `com.claudeglass`), the
+  `CLAUDEGLASS_COMMAND` variable and the repository
+  ([PaulMorrisDev/claudeglass](https://github.com/PaulMorrisDev/claudeglass))
+  all take the new name. It is a fresh install, not an upgrade: nothing
+  reads the old names. Remove the old tool with its own
+  `python -m claude_token_lens uninstall`, then
+  `pip uninstall claude-token-lens`, then install ClaudeGlass and run
+  `init`. To keep your history, move `~/.claude/token-lens` to
+  `~/.claude/claudeglass` before `init`. See
+  [Coming from claude-token-lens](README.md#coming-from-claude-token-lens).
+  The `[tl: ...]` tags, the `/tl-feedback` and `/tl-brief` skills and the
+  CLAUDE.md markers heading keep their names, so sessions recorded
+  before the rename read the same.
+- **On PyPI.** `pip install claudeglass`, `pipx install claudeglass`, or
+  `uvx claudeglass check --all-projects` without installing. The release
+  workflow publishes each tagged version through PyPI's trusted
+  publishing, so no token is stored anywhere.
+- **The README starts with what it finds**, and who it is for, then a
+  one-minute try. Troubleshooting, the WSL notes and the old-dashboard
+  and more-than-one-Python fixes moved to
+  [`docs/first-run.md`](docs/first-run.md#troubleshooting), and the
+  messages that point there link to it in full.
+
+### Fixed
+
+- `uninstall-service`, and the logon-service step of `uninstall`, said
+  "Register Scheduled Task ... and start it now" and listed the unit
+  file it deletes under "will write". They now say "Stop the dashboard
+  and remove its logon service" and "will remove".
+- The dashboard compared each session with the one before it in *any*
+  project when looking for changes the transcripts show, so moving
+  between two projects on different models, effort levels or CLAUDE.md
+  sizes marked a "Model changed" (or effort, or CLAUDE.md size) change on
+  the spend chart and under "Your changes and what they did" on
+  Setup › Settings each time. It now compares sessions within the same
+  project only, as the reports already did.
+
 ## [0.8.0] - 2026-09-25
 
 ### Added

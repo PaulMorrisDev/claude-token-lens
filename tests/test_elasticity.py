@@ -19,15 +19,15 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from claude_token_lens import elasticity
-from claude_token_lens.model import (
+from claudeglass import elasticity
+from claudeglass.model import (
     Recommendation,
     ReportMeta,
     ReportModel,
     TranscriptResult,
     Turn,
 )
-from claude_token_lens.pricing import ModelRates, Pricing
+from claudeglass.pricing import ModelRates, Pricing
 
 from helpers import assert_privacy
 
@@ -468,10 +468,10 @@ def test_rule_evidence_cites_real_table_cells():
 
 
 def test_report_adds_the_section_and_rule_under_subscription_with_readings(tmp_path, monkeypatch):
-    from claude_token_lens import report as report_mod
-    from claude_token_lens.config import Config
-    from claude_token_lens.corpus import load_corpus
-    from claude_token_lens.report import build_report
+    from claudeglass import report as report_mod
+    from claudeglass.config import Config
+    from claudeglass.corpus import load_corpus
+    from claudeglass.report import build_report
 
     from helpers import turn_line, write_jsonl
 
@@ -508,9 +508,9 @@ def test_report_adds_the_section_and_rule_under_subscription_with_readings(tmp_p
 
 
 def test_report_leaves_the_section_out_under_api_billing(tmp_path):
-    from claude_token_lens.config import Config
-    from claude_token_lens.corpus import load_corpus
-    from claude_token_lens.report import build_report
+    from claudeglass.config import Config
+    from claudeglass.corpus import load_corpus
+    from claudeglass.report import build_report
 
     project_dir = tmp_path / "proj"
     project_dir.mkdir()

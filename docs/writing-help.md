@@ -3,7 +3,7 @@
 Every table on the dashboard carries a short explanation, and every
 recommendation explains the change it suggests. This page is the house
 style for both. The copy lives in
-[`src/claude_token_lens/helptext.py`](../src/claude_token_lens/helptext.py)
+[`src/claudeglass/helptext.py`](../src/claudeglass/helptext.py)
 and is checked by `tests/test_help_coverage.py`. The dashboard's own
 words follow the same rules (see "Dashboard copy" below).
 
@@ -39,7 +39,7 @@ words follow the same rules (see "Dashboard copy" below).
 
 Point at another page or segment with a token, `{{page:<page>}}` or
 `{{page:<page>/<segment>}}` (ids from
-[`src/claude_token_lens/pages.py`](../src/claude_token_lens/pages.py)),
+[`src/claudeglass/pages.py`](../src/claudeglass/pages.py)),
 never with its name in prose ("the Cache tab", "Setup › Capture shows").
 The dashboard's `links.js` turns a token into a link; everywhere else --
 the CLI, the Markdown and HTML reports, `docs/capture.md` -- calls
@@ -91,7 +91,7 @@ Every suggested change answers six questions, in this order:
 6. **How to undo it.**
 
 Then offer two ways to make the change: a command
-(`claude-token-lens apply --set ... --dry-run` first) and a prompt for
+(`claudeglass apply --set ... --dry-run` first) and a prompt for
 Claude, and end with `fixes.RESTART_NOTE`: Claude Code reads settings
 when it starts, so the change needs a restart.
 
@@ -110,7 +110,7 @@ A prompt must stand on its own:
 ## Dashboard copy
 
 The dashboard's own words live in its JS modules
-(`src/claude_token_lens/service/static/`): page and segment names,
+(`src/claudeglass/service/static/`): page and segment names,
 intros, labels, buttons, empty states, errors and notes. They follow
 the rules above, plus these:
 

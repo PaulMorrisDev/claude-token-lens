@@ -84,7 +84,7 @@ whose type wasn't recorded (they have no agent file).
 
 A cached prefix survives as long as nothing upstream of it changes and
 the entry hasn't expired. What invalidates it, as observed and encoded
-in [`events.py`](../src/claude_token_lens/events.py)'s `EventKind` table:
+in [`events.py`](../src/claudeglass/events.py)'s `EventKind` table:
 a compaction (`COMPACT_BOUNDARY`/`COMPACT_SUMMARY`), a model switch
 (`MODEL_FALLBACK`), the `CACHE_SIGNAL` family (a model change, thinking
 being stripped, a model dropping its own prior extended-thinking blocks
@@ -124,7 +124,7 @@ Two practical consequences worth designing around:
 
 ## 3. Cache rebuild definitions and signatures
 
-A turn is a **cache rebuild** (called a *re-cache* in the code and the JSON output; [`recache.py`](../src/claude_token_lens/recache.py))
+A turn is a **cache rebuild** (called a *re-cache* in the code and the JSON output; [`recache.py`](../src/claudeglass/recache.py))
 when all of the following hold:
 
 - it is not the transcript's first priced turn,
@@ -494,7 +494,7 @@ and the always-measured signals feed once `habits.py` has turned them
 into tables.
 
 Turn capture on, change its level, or remove it with
-`claude-token-lens capture ...`; `docs/capture.md` lists every command,
+`claudeglass capture ...`; `docs/capture.md` lists every command,
 and the dashboard's Setup › Capture and capture banner offer the same
 choices with the measured cost attached.
 

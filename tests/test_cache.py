@@ -1,4 +1,4 @@
-"""Tests for WP11's on-disk digest cache (``src/claude_token_lens/cache.py``):
+"""Tests for WP11's on-disk digest cache (``src/claudeglass/cache.py``):
 hit/miss on mtime and size change, schema/parser version invalidation,
 live-file bypass, corrupt-file recovery, purge, stats, and the
 encode/decode round trip against every real fixture under
@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import PARSER_VERSION, SCHEMA_VERSION
-from claude_token_lens.cache import (
+from claudeglass import PARSER_VERSION, SCHEMA_VERSION
+from claudeglass.cache import (
     FINGERPRINT,
     STALE_CACHE_VERSION_DAYS,
     CacheStats,
@@ -24,8 +24,8 @@ from claude_token_lens.cache import (
     encode_result,
     result_from_jsonable,
 )
-from claude_token_lens.model import TranscriptMeta
-from claude_token_lens.parse import parse_transcript
+from claudeglass.model import TranscriptMeta
+from claudeglass.parse import parse_transcript
 
 from helpers import turn_line, write_jsonl
 

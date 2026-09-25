@@ -17,9 +17,9 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from claude_token_lens import events
-from claude_token_lens.model import EventKind, TranscriptMeta
-from claude_token_lens.parse import parse_transcript
+from claudeglass import events
+from claudeglass.model import EventKind, TranscriptMeta
+from claudeglass.parse import parse_transcript
 
 from helpers import (
     attachment_line,

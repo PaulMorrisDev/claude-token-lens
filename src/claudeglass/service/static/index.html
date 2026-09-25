@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="tl-command" content="claudeglass">
+<title>claudeglass</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/static/fonts/InterVariable-4.1.woff2" as="font" type="font/woff2" crossorigin>
+<script src="/static/theme-boot.js"></script>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<button type="button" class="skip-link" id="skip-link">Skip to the page</button>
+<div class="app" id="app" data-sidebar="full">
+  <nav class="sidebar" id="sidebar" aria-label="Pages">
+    <div class="sidebar-head">
+      <a class="brand" href="#/overview" id="brand">
+        <img class="brand-mark" src="/static/favicon.svg" alt="" width="20" height="20">
+        <span class="brand-name">ClaudeGlass</span>
+      </a>
+      <button type="button" class="icon-button" id="sidebar-toggle" aria-controls="sidebar" aria-expanded="true"></button>
+    </div>
+    <ul class="nav-list" id="nav-main"></ul>
+    <div class="sidebar-foot">
+      <ul class="nav-list" id="nav-foot"></ul>
+      <div class="status-line" id="status-line" role="group" aria-label="Service status"></div>
+    </div>
+  </nav>
+
+  <main class="main-col" id="main">
+    <div class="header-sentinel" id="header-sentinel" aria-hidden="true"></div>
+    <header class="page-header" id="page-header">
+      <div class="page-heading">
+        <h1 id="page-title" tabindex="-1">Overview</h1>
+        <nav class="segments" id="segments" hidden></nav>
+      </div>
+      <div class="page-controls">
+        <div class="project-picker" id="project-picker"></div>
+        <div class="window-picker" id="window-picker"></div>
+        <button type="button" class="icon-button" id="theme-toggle"></button>
+      </div>
+    </header>
+
+    <div class="banners">
+      <div class="health-banner" id="health-banner" role="status" aria-live="polite" hidden></div>
+      <div class="capture-banner" id="capture-banner" role="status" aria-live="polite" hidden></div>
+    </div>
+
+    <div class="views" id="views"></div>
+  </main>
+</div>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

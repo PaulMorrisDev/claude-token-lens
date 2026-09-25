@@ -19,11 +19,11 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import PARSER_VERSION, config, signals
-from claude_token_lens.service.contracts import ServeOptions
-from claude_token_lens.service.store import Store
-from claude_token_lens.service.watcher import LIVE_FILE_WINDOW_S, FileWatcher
-from claude_token_lens.tools import log_usage
+from claudeglass import PARSER_VERSION, config, signals
+from claudeglass.service.contracts import ServeOptions
+from claudeglass.service.store import Store
+from claudeglass.service.watcher import LIVE_FILE_WINDOW_S, FileWatcher
+from claudeglass.tools import log_usage
 
 from helpers import assert_privacy, turn_line, write_jsonl
 
@@ -162,10 +162,10 @@ def test_summary_windowing_matches_report_overview_totals(tmp_path: Path, store:
     to 40 days ago doesn't, even when its file changed ten minutes ago,
     as when Claude Code appends a title to an old transcript.
     """
-    from claude_token_lens.config import Config
-    from claude_token_lens.corpus import load_corpus
-    from claude_token_lens.pricing import load_pricing
-    from claude_token_lens.report import build_report
+    from claudeglass.config import Config
+    from claudeglass.corpus import load_corpus
+    from claudeglass.pricing import load_pricing
+    from claudeglass.report import build_report
 
     root = tmp_path / "projects"
     project_dir = root / "proj-a"
@@ -271,7 +271,7 @@ def test_scan_baselines_updates_in_place_when_the_record_changes(tmp_path: Path,
 
 
 def _write_user_profile(config_dir: Path, *, profile_id: str, name: str = "My Profile") -> Path:
-    from claude_token_lens.profiles.schema import Profile, dump_profile
+    from claudeglass.profiles.schema import Profile, dump_profile
 
     profiles_dir = config_dir / "profiles"
     profiles_dir.mkdir(parents=True, exist_ok=True)
@@ -342,7 +342,7 @@ def test_scan_profiles_never_ingests_a_catalogue_id(tmp_path: Path, store: Store
 
 
 def test_scan_predictions_ingests_every_record_under_config_dir(tmp_path: Path, store: Store):
-    from claude_token_lens import config as config_mod
+    from claudeglass import config as config_mod
 
     options = _options(tmp_path)
     config_mod.append_prediction_log(
@@ -369,7 +369,7 @@ def test_scan_predictions_ingests_every_record_under_config_dir(tmp_path: Path, 
 
 
 def test_scan_predictions_is_a_no_op_on_an_unchanged_repeat_tick(tmp_path: Path, store: Store):
-    from claude_token_lens import config as config_mod
+    from claudeglass import config as config_mod
 
     options = _options(tmp_path)
     config_mod.append_prediction_log(
@@ -394,7 +394,7 @@ def test_scan_predictions_is_a_no_op_on_an_unchanged_repeat_tick(tmp_path: Path,
 
 
 def test_scan_predictions_ingests_each_new_line_appended_later(tmp_path: Path, store: Store):
-    from claude_token_lens import config as config_mod
+    from claudeglass import config as config_mod
 
     options = _options(tmp_path)
     config_mod.append_prediction_log(
@@ -752,7 +752,7 @@ def test_bad_transcript_is_recorded_without_a_path(tmp_path: Path, store: Store,
     bad_path = _write_session(root, "proj-a", "sess-bad", _two_turns())
     good_path = _write_session(root, "proj-b", "sess-good", _two_turns())
 
-    import claude_token_lens.service.watcher as watcher_mod
+    import claudeglass.service.watcher as watcher_mod
 
     real_parse = watcher_mod.parse_transcript
 
@@ -841,8 +841,8 @@ def test_stored_snapshot_keeps_the_fields_its_accessors_read(tmp_path: Path, sto
     path.write_text(json.dumps(data), encoding="utf-8")
     FileWatcher(store, options).run_once()
 
-    from claude_token_lens import snapshots as snapshots_mod
-    from claude_token_lens.snapshots import Snapshot
+    from claudeglass import snapshots as snapshots_mod
+    from claudeglass.snapshots import Snapshot
 
     stored = json.loads(store.snapshots()[0]["digest_json"])
     snap = Snapshot(path=Path(""), ts="20260918T130000Z", data=stored)
@@ -1076,7 +1076,7 @@ def test_start_twice_starts_only_one_thread(tmp_path: Path):
     second_thread = watcher._thread
 
     assert first_thread is second_thread
-    watcher_threads = [t for t in threading.enumerate() if t.name == "claude-token-lens-watcher"]
+    watcher_threads = [t for t in threading.enumerate() if t.name == "claudeglass-watcher"]
     assert len(watcher_threads) == 1
 
     watcher.stop()
@@ -1258,7 +1258,7 @@ def test_state_reports_progress_while_storing(tmp_path: Path, store: Store, monk
 def test_error_summary_keeps_sqlite_text_but_never_an_os_error_path(tmp_path: Path):
     import sqlite3
 
-    from claude_token_lens.service.watcher import _error_summary
+    from claudeglass.service.watcher import _error_summary
 
     assert _error_summary(sqlite3.OperationalError("database is locked")) == "OperationalError: database is locked"
     assert _error_summary(sqlite3.OperationalError("")) == "OperationalError"
@@ -1270,8 +1270,8 @@ def test_error_summary_keeps_sqlite_text_but_never_an_os_error_path(tmp_path: Pa
 def test_a_large_tick_reports_finding_then_reading_then_storing(
     tmp_path: Path, store: Store, monkeypatch: pytest.MonkeyPatch
 ):
-    from claude_token_lens.cache import DigestCache
-    import claude_token_lens.service.watcher as watcher_mod
+    from claudeglass.cache import DigestCache
+    import claudeglass.service.watcher as watcher_mod
 
     root = tmp_path / "projects"
     _write_session(root, "proj-a", "sess-a1", _two_turns())

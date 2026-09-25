@@ -34,10 +34,10 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from claude_token_lens.model import TranscriptMeta
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing, price_turn
-from claude_token_lens.topology import (
+from claudeglass.model import TranscriptMeta
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing, price_turn
+from claudeglass.topology import (
     TopologyStats,
     _report_index,
     _report_tokens,
@@ -661,7 +661,7 @@ def test_add_session_accumulates_across_multiple_sessions(tmp_path):
 
 
 def test_a_read_after_an_edit_to_the_same_file_is_not_a_repeat(tmp_path):
-    from claude_token_lens import parse
+    from claudeglass import parse
 
     parse.set_salt(b"t" * 32)
     top = _parse(tmp_path, "top-reads", [

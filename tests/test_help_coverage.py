@@ -16,14 +16,14 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import helptext
-from claude_token_lens.config import Config
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.model import DASHBOARD_PLACEMENTS
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.report import build_report
+from claudeglass import helptext
+from claudeglass.config import Config
+from claudeglass.corpus import load_corpus
+from claudeglass.model import DASHBOARD_PLACEMENTS
+from claudeglass.pricing import load_pricing
+from claudeglass.report import build_report
 
-SRC = Path(__file__).resolve().parent.parent / "src" / "claude_token_lens"
+SRC = Path(__file__).resolve().parent.parent / "src" / "claudeglass"
 
 #: Sections whose tables don't have help yet. Remove a key once its copy
 #: is written in ``helptext.py``.
@@ -183,7 +183,7 @@ def test_subscription_money_columns_say_list_price(tmp_path):
 
 
 def _labelled_model():
-    from claude_token_lens.model import Column, Help, ReportModel, Section, Table
+    from claudeglass.model import Column, Help, ReportModel, Section, Table
 
     table = Table(
         name="t",
@@ -197,7 +197,7 @@ def _labelled_model():
 
 
 def test_markdown_labels_values_and_explains_only_on_request():
-    from claude_token_lens.render.markdown import render_markdown
+    from claudeglass.render.markdown import render_markdown
 
     model = _labelled_model()
     plain = render_markdown(model)
@@ -213,9 +213,9 @@ def test_markdown_labels_values_and_explains_only_on_request():
 def test_html_help_is_collapsed_and_json_csv_keep_raw_values(tmp_path):
     import json
 
-    from claude_token_lens.render.csv_out import write_csv_dir
-    from claude_token_lens.render.html import render_html
-    from claude_token_lens.render.json_out import render_json
+    from claudeglass.render.csv_out import write_csv_dir
+    from claudeglass.render.html import render_html
+    from claudeglass.render.json_out import render_json
 
     model = _labelled_model()
     html = render_html(model)
@@ -231,7 +231,7 @@ def test_html_help_is_collapsed_and_json_csv_keep_raw_values(tmp_path):
 def test_every_diagnostics_field_has_a_plain_label():
     import dataclasses
 
-    from claude_token_lens.model import Diagnostics
+    from claudeglass.model import Diagnostics
 
     fields = {f.name for f in dataclasses.fields(Diagnostics)}
     assert set(helptext.DIAGNOSTIC_LABELS) == fields

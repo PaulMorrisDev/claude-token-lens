@@ -8,8 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from claude_token_lens import skills_review
-from claude_token_lens.units import Units
+from claudeglass import skills_review
+from claudeglass.units import Units
 
 from helpers import attachment_line, elasticity_with_slope, write_jsonl
 
@@ -36,7 +36,7 @@ def _usage(name: str, *, listed: int, invoked: int = 0, tokens: int = 40, cost: 
 
 def _setup(tmp_path: Path) -> tuple[Path, Path]:
     claude_root = tmp_path / ".claude"
-    config_dir = claude_root / "token-lens"
+    config_dir = claude_root / "claudeglass"
     config_dir.mkdir(parents=True)
     (claude_root / "skills" / "grill-me").mkdir(parents=True)
     (claude_root / "skills" / "grill-me" / "SKILL.md").write_text("---\nname: grill-me\n---\n", encoding="utf-8")
@@ -95,7 +95,7 @@ def test_unused_skills_get_a_hide_fix_with_a_merge_prompt_and_dry_run_command(tm
 
     hide = rows["dataviz"]["fixes"][0]
     assert hide["command"] == (
-        "claude-token-lens apply --set skillOverrides=dataviz:user-invocable-only --scope user --dry-run"
+        "claudeglass apply --set skillOverrides=dataviz:user-invocable-only --scope user --dry-run"
     )
     assert 'add "dataviz": "user-invocable-only" to skillOverrides, keeping every entry already there' in hide["prompt"]
     headings = [pair[0] for pair in hide["explainer"]]
@@ -189,7 +189,7 @@ def test_a_skill_a_claude_code_tool_loads_is_never_offered_for_hiding(tmp_path):
     [fix] = row["fixes"]
     assert fix["title"] == "List it by name only"
     assert fix["command"] == (
-        "claude-token-lens apply --set skillOverrides=workflow-authoring:name-only --scope user --dry-run"
+        "claudeglass apply --set skillOverrides=workflow-authoring:name-only --scope user --dry-run"
     )
     # "- workflow-authoring" is about 5 tokens of the 60 kept.
     assert "0.55 USD" in dict(fix["explainer"])["Expected effect"]

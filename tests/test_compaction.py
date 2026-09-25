@@ -1,4 +1,4 @@
-"""Tests for WP6's compaction analytics (src/claude_token_lens/compaction.py).
+"""Tests for WP6's compaction analytics (src/claudeglass/compaction.py).
 
 Two fixtures:
 
@@ -39,10 +39,10 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import compaction
-from claude_token_lens.model import TranscriptMeta
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing
+from claudeglass import compaction
+from claudeglass.model import TranscriptMeta
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing
 
 from helpers import assert_privacy, system_line, tool_use_block, turn_line, user_str_line, write_jsonl
 
@@ -136,21 +136,21 @@ def sonnet_rates():
 
 
 def test_is_recache_turn_true_above_floor_and_below_ratio():
-    from claude_token_lens.model import Turn
+    from claudeglass.model import Turn
 
     turn = Turn(ctx=26000, cache_read_tokens=1000)
     assert compaction.is_recache_turn(turn) is True
 
 
 def test_is_recache_turn_false_at_or_below_ctx_floor():
-    from claude_token_lens.model import Turn
+    from claudeglass.model import Turn
 
     turn = Turn(ctx=20000, cache_read_tokens=0)
     assert compaction.is_recache_turn(turn) is False
 
 
 def test_is_recache_turn_false_when_cache_read_share_high():
-    from claude_token_lens.model import Turn
+    from claudeglass.model import Turn
 
     turn = Turn(ctx=26000, cache_read_tokens=10000)  # 10000 >= 0.2*26000=5200
     assert compaction.is_recache_turn(turn) is False
@@ -161,8 +161,8 @@ def test_is_recache_turn_honors_a_custom_recache_thresholds():
     ``RecacheThresholds`` (ctx_floor=20_000), but does once a caller
     passes a lower ``ctx_floor`` — same shared dataclass ``recache.py``
     itself uses, not an independent copy of the two numbers."""
-    from claude_token_lens.model import Turn
-    from claude_token_lens.recache import RecacheThresholds
+    from claudeglass.model import Turn
+    from claudeglass.recache import RecacheThresholds
 
     turn = Turn(ctx=15000, cache_read_tokens=1000)
     assert compaction.is_recache_turn(turn) is False
@@ -173,14 +173,14 @@ def test_is_recache_turn_honors_a_custom_recache_thresholds():
 
 
 def test_new_tokens_is_input_plus_cache_creation():
-    from claude_token_lens.model import Turn
+    from claudeglass.model import Turn
 
     turn = Turn(input_tokens=100, cache_creation_tokens=250, cache_read_tokens=999999)
     assert compaction.new_tokens(turn) == 350
 
 
 def test_new_tokens_ignores_cache_read():
-    from claude_token_lens.model import Turn
+    from claudeglass.model import Turn
 
     turn = Turn(input_tokens=0, cache_creation_tokens=0, cache_read_tokens=50000)
     assert compaction.new_tokens(turn) == 0

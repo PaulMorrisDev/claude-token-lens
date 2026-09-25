@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from claude_token_lens.model import Section
-from claude_token_lens.scorecard import (
+from claudeglass.model import Section
+from claudeglass.scorecard import (
     ALL_DIMENSIONS,
     LEVEL_LABELS,
     ScorecardError,

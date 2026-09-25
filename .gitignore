@@ -14,7 +14,7 @@ dist/
 *.pyz
 
 # Project-local caches and private fixtures
-.token-lens-cache/
+.claudeglass-cache/
 tests/fixtures/_private/
 
 # Agent worktrees (created per concurrent-writer session; never committed)

@@ -4,18 +4,18 @@ A team lead can compare how several people use Claude Code without
 collecting anyone's sessions. It takes three steps, run by different
 people on different machines:
 
-1. Each team member runs `python -m claude_token_lens export --aggregate`
+1. Each team member runs `python -m claudeglass export --aggregate`
    on their own machine. They hand the file to the team lead by whatever
    channel they already use: Slack, email or a shared drive. This tool
    has no upload of its own.
-2. The team lead runs `python -m claude_token_lens import FILE...` on
+2. The team lead runs `python -m claudeglass import FILE...` on
    their own machine, naming one or more files, to build up a local
    store.
-3. The team lead runs `python -m claude_token_lens team-report` to see
+3. The team lead runs `python -m claudeglass team-report` to see
    the comparison.
 
 Nothing here goes online. Every step reads local files and writes local
-files. The code is in `src/claude_token_lens/team.py`.
+files. The code is in `src/claudeglass/team.py`.
 
 The last section, [Settings for teams and enterprise](#settings-for-teams-and-enterprise),
 covers the `config.toml` settings that matter on a work machine.
@@ -66,8 +66,8 @@ covers the `config.toml` settings that matter on a work machine.
 ## Step 1: `export --aggregate` (each team member)
 
 ```bash
-python -m claude_token_lens export --aggregate --out my-machine.json
-python -m claude_token_lens export --aggregate --include-projects --out my-machine.json --days 30
+python -m claudeglass export --aggregate --out my-machine.json
+python -m claudeglass export --aggregate --include-projects --out my-machine.json --days 30
 ```
 
 Writes one team document (see [docs/exports.md](exports.md#--aggregate-team-documents)
@@ -79,7 +79,7 @@ Hand the resulting file to whoever is building the team report.
 ## Step 2: `import` (the team lead)
 
 ```bash
-python -m claude_token_lens import my-machine.json colleague-a.json colleague-b.json
+python -m claudeglass import my-machine.json colleague-a.json colleague-b.json
 ```
 
 Validates every file first (`team.validate_team_document`), then
@@ -98,10 +98,10 @@ files you name and writes under `--config-dir`.
 ## Step 3: `team-report` (the team lead)
 
 ```bash
-python -m claude_token_lens team-report
-python -m claude_token_lens team-report --json
-python -m claude_token_lens team-report --html team-report.html
-python -m claude_token_lens team-report --csv-dir ./team-report-csv
+python -m claudeglass team-report
+python -m claudeglass team-report --json
+python -m claudeglass team-report --html team-report.html
+python -m claudeglass team-report --csv-dir ./team-report-csv
 ```
 
 Reads every document under `<config_dir>/team/`, keeps only the latest
@@ -138,7 +138,7 @@ pointing at `import`.
 ## Settings for teams and enterprise
 
 These settings live in `config.toml`, in the config folder
-(`~/.claude/token-lens` unless you pass `--config-dir`).
+(`~/.claude/claudeglass` unless you pass `--config-dir`).
 
 - **`exclude_projects`** is a list of regular expressions, matched
   against project folder names and ignoring case. A matching project is
