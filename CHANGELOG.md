@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Capture can say a reply fixes a fault in earlier work.** The
+  `shift` tag gains a fifth word, `fix`, for when the conversation
+  moves on to fixing a fault found in work done earlier. `redo` still
+  means doing earlier work again. Work habits counts a fix as rework,
+  the same as a redo: the earlier message counts as redone, and its
+  cost feeds the same savings. The Essentials session note grows by
+  about 6 tokens. The new word changes the digest cache's vocabulary
+  fingerprint, so the first dashboard start after updating re-reads
+  every transcript once.
+
 ## [0.6.0] - 2026-09-25
 
 After updating, the first dashboard start re-reads every transcript (a

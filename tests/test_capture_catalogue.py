@@ -293,6 +293,17 @@ def test_the_session_note_is_recognised_in_a_transcript(tmp_path):
     assert result.turns[0].cap.task == "bugfix"
 
 
+def test_the_session_note_offers_fix_for_a_fault_in_earlier_work_and_the_parser_keeps_it():
+    assert cat.TAG_VOCAB["shift"] == ("new", "build", "grew", "redo", "fix")
+    note = cat.note_text(cat.level_metrics("essentials"), "main")
+    assert (
+        "shift: new|build|grew|redo|fix, only if it applies (a new unrelated task; building on the last one; "
+        "the scope grew; redoing earlier work; fixing a fault in it)"
+    ) in note.splitlines()
+    tag, _ = capture_tags.parse_reply_tags("Fixed the earlier change.\n\n[tl: task=bugfix shift=fix]")
+    assert (tag.task, tag.shift) == ("bugfix", "fix")
+
+
 # -- the /tl-brief skill -----------------------------------------------------
 
 

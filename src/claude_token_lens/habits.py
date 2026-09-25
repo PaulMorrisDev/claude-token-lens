@@ -214,7 +214,7 @@ BASES = {
     "flatten_nesting": "carrying the files agents read again",
     "quiet_output": "carrying big outputs; half of it unless Claude said none was needed",
     "tool_loops": "the attempts after the second at the same failing command",
-    "targeted_checks": "half of what redoing unchecked changes cost",
+    "targeted_checks": "half of what redoing or fixing unchecked changes cost",
     "allow_routine": "the replies after auto mode blocked a request",
     "state_limits": "the replies after a request was turned down",
     "effort_fit": "half the thinking on easy asks at high effort or above",
@@ -522,7 +522,8 @@ class CycleFact:
     blocked_cost: float = 0.0
     refused: int = 0
     refused_cost: float = 0.0
-    #: Your next message redid this work (``shift=redo``) or corrected it.
+    #: Your next message redid this work (``shift=redo``), fixed a fault in
+    #: it (``shift=fix``) or corrected it.
     redone: bool = False
     redo_cost: float = 0.0
     #: CAP-5: derived fallback for ``tag.check`` -- a test-runner command
@@ -713,7 +714,7 @@ def _session(bundle, rates: _Rates, out: Habits, rating) -> None:
         if following is None:
             continue
         tag = following.tag
-        if (tag is not None and tag.shift == "redo") or following.turns[0].human_correction:
+        if (tag is not None and tag.shift in ("redo", "fix")) or following.turns[0].human_correction:
             fact.redone = True
             fact.redo_cost = capture_mod._cycle_cost(following, rates.pricing)
     out.cycles.extend(facts)
@@ -1072,7 +1073,7 @@ def _item_clear_between(h: Habits) -> Item | None:
         if tag is not None and (tag.shift == "new" or tag.prior == "none"):
             reported.append((c, c.stale_cost))
         elif (c.gap_s or 0) >= LONG_BREAK_S and not (
-            tag is not None and (tag.shift in ("build", "grew", "redo") or tag.prior in ("needed", "some"))
+            tag is not None and (tag.shift in ("build", "grew", "redo", "fix") or tag.prior in ("needed", "some"))
         ):
             inferred.append((c, 0.5 * (c.stale_rewrite + c.stale_cost)))
     found = reported + inferred
@@ -2337,7 +2338,7 @@ def family(model_id: str | None) -> str:
 
 def went_well(c: CycleFact) -> bool:
     """Your feedback on the message's work where you gave it, otherwise
-    whether your next message redid or corrected it."""
+    whether your next message redid, fixed or corrected it."""
     if c.outcome:
         return c.outcome == "met"
     return not c.redone
@@ -2358,8 +2359,8 @@ def _resolved_effort(model: str, effort: str | None) -> str:
 
 def _last_cycle_ids(cycles: list[CycleFact]) -> set[int]:
     """``id(cycle)`` for the chronologically last cycle of each session:
-    it has no next message that could have redone or corrected it, so
-    counting it in a went-well/redo rate would credit an outcome
+    it has no next message that could have redone, fixed or corrected
+    it, so counting it in a went-well/redo rate would credit an outcome
     nothing afterwards confirms (PROF-04). ``h.cycles`` holds one
     session's cycles contiguously and in order (``_session`` appends
     them per session as it processes it), so the last one seen per

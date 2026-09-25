@@ -685,10 +685,10 @@ def test_wasted_turns_cites_redone_messages_and_missed_goals_when_there_are_any(
     report.sections.append(habits.section_from(h))
     (rec,) = waste.RULES[0](report, th)
     assert rec.evidence[-2:] == [
-        ("Messages redone or corrected next (%)", 25.0, "habits.habits_by_task", "all"),
+        ("Messages redone, fixed or corrected next (%)", 25.0, "habits.habits_by_task", "all"),
         ("Pieces of work you said missed their goal", 2, "habits.habits_outcomes", "missed"),
     ]
     assert rec.why == (
-        "These replies cost money but produced nothing you kept. 25% of your messages were redone or corrected by "
-        "the next one. You said 2 pieces of work missed their goal."
+        "These replies cost money but produced nothing you kept. 25% of your messages were redone, fixed or "
+        "corrected by the next one. You said 2 pieces of work missed their goal."
     )

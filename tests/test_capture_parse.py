@@ -65,6 +65,12 @@ def test_a_tag_ending_the_reply_is_read_into_closed_words():
     assert tag.has_tl and tag.chars == len("[tl: task=bugfix brief=partial level=normal shift=build missing=files,done]")
 
 
+@pytest.mark.parametrize("word", ["new", "build", "grew", "redo", "fix"])
+def test_every_shift_word_is_kept_including_fix_for_a_fault_in_earlier_work(word):
+    tag, _ = capture_tags.parse_reply_tags(f"Done.\n\n[tl: task=bugfix shift={word}]")
+    assert (tag.task, tag.shift) == ("bugfix", word)
+
+
 @pytest.mark.parametrize("text", [
     "Write [tl: task=bugfix] at the end of each reply, like that. Then carry on.",  # quoted mid-reply
     "[tl: task=bugfix]\nand then more text after it",  # not the last thing
@@ -235,18 +241,18 @@ def test_a_pre_rendered_capture_note_still_takes_the_fallback_path(tmp_path):
     ``_attachment_content_chars``), not silently come back sized ``None``.
 
     Pinned against real numbers, not just internal consistency: the
-    essentials level's SessionStart note is exactly 729 characters, and
+    essentials level's SessionStart note is exactly 753 characters, and
     the wrapper Claude Code puts around a hook's additional context
     (``_HOOK_CONTEXT_WRAPPER_CHARS``, 63) plus ``len("SessionStart")``
-    (12) is exactly 75, for 804 total.
+    (12) is exactly 75, for 828 total.
     """
     text = capture_catalogue.note_text(capture_catalogue.level_metrics("essentials"), "main")
-    assert len(text) == 729
+    assert len(text) == 753
     line = _note(text, hook="SessionStart", rendered=False)
     assert "rendered" not in line
     event = events.classify_line(line)
     assert (event.kind, event.subkind) == (EventKind.HOOK_OUTPUT, "capture_note")
-    assert event.size_chars == 804
+    assert event.size_chars == 828
 
 
 def test_other_hook_context_is_unchanged():

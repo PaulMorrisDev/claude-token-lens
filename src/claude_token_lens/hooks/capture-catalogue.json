@@ -108,7 +108,7 @@
    "id": "shift",
    "group": "essentials",
    "requires": [],
-   "main_line": "shift: new|build|grew|redo, only when it applies (a new unrelated task; building on the last one; the scope grew; redoing earlier work)",
+   "main_line": "shift: new|build|grew|redo|fix, only if it applies (a new unrelated task; building on the last one; the scope grew; redoing earlier work; fixing a fault in it)",
    "main_extra": "",
    "extra_before_tag": false,
    "sub_line": "",
