@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-25
+
+### Fixed
+
+- The dashboard didn't start from the logon task on Windows in 0.6.1.
+  The task runs it windowless (`pythonw`), which has no console
+  output, and 0.6.1's rewriting of printed commands failed on its
+  first line there, so the service stopped at once and the page never
+  loaded. It starts again; run `python -m claude_token_lens update` to
+  get the fix and restart it.
+
 ## [0.6.1] - 2026-09-25
 
 Updating from 0.6.0, whose `update` stops after installing, run
