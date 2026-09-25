@@ -119,6 +119,21 @@ def test_the_views_have_their_own_transition_name_and_timing() -> None:
     assert "translateY(6px)" in rise.group(1)
 
 
+def test_a_click_during_a_page_change_reaches_the_live_page() -> None:
+    # Chromium hit-tests only the root while the views fade, so a click in
+    # those 220ms ends the transition and goes to what is under the pointer.
+    app = _text("app.js")
+    assert 'document.addEventListener("click", passClickThrough);' in app
+    through = _function("app.js", "passClickThrough")
+    assert "event.target !== document.documentElement" in through
+    assert "transition.skipTransition();" in through
+    assert "document.elementFromPoint(x, y)" in through
+    assert 'new MouseEvent("click"' in through
+    change = _function("app.js", "changeView")
+    assert "liveTransition = transition;" in change
+    assert "if (liveTransition === transition) liveTransition = null;" in change
+
+
 def test_ui_keyframes_move_only_transform_and_opacity() -> None:
     css = _css()
     for name in ("rise-in", "fade-out"):
@@ -142,6 +157,9 @@ def test_a_figure_counts_up_from_its_final_text_and_always_ends_on_it() -> None:
     assert "setTimeout(finish, COUNT_MS + 100)" in count
     assert 'addEventListener("visibilitychange", finish)' in count
     assert re.search(r"var COUNT_MS = 700;", _text("ui.js"))
+    # Figures that land on a view you have left show at once: a count run
+    # out of sight would be over, or replay late, by the time you look.
+    assert "!node.getClientRects().length" in count
 
 
 def test_the_headline_figures_count_from_the_last_ones_shown() -> None:
@@ -173,6 +191,8 @@ def test_the_next_best_actions_arrive_in_turn() -> None:
     assert "Math.min(i, 5) * 24" in enter
     assert 'classList.remove("is-entering")' in enter
     assert '"animationcancel"' in enter
+    # Rows drawn on a view you have left arrive as they are.
+    assert "!rows[0].getClientRects().length" in enter
     assert 'enterInTurn(actionsHost.querySelectorAll(".next-action"), ACTIONS_AFTER_MS)' in _text("page-overview.js")
 
 
@@ -184,6 +204,14 @@ def test_a_chart_resized_mid_draw_carries_its_draw_in_on() -> None:
     assert ".interrupt()" in carry
     assert "redraw(frame)" in _function("charts.js", "setChartHeight")
     assert "else redraw(frame);" in _function("charts.js", "wireResize")
+    # The session timeline, rebuilt on every draw, starts its line from as
+    # much as was drawn rather than drawing it again from nothing.
+    timeline = _function("charts-types.js", "buildSessionTimeline")
+    assert 'var left = ctx.resize ? lineStillToDraw(plot.select(".chart-line").node()) : 1;' in timeline
+    assert '.attr("stroke-dashoffset", length * left)' in timeline
+    assert "if (ms && left > 0)" in timeline
+    still = _function("charts-types.js", "lineStillToDraw")
+    assert 'getAttribute("stroke-dashoffset")' in still and "if (!(length > 0)) return 0;" in still
 
 
 def test_a_morph_skips_charts_with_too_many_marks() -> None:
@@ -249,6 +277,13 @@ def test_the_checks_are_fetched_once_per_window_and_project() -> None:
     actions = _text("page-actions.js")
     assert 'withWindow("/api/quick-actions")' not in actions
     assert actions.count("loadQuickActions()") == 2
-    # Search shares the same cache.
+    # Search shares the same cache, and keeps its entries with the rest,
+    # so a new window or project and Redraw figures clear them too.
     assert "loadQuickActions()" in _text("palette.js")
     assert '"/api/quick-actions")' not in _text("palette.js")
+    entries = _function("palette.js", "loadEntries")
+    assert "state.searchPromises[key]" in entries
+    assert "var loaded" not in _text("palette.js")
+    assert "searchPromises: {}" in _text("core.js")
+    assert "delete state.searchPromises[scopeKey()];" in _function("app.js", "scopeChanged")
+    assert "state.searchPromises = {};" in _function("shell.js", "redrawEverything")

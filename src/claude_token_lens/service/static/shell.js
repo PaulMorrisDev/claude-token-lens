@@ -163,6 +163,7 @@ function redrawEverything(options) {
   state.reportPromises = {};
   state.recommendationPromises = {};
   state.quickActionPromises = {};
+  state.searchPromises = {};
   resetFiguresAsOf();
   Object.keys(renderedViews).forEach(function (key) {
     delete renderedViews[key];

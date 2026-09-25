@@ -170,6 +170,7 @@ function resolveRoute() {
 // change at once instead of fading with the view. Otherwise the change
 // is made at once.
 var viewChanges = 0;
+var liveTransition = null;
 
 function changeView(key, change) {
   var moving =
@@ -194,7 +195,9 @@ function changeView(key, change) {
     // scrolls for the new one.
     root.style.setProperty("--view-shift", Math.round(top - views.getBoundingClientRect().top) + "px");
   });
+  liveTransition = transition;
   function settled() {
+    if (liveTransition === transition) liveTransition = null;
     viewChanges -= 1;
     if (viewChanges > 0) return;
     root.classList.remove("view-changing");
@@ -205,6 +208,25 @@ function changeView(key, change) {
   transition.ready.catch(function () {});
   transition.finished.then(settled, settled);
 }
+
+// While a View Transition runs, Chromium hit-tests only the page root
+// (CSS can't change that), so a click in those 220ms (the next page, a
+// segment, Copy prompt on the arriving view) would land nowhere. It
+// ends the transition instead and goes to what is under the pointer.
+function passClickThrough(event) {
+  var transition = liveTransition;
+  if (!transition || event.target !== document.documentElement) return;
+  var x = event.clientX;
+  var y = event.clientY;
+  transition.skipTransition();
+  transition.finished.then(function () {
+    var target = document.elementFromPoint(x, y);
+    if (!target || target === document.documentElement) return;
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y }));
+  });
+}
+
+document.addEventListener("click", passClickThrough);
 
 // Every in-app navigation comes through here (links.js's pageLink, the
 // sidebar, the segments): it adds one history entry, and resolveRoute
@@ -625,6 +647,7 @@ function scopeChanged(windowChanged) {
   delete state.reportPromises[scopeKey()];
   delete state.recommendationPromises[scopeKey()];
   delete state.quickActionPromises[scopeKey()];
+  delete state.searchPromises[scopeKey()];
   if (windowChanged) delete state.reportPromises[state.window];
   resetFiguresAsOf();
   Object.keys(renderedViews).forEach(function (key) {

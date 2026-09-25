@@ -93,6 +93,8 @@ export var state = {
   recommendationPromises: {},
   // And for /api/quick-actions, the checks (api.js's loadQuickActions).
   quickActionPromises: {},
+  // Search's entries (palette.js's loadEntries), built from the three.
+  searchPromises: {},
   currency: "USD",
   // UX-1: report.meta.units {mode, share_per_usd, period_label,
   // basis} (model.py's ReportMeta.units) -- the billing-mode facts

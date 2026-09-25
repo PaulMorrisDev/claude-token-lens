@@ -1246,6 +1246,15 @@ function markerGlyph(shape, cx, cy, r, fill, titleText) {
   }
 }
 
+// How much of a line drawing in is still to come, as a share of its
+// length: 0 once it is drawn (the dash is cleared at the end).
+function lineStillToDraw(line) {
+  var dash = line && line.getAttribute("stroke-dasharray");
+  var length = dash ? parseFloat(dash) : 0;
+  if (!(length > 0)) return 0;
+  return Math.min(1, Math.max(0, parseFloat(line.getAttribute("stroke-dashoffset")) / length || 0));
+}
+
 // Chart 5: the context size at every turn of one session, with a
 // marker where the cache was rebuilt, the conversation was summarised,
 // a subagent started or you wrote, and the usage-limit pauses in a strip
@@ -1333,17 +1342,20 @@ function buildSessionTimeline(ctx, session) {
     return [x(turnOf(turn, i)), y(turn[1] || 0)];
   });
   // A fresh frame per session, so there's nothing to morph: draw anew.
+  // A resize mid draw-in carries on from as much of the line as was
+  // drawn, rather than starting it again.
   var plot = ctx.layer("plot");
-  plot.selectAll("*").remove();
+  var left = ctx.resize ? lineStillToDraw(plot.select(".chart-line").node()) : 1;
+  plot.selectAll("*").interrupt().remove();
   var overlay = plot.append("rect").attr("class", "chart-hit").attr("width", inner.w).attr("height", inner.h);
   if (points.length > 1) {
     var path = plot.append("path").attr("class", "chart-line").attr("stroke", "var(--chart-1)").attr("d", d3.line()(points));
     var ms = ctx.duration(points.length);
-    if (ms) {
+    if (ms && left > 0) {
       var length = path.node().getTotalLength();
       path
         .attr("stroke-dasharray", length + " " + length)
-        .attr("stroke-dashoffset", length)
+        .attr("stroke-dashoffset", length * left)
         .transition()
         .delay(ctx.delay)
         .duration(ms)

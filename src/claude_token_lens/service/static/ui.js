@@ -29,7 +29,9 @@ export function motionOK() {
 var COUNT_MS = 700;
 
 export function countUp(node, from, to, write) {
-  if (!node || !motionOK() || document.hidden || from === to || !isFinite(from) || !isFinite(to)) return;
+  // A view out of sight (figures that landed after you left) shows the
+  // final figure: a count nobody sees would be over by the time you look.
+  if (!node || !motionOK() || document.hidden || !node.getClientRects().length || from === to || !isFinite(from) || !isFinite(to)) return;
   var final = node.textContent;
   var start = null;
   var done = false;
@@ -61,9 +63,10 @@ export function countUp(node, from, to, write) {
 // in and rises 6px (app.css's .is-entering), 24ms after the one before,
 // the first `delay` ms from now. Only the first 6 are staggered; any
 // more arrive with the sixth. The rows are already in place, so this
-// only eases them in, and nothing moves under reduced motion.
+// only eases them in, and nothing moves under reduced motion or out of
+// sight (rows drawn on a view you have left arrive as they are).
 export function enterInTurn(rows, delay) {
-  if (!motionOK() || document.hidden) return;
+  if (!motionOK() || document.hidden || !rows.length || !rows[0].getClientRects().length) return;
   Array.prototype.forEach.call(rows, function (row, i) {
     function settle(event) {
       if (event.target !== row) return;

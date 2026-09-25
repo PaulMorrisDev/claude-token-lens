@@ -290,11 +290,12 @@ function projectEntries(slugs) {
 
 // The window's recommendations, checks, report, recent sessions and
 // projects, fetched once per window and project when search first
-// opens. A source that fails adds nothing; the rest still come.
-var loaded = { key: null, promise: null };
-
+// opens, and cleared with the caches they come from (a new window or
+// project, Redraw figures). A source that fails adds nothing; the rest
+// still come.
 function loadEntries() {
-  if (loaded.key === scopeKey() && loaded.promise) return loaded.promise;
+  var key = scopeKey();
+  if (state.searchPromises[key]) return state.searchPromises[key];
   function safely(promise, build) {
     return promise.then(build, function () {
       return [];
@@ -302,8 +303,7 @@ function loadEntries() {
       return [];
     });
   }
-  loaded.key = scopeKey();
-  loaded.promise = Promise.all([
+  var entries = Promise.all([
     safely(loadRecommendations(), function (result) {
       var body = result.body;
       return recommendationEntries(body && body.ok === true && Array.isArray(body.data) ? body.data : []);
@@ -325,11 +325,12 @@ function loadEntries() {
       return all.concat(list);
     }, []);
   });
-  loaded.promise.then(function (entries) {
+  state.searchPromises[key] = entries;
+  entries.then(function (list) {
     // Nothing came (the service is away): ask again next time.
-    if (!entries.length && loaded.key === scopeKey()) loaded.promise = null;
+    if (!list.length && state.searchPromises[key] === entries) delete state.searchPromises[key];
   });
-  return loaded.promise;
+  return entries;
 }
 
 // ======================================================================
