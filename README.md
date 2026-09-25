@@ -14,7 +14,7 @@ your own computer.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/images/overview-light.png">
-  <img alt="{HERO_ALT}" src="docs/images/overview-light.png" width="100%">
+  <img alt="The Overview page for the last 30 days. The headline says you used about 277.5% of your weekly usage limit, and 2 changes are worth making. Cards show spend, the available saving, what the cache saved and 53 sessions. Below them, a daily spend chart splits the main session from subagents." src="docs/images/overview-light.png" width="100%">
 </picture>
 
 <sub><i>The Overview page. Synthetic data, 30-day window, subscription billing.</i></sub>
@@ -254,8 +254,10 @@ billing, amounts are what you pay.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/recommendation-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/images/recommendation-light.png">
-  <img alt="{REC_ALT}" src="docs/images/recommendation-light.png" width="100%">
+  <img alt="A recommendation card: a cheaper model could do some of this work. It explains the saving and lists each agent type with the model to set. Below, a prompt to paste into Claude Code, with a tab for the dry-run command." src="docs/images/recommendation-light.png">
 </picture>
+
+<sub><i>A recommendation on the Actions page. Synthetic data.</i></sub>
 
 Each recommendation card explains the change before offering it. It
 says what the setting controls, its value now and after, which file it's
