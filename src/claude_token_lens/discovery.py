@@ -476,23 +476,36 @@ def find_subagents(
     the subagent transcript's own first line timestamp to fall inside
     ``[since, until]`` (via :func:`filter_subagents_by_window`).
     """
+    paths = find_subagent_paths(project_dir, session_id, since, until, subagent_window)
+    return [(jsonl_path, _read_meta_dict(jsonl_path)) for jsonl_path in paths]
+
+
+def find_subagent_paths(
+    project_dir: str | Path,
+    session_id: str,
+    since: str | None = None,
+    until: str | None = None,
+    subagent_window: str = "parent",
+) -> list[Path]:
+    """:func:`find_subagents`'s paths, same arguments and order, without
+    reading any ``.meta.json``: for a caller that loads each one through
+    :func:`load_meta` anyway, where the raw dict would be a second read
+    of every file.
+    """
     if subagent_window not in ("parent", "own"):
         raise ValueError(f"unknown subagent_window: {subagent_window!r} (expected 'parent' or 'own')")
 
     subagents_dir = Path(project_dir) / session_id / "subagents"
     if not subagents_dir.exists():
         return []
-    results: list[tuple[Path, dict]] = []
-    for jsonl_path in sorted(subagents_dir.glob("agent-*.jsonl")):
-        results.append((jsonl_path, _read_meta_dict(jsonl_path)))
+    paths = sorted(subagents_dir.glob("agent-*.jsonl"))
     workflows_dir = subagents_dir / "workflows"
     if workflows_dir.exists():
-        for jsonl_path in sorted(workflows_dir.glob("*/agent-*.jsonl")):
-            results.append((jsonl_path, _read_meta_dict(jsonl_path)))
+        paths.extend(sorted(workflows_dir.glob("*/agent-*.jsonl")))
 
     if subagent_window == "own":
-        results = filter_subagents_by_window(results, since, until)
-    return results
+        paths = [path for path, _ in filter_subagents_by_window([(path, {}) for path in paths], since, until)]
+    return paths
 
 
 def find_workflows(project_dir: str | Path, session_id: str) -> list[Path]:
@@ -666,6 +679,7 @@ __all__ = [
     "ts_in_window",
     "WINDOW_BY",
     "find_subagents",
+    "find_subagent_paths",
     "filter_subagents_by_window",
     "find_workflows",
     "load_meta",

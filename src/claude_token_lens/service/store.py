@@ -811,7 +811,12 @@ class Store:
         ``WorkflowRun``, already cost-linked by the caller), deduped by
         ``(session_id, run_id)``. ``phase_titles`` is stored as a JSON
         array of names only -- never ``detail``, which carries workflow
-        source/prompt text (see ``workflows.py``'s module docstring)."""
+        source/prompt text (see ``workflows.py``'s module docstring).
+
+        A row whose values are all unchanged is left alone, ``updated_at``
+        included: :meth:`change_token` reads that column, so touching it
+        on every re-read would tell every kept report the store changed
+        when nothing did."""
         conn = self._connection()
         with _transaction(conn):
             conn.execute(
@@ -828,6 +833,12 @@ class Store:
                     cost = excluded.cost,
                     status = excluded.status,
                     updated_at = excluded.updated_at
+                WHERE agent_count IS NOT excluded.agent_count
+                    OR phases IS NOT excluded.phases
+                    OR started IS NOT excluded.started
+                    OR finished IS NOT excluded.finished
+                    OR cost IS NOT excluded.cost
+                    OR status IS NOT excluded.status
                 """,
                 (
                     session_id, run_id, agent_count,

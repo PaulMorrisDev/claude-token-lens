@@ -1180,6 +1180,28 @@ def test_change_token_stable_when_nothing_changed(store: Store) -> None:
     assert store.change_token() == store.change_token()
 
 
+def test_rewriting_an_unchanged_workflow_run_keeps_the_change_token(store: Store, monkeypatch) -> None:
+    """The watcher re-reads every workflow file each tick. Writing the
+    same values again must not touch the row, or the token would move
+    every tick and every kept report would be rebuilt for nothing."""
+    from claude_token_lens.service import store as store_mod
+
+    _seed(store)
+    run = dict(session_id="session-a", run_id="wf_1", agent_count=2, phase_titles=["Build"], cost=1.5, status="done")
+    monkeypatch.setattr(store_mod, "_now", lambda: "2026-09-18T10:00:00Z")
+    store.upsert_workflow_run(**run)
+    before = store.change_token()
+
+    monkeypatch.setattr(store_mod, "_now", lambda: "2026-09-18T10:05:00Z")
+    store.upsert_workflow_run(**run)
+    assert store.change_token() == before
+
+    store.upsert_workflow_run(**{**run, "status": "failed"})
+    assert store.change_token() != before
+    row = store._connection().execute("SELECT status, updated_at FROM workflow_runs").fetchone()
+    assert (row["status"], row["updated_at"]) == ("failed", "2026-09-18T10:05:00Z")
+
+
 # -- turns_for_session ---------------------------------------------------
 
 

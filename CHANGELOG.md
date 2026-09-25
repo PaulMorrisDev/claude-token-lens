@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The dashboard's service idles on far less CPU.** Every 30 seconds
+  it re-read and re-totalled every session, whether or not anything had
+  changed: about 14 seconds of CPU a check on a corpus of 2,700
+  transcripts. It now skips a session whose files, tags, snapshots and
+  profile are all unchanged since it last totalled it, and reads each
+  subagent's details once a check instead of four times. The same idle
+  check now takes about 1 second. The first check after the service
+  starts still totals every session once.
+
 ### Fixed
+
+- **Kept reports stay kept while a workflow runs.** Re-reading a
+  workflow run file that hadn't changed stamped its row as updated,
+  which told every kept report the data had changed. Each view then
+  rebuilt its report (about a minute of CPU each) every 30 seconds while
+  a session with a workflow existed.
 
 - **Data quality counts usage-limit stops again.** "Usage-limit stops",
   "Resumes after a limit" and "Subagents stopped early" always read 0:
