@@ -19,8 +19,8 @@ each command adds.
 
 - [Everyday](#everyday): `report`, the focused views, `check`, `review`, `serve`
 - [Setting up and keeping it running](#setting-up-and-keeping-it-running):
-  `init`, `update`, `install-service`, `uninstall-service`, `changes`,
-  `uninstall`, `baseline`
+  `init`, `status`, `update`, `install-service`, `uninstall-service`,
+  `changes`, `uninstall`, `baseline`
 - [Changing settings](#changing-settings): `apply`
 - [Metrics capture](#metrics-capture): `capture`
 - [Team use and exports](#team-use-and-exports): `export`,
@@ -222,6 +222,17 @@ dashboard (`Stop-ScheduledTask` on Windows, `systemctl --user disable
 --now` on Linux, `launchctl bootout` on macOS), deletes the definition
 it wrote, and says which steps it did. `--dry-run` prints what it would
 remove.
+
+### `status`
+
+Checks that the setup works. Each part reads as Done, Waiting, Off or
+Needs attention: how you pay, the connection to Claude Code, the
+dashboard at logon, sharper tips (metrics capture), the `/tl-feedback`
+skill and the usage-limit readings. A part that needs attention names
+the command that fixes it. It exits 1 only when an essential part (how
+you pay, the connection, the dashboard, or capture you turned on) needs
+attention; Waiting and Off parts exit 0. Takes `--claude-root PATH`, as
+for `init`.
 
 ### `changes`
 

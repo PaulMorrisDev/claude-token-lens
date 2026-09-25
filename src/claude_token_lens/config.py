@@ -643,6 +643,17 @@ def resolve_billing(config: Config, config_dir: Path) -> None:
         )
 
 
+def saved_billing(config_dir: str | Path | None = None) -> str | None:
+    """``billing`` as written in ``config.toml`` (``api``,
+    ``subscription`` or ``auto``, before :func:`resolve_billing` works
+    ``auto`` out), or ``None`` when the file or the key is missing: the
+    "how do you pay" question has never been answered. Raises
+    :class:`ConfigError` as :func:`load_config` does."""
+    data = _read_toml(_resolve_config_dir(config_dir) / "config.toml", what="config file")
+    value = (data or {}).get("billing")
+    return value if isinstance(value, str) and value in _ALLOWED_BILLING else None
+
+
 def load_config(config_dir: str | Path | None = None) -> Config:
     """Load ``<config_dir>/config.toml`` (``config_dir`` defaults to
     ``~/.claude/token-lens``, honouring ``CLAUDE_CONFIG_DIR``). A missing
@@ -1228,6 +1239,7 @@ __all__ = [
     "Config",
     "ProjectConfig",
     "load_config",
+    "saved_billing",
     "load_project_configs",
     "save_project_config",
     "write_config_values",

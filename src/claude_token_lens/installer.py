@@ -58,6 +58,9 @@ __all__ = [
     "plan_service_install",
     "is_registered",
     "registered_python",
+    "http_health_ok",
+    "http_health_version",
+    "DEFAULT_URL",
     "install",
     "uninstall",
     "TASK_NAME",
@@ -526,6 +529,50 @@ def registered_python(
         return str(argv[0]) if argv else None
     except (OSError, ValueError, subprocess.SubprocessError, AttributeError):
         return None
+
+
+#: Where ``serve`` answers when installed with the default ``--bind``
+#: and ``--port`` (:func:`plan_service_install`).
+DEFAULT_URL = "http://127.0.0.1:8765"
+
+
+def http_health_ok(url: str) -> bool:
+    """Best-effort ``GET <url>/api/health``: ``True`` only on a real
+    ``200`` with a JSON ``ok: true`` body, ``False`` for absolutely any
+    failure (connection refused, timeout, non-200, malformed body) --
+    never raises. A short timeout (this is a courtesy check, not a
+    readiness gate anything blocks on).
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{url}/api/health", timeout=2) as resp:
+            if resp.status != 200:
+                return False
+            body = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, ValueError):
+        return False
+    return bool(body.get("ok"))
+
+
+def http_health_version(url: str) -> str | None:
+    """The ``version`` the dashboard at ``url`` reports in
+    ``/api/health``, or ``None`` when it can't be read (an old copy from
+    before 0.4.1 reports none). Never raises."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{url}/api/health", timeout=2) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, ValueError):
+        return None
+    data = body.get("data") if isinstance(body, dict) else None
+    version = data.get("version") if isinstance(data, dict) else None
+    return version if isinstance(version, str) else "older than 0.4.1"
 
 
 def _print_plan(action: str, plan: InstallPlan, *, commands: list[list[str]], files: list[Path]) -> None:

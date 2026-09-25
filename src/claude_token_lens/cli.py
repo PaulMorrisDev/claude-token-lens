@@ -102,6 +102,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "uninstall-service",
     "update",
     "changes",
+    "status",
     "review",
     "check",
     "uninstall",
@@ -1079,6 +1080,7 @@ def _make_parser() -> argparse.ArgumentParser:
             "uninstall-service": "remove a logon/boot registration made by install-service (or by init)",
             "update": "install the newest version, restart the dashboard on it and tidy up what an older one left",
             "changes": "list what this tool has installed and changed, and the command that undoes each",
+            "status": "check the setup works: how you pay, the Claude Code connection, the dashboard, sharper tips",
             "review": "review your CLAUDE.md files or skills: size, how often each is sent, cost, and fixes",
             "check": "quick actions: answer one token question (or all of them) with evidence and fixes",
             "uninstall": "remove the hook, statusline and logon service, optionally undo applied changes and delete data",
@@ -1144,7 +1146,7 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_update_args(sub)
         if name == "uninstall":
             _add_uninstall_args(sub)
-        if name == "changes":
+        if name in ("changes", "status"):
             _add_claude_root_arg(sub)
         if name == "init":
             _add_init_args(sub)
@@ -2811,41 +2813,10 @@ def _cmd_init_service_step(
 _POST_INSTALL_PROBE_DELAY_S = 1.0
 
 
-def _http_health_ok(url: str) -> bool:
-    """Best-effort ``GET <url>/api/health``: ``True`` only on a real
-    ``200`` with a JSON ``ok: true`` body, ``False`` for absolutely any
-    failure (connection refused, timeout, non-200, malformed body) --
-    never raises. A short timeout (this is a one-shot post-install
-    courtesy check, not a readiness gate anything blocks on).
-    """
-    import urllib.error
-    import urllib.request
-
-    try:
-        with urllib.request.urlopen(f"{url}/api/health", timeout=2) as resp:
-            if resp.status != 200:
-                return False
-            body = json.loads(resp.read().decode("utf-8"))
-    except (OSError, urllib.error.URLError, ValueError):
-        return False
-    return bool(body.get("ok"))
-
-
-def _http_health_version(url: str) -> str | None:
-    """The ``version`` the dashboard at ``url`` reports in
-    ``/api/health``, or ``None`` when it can't be read (an old copy from
-    before 0.4.1 reports none). Never raises."""
-    import urllib.error
-    import urllib.request
-
-    try:
-        with urllib.request.urlopen(f"{url}/api/health", timeout=2) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except (OSError, urllib.error.URLError, ValueError):
-        return None
-    data = body.get("data") if isinstance(body, dict) else None
-    version = data.get("version") if isinstance(data, dict) else None
-    return version if isinstance(version, str) else "older than 0.4.1"
+#: Moved to :mod:`installer` (``setup_status`` needs them too, and
+#: can't import this module); the old names stay for callers here.
+_http_health_ok = installer_mod.http_health_ok
+_http_health_version = installer_mod.http_health_version
 
 
 def _probe_service_after_install(
@@ -3265,6 +3236,27 @@ def _cmd_changes(args: argparse.Namespace) -> int:
         print(f"- {title}. {pages.plain(text)}")
     print(f"\nTo remove everything: {footprint.UNINSTALL_COMMAND}")
     return 0
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    """``status``: whether each part of the setup works
+    (:func:`setup_status.check_setup`). Exits 1 only when an essential
+    part is a problem; waiting and off parts exit 0."""
+    from . import setup_status
+    from .service.serve import STORE_FILENAME
+    from .service.store import read_entrypoint_counts
+
+    config_dir = _resolve_config_dir(args.config_dir)
+    items = setup_status.check_setup(
+        config_dir,
+        _resolve_claude_root(getattr(args, "claude_root", None)),
+        entrypoints=read_entrypoint_counts(config_dir / STORE_FILENAME),
+    )
+    print("Token Lens setup\n")
+    for line in setup_status.lines(items):
+        print(pages.plain(line))
+    print(f"\n{setup_status.verdict(items)}")
+    return 1 if setup_status.essential_problem(items) else 0
 
 
 _DURATION_RE = re.compile(r"\s*(\d+)\s*([hdw])\s*", re.IGNORECASE)
@@ -4828,6 +4820,8 @@ def _run(args: argparse.Namespace) -> int:
         return _cmd_team_report(args)
     if command == "changes":
         return _cmd_changes(args)
+    if command == "status":
+        return _cmd_status(args)
     if command == "review":
         return _cmd_review(args)
     if command == "check":

@@ -1939,4 +1939,34 @@ def read_predictions(path: str | Path) -> list[dict]:
     return rows
 
 
-__all__ = ["Store", "encode_digest_blob", "decode_digest_blob", "read_session_marks", "read_predictions"]
+def read_entrypoint_counts(path: str | Path) -> dict[str, dict]:
+    """:meth:`Store.entrypoint_counts`, read from the store at ``path``
+    without writing to it, for ``claude-token-lens status``. Empty when
+    there is no store or it can't be read (a lock held too long)."""
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return {}
+    conn.row_factory = sqlite3.Row
+    try:
+        with contextlib.closing(conn):
+            rows = conn.execute(
+                "SELECT COALESCE(entrypoint, '') AS entrypoint, COUNT(*) AS n, MAX(last_ts) AS last_ts "
+                "FROM sessions GROUP BY 1"
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    return {row["entrypoint"]: {"count": row["n"], "last_ts": row["last_ts"]} for row in rows}
+
+
+__all__ = [
+    "Store",
+    "encode_digest_blob",
+    "decode_digest_blob",
+    "read_session_marks",
+    "read_predictions",
+    "read_entrypoint_counts",
+]
