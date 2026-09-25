@@ -58,6 +58,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = REPO_ROOT / "src" / "claude_token_lens" / "service" / "static"
 API_MD = REPO_ROOT / "docs" / "api.md"
 README_MD = REPO_ROOT / "README.md"
+SECTIONS_REFERENCE_MD = REPO_ROOT / "docs" / "sections-reference.md"
 PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
 
 #: The files the dashboard cannot start without.
@@ -1705,7 +1706,7 @@ def test_readme_page_table_matches_the_pages() -> None:
 
 def _readme_glossary_terms() -> dict[str, str]:
     text = README_MD.read_text(encoding="utf-8")
-    section = re.search(r"## Glossary\n\n(.+?)\n\n## Reference", text, re.S)
+    section = re.search(r"## Glossary\n\n(.+?)\n\n## ", text, re.S)
     assert section, "README.md's Glossary section has changed shape"
     entries = re.findall(r"^- \*\*([^*]+)\*\*: (.+)$", section.group(1), re.M)
     assert entries, "no glossary entries found in README.md"
@@ -1876,44 +1877,47 @@ def test_no_tab_names_in_dashboard_text() -> None:
     assert offenders == [], offenders
 
 
-def _readme_section_table_keys() -> list[str]:
-    text = README_MD.read_text(encoding="utf-8")
+def _sections_table_keys() -> list[str]:
+    text = SECTIONS_REFERENCE_MD.read_text(encoding="utf-8")
     section = re.search(
         r"\| Section key \| Title \| Module \| What it answers \|\n\|---\|---\|---\|---\|\n(.+?)\n\n", text, re.S
     )
-    assert section, "README.md's report-sections table has changed shape"
+    assert section, "docs/sections-reference.md's report-sections table has changed shape"
     return [row.split("|")[1].strip().strip("`") for row in section.group(1).splitlines()]
 
 
 def _sections_reference_order() -> list[str]:
-    text = (REPO_ROOT / "docs" / "sections-reference.md").read_text(encoding="utf-8")
+    text = SECTIONS_REFERENCE_MD.read_text(encoding="utf-8")
     match = re.search(r"in this order:(.+?only with `--baseline`\))", text, re.S)
     assert match, "docs/sections-reference.md's section-order sentence has changed shape"
     return re.findall(r"`([a-z_]+)`", match.group(1))
 
 
-def test_readme_and_sections_reference_list_every_report_section_in_order() -> None:
+def test_sections_reference_lists_every_report_section_in_order() -> None:
     """D13: report.build_report's actual _SECTION_ORDER (plus
     baseline_comparison, appended unconditionally after it) once ran
-    ahead of both docs -- habits and capture were missing from each
-    list, and the README table also lacked elasticity, agent_startup,
-    context_budget and baseline_comparison. Regression test: both docs
-    must name every section build_report can emit, in its exact order."""
+    ahead of both lists -- habits and capture were missing from each,
+    and the sections table (then in the README) also lacked elasticity,
+    agent_startup, context_budget and baseline_comparison. Regression
+    test: sections-reference.md's "Sections at a glance" table and its
+    section-order sentence must both name every section build_report
+    can emit, in its exact order."""
     from claude_token_lens.report import _SECTION_ORDER
 
     expected = [*_SECTION_ORDER, "baseline_comparison"]
-    assert _readme_section_table_keys() == expected
+    assert _sections_table_keys() == expected
     assert _sections_reference_order() == expected
 
 
-def test_readme_workstyle_row_names_every_archetype() -> None:
-    """D15: the README's workstyle row once named six archetypes while
-    workstyle.py detects seven -- `mixed`, the fallback when none of the
-    other six match, was missing. Regression test: the row's backtick
-    archetype names must match workstyle.py's real set."""
+def test_sections_table_workstyle_row_names_every_archetype() -> None:
+    """D15: the sections table's workstyle row (then in the README) once
+    named six archetypes while workstyle.py detects seven -- `mixed`, the
+    fallback when none of the other six match, was missing. Regression
+    test: the row's backtick archetype names must match workstyle.py's
+    real set."""
     from claude_token_lens.workstyle import _ARCHETYPE_DESCRIPTIONS
 
-    text = README_MD.read_text(encoding="utf-8")
+    text = SECTIONS_REFERENCE_MD.read_text(encoding="utf-8")
     row = next(line for line in text.splitlines() if line.startswith("| `workstyle` |"))
     named = set(re.findall(r"`([a-z-]+)`", row)) - {"workstyle", "workstyle.py"}
     assert named == set(_ARCHETYPE_DESCRIPTIONS)

@@ -1,7 +1,7 @@
 # Exports and monthly reports
 
-S1-exports adds two ways to get a corpus's numbers into other tooling
-without asking every team member to run claude-token-lens by hand: a
+There are two ways to get your numbers into other tools without
+asking every team member to run claude-token-lens by hand: a
 one-shot, privacy-safe `export` (`src/claude_token_lens/exports.py`) for
 BI/observability pipelines, and a recurring `monthly-report`
 (`src/claude_token_lens/monthly.py`) for a habit-forming finance summary.
@@ -11,9 +11,9 @@ anywhere except the file(s) you point them at.
 ## `claude-token-lens export`
 
 ```bash
-claude-token-lens export --format csv-flat --out team-usage.csv
-claude-token-lens export --format json --per-session --no-hash-slugs --out my-usage.json
-claude-token-lens export --format otel-jsonl --out usage.otel.jsonl
+python -m claude_token_lens export --format csv-flat --out team-usage.csv
+python -m claude_token_lens export --format json --per-session --no-hash-slugs --out my-usage.json
+python -m claude_token_lens export --format otel-jsonl --out usage.otel.jsonl
 ```
 
 `--format` is `csv-flat` (the default), `json` or `otel-jsonl`. The
@@ -141,8 +141,8 @@ no effect on it.
 ### `--aggregate` (team documents)
 
 ```bash
-claude-token-lens export --aggregate --out my-machine.json
-claude-token-lens export --aggregate --include-projects --out my-machine.json
+python -m claude_token_lens export --aggregate --out my-machine.json
+python -m claude_token_lens export --aggregate --include-projects --out my-machine.json
 ```
 
 `--aggregate` writes a different, fixed shape from every other
@@ -183,14 +183,14 @@ A team document carries:
   already-hashed-or-absent posture.
 
 See [docs/team.md](team.md) for the full `export --aggregate` ->
-`import` -> `team-report` flow, and the README's "For team leads"
-section for the guarantees in one place.
+`import` -> `team-report` flow, and
+[its guarantees](team.md#for-team-leads-the-guarantees) in one place.
 
 ## `claude-token-lens monthly-report`
 
 ```bash
-claude-token-lens monthly-report --out ./monthly-reports
-claude-token-lens monthly-report --out ./monthly-reports --month 2026-08
+python -m claude_token_lens monthly-report --out ./monthly-reports
+python -m claude_token_lens monthly-report --out ./monthly-reports --month 2026-08
 ```
 
 Writes `DIR/claude-token-lens-YYYY-MM.md` and the matching `.html` for
@@ -284,7 +284,7 @@ empty-month note.
 ### `serve --monthly-report DIR`
 
 ```bash
-claude-token-lens serve --monthly-report ./monthly-reports
+python -m claude_token_lens serve --monthly-report ./monthly-reports
 ```
 
 While the dashboard runs, it writes the previous calendar month's

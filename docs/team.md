@@ -1,22 +1,24 @@
-# v0.3 team aggregate: `export --aggregate`, `import`, `team-report`
+# Team reports: `export --aggregate`, `import`, `team-report`
 
-`src/claude_token_lens/team.py` is the plan's "team aggregate command
-that imports several machines' hashed-slug exports into one store for
-per-archetype comparisons across people (no text ever — for team leads
-on the work machine)". It is three separate steps, run by different
+A team lead can compare how several people use Claude Code without
+collecting anyone's sessions. It takes three steps, run by different
 people on different machines:
 
-1. Each team member runs `claude-token-lens export --aggregate` on
-   their own machine and hands the resulting file to a team lead (by
-   whatever channel they already use — Slack, email, a shared drive;
-   this project has no upload mechanism of its own).
-2. The team lead runs `claude-token-lens import FILE...` on their own
-   machine, naming one or more files, to build up a local store.
-3. The team lead runs `claude-token-lens team-report` to see the
-   cross-machine comparison.
+1. Each team member runs `python -m claude_token_lens export --aggregate`
+   on their own machine and hands the file to the team lead, by whatever
+   channel they already use: Slack, email or a shared drive. This tool
+   has no upload of its own.
+2. The team lead runs `python -m claude_token_lens import FILE...` on
+   their own machine, naming one or more files, to build up a local
+   store.
+3. The team lead runs `python -m claude_token_lens team-report` to see
+   the comparison.
 
-Nothing here talks to a network. Every step is local files in, local
-files out.
+Nothing here goes online. Every step reads local files and writes local
+files. The code is in `src/claude_token_lens/team.py`.
+
+The last section, [Settings for teams and enterprise](#settings-for-teams-and-enterprise),
+covers the `config.toml` settings that matter on a work machine.
 
 ## For team leads: the guarantees
 
@@ -64,8 +66,8 @@ files out.
 ## Step 1: `export --aggregate` (each team member)
 
 ```bash
-claude-token-lens export --aggregate --out my-machine.json
-claude-token-lens export --aggregate --include-projects --out my-machine.json --days 30
+python -m claude_token_lens export --aggregate --out my-machine.json
+python -m claude_token_lens export --aggregate --include-projects --out my-machine.json --days 30
 ```
 
 Writes one team document (see [docs/exports.md](exports.md#--aggregate-team-documents)
@@ -77,7 +79,7 @@ Hand the resulting file to whoever is building the team report.
 ## Step 2: `import` (the team lead)
 
 ```bash
-claude-token-lens import my-machine.json colleague-a.json colleague-b.json
+python -m claude_token_lens import my-machine.json colleague-a.json colleague-b.json
 ```
 
 Validates every file first (`team.validate_team_document`), then
@@ -96,10 +98,10 @@ files you name and writes under `--config-dir`.
 ## Step 3: `team-report` (the team lead)
 
 ```bash
-claude-token-lens team-report
-claude-token-lens team-report --json
-claude-token-lens team-report --html team-report.html
-claude-token-lens team-report --csv-dir ./team-report-csv
+python -m claude_token_lens team-report
+python -m claude_token_lens team-report --json
+python -m claude_token_lens team-report --html team-report.html
+python -m claude_token_lens team-report --csv-dir ./team-report-csv
 ```
 
 Reads every document under `<config_dir>/team/`, keeps only the latest
@@ -132,3 +134,44 @@ pointing at `import`.
   reflects whatever is currently under `<config_dir>/team/` — nothing
   is merged or averaged across multiple import batches beyond keeping
   the latest document per machine.
+
+## Settings for teams and enterprise
+
+These settings live in `config.toml`, in the config folder
+(`~/.claude/token-lens` unless you pass `--config-dir`).
+
+- **`exclude_projects`** is a list of regular expressions, matched
+  against project folder names and ignoring case. A matching project is
+  never read at all, not only hidden from the output. Use it for a
+  confidential repo. A pattern that isn't a valid regular expression
+  stops the config loading, with an error naming it, so a typo can't
+  quietly stop a project being excluded. `serve --exclude-project SLUG`
+  excludes one more project for a single run.
+- **`retention_days`** is how many days of sessions the dashboard keeps
+  in its store (`service.db`). Older sessions are removed on every poll.
+  `serve --retention-days N` overrides it for one run. It must be
+  between 1 and 36500, and leaving it unset keeps every session. The
+  dashboard's own records (capture signals, the capture log and the
+  usage log) are removed after 180 days unless you set it.
+- **Managed settings.** The SessionStart hook also records your
+  organisation's managed settings file, redacted the same way as your
+  own settings, plus the names of the keys it sets. The file is
+  `managed-settings.json` in `C:\Program Files\ClaudeCode\` on Windows,
+  `/Library/Application Support/ClaudeCode/` on macOS, or
+  `/etc/claude-code/` on Linux and WSL. When a recommendation's setting
+  is one of those keys, the recommendation is marked as managed. It says
+  "This lever is managed by policy, raise with your administrator."
+  instead of suggesting a change you can't make, and its command is
+  marked `# managed by policy -- shown for reference only`. See
+  [Recommendations](sections-reference.md#recommendations-recommendpy).
+- **Provider.** Each transcript records which provider billed it, read
+  from the shape of its model id. An id starting `anthropic.` or
+  `us.anthropic.`, or ending `-v1:0`, is Amazon Bedrock. An id with an
+  `@<date>` suffix is Google Vertex AI. Anything else is the Anthropic
+  API. Set `provider` in `config.toml` to `anthropic`, `bedrock` or
+  `vertex` to say which one you use. On `bedrock` or `vertex`, the
+  suggestion to switch cache lifetime (TTL) is turned off, because this
+  tool can't confirm a 1-hour cache lifetime works there. Two things
+  aren't done yet: Microsoft Foundry isn't recognised, and every
+  provider is priced at Anthropic's own API rates, with no per-provider
+  prices in `pricing.toml`.

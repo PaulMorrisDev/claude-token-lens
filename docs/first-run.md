@@ -30,7 +30,7 @@ trust:
 | Route | Needs | Best for |
 |---|---|---|
 | **A. `.pyz` download** | Nothing beyond Python itself — no `pip`, no network, no `git` | The default choice on a locked-down machine |
-| **B. `pip` from a local clone** | `pip`, no network required (installs from the folder on disk) | You already have the source checked out |
+| **B. `pip` from a local clone** | `pip`. It installs from the folder on disk, but pip may still need PyPI for its build tools (see below) | You already have the source checked out |
 | **C. `pip` from GitHub** | `pip` + network; `git` only for the `git+https` form, not for the zip-archive form | A normal, unrestricted machine |
 
 ### Route A: `.pyz` (recommended for a locked-down machine)
@@ -54,10 +54,10 @@ py -3 dist\claude-token-lens.pyz --version
 ```
 
 Every subcommand works the same way from the archive: `py -3
-claude-token-lens.pyz <subcommand> ...`, in place of `claude-token-lens
-<subcommand> ...` everywhere else in this document.
+claude-token-lens.pyz <subcommand> ...`, in place of `py -3 -m
+claude_token_lens <subcommand> ...` everywhere else in this document.
 
-### Route B: `pip` from a local clone (no network needed)
+### Route B: `pip` from a local clone
 
 ```powershell
 py -3 -m venv .venv
@@ -79,6 +79,8 @@ fall back to:
 `PATH` by default, and pip prints a warning to that effect at install
 time. `python -m claude_token_lens ...` is the reliable fallback in
 every case above; it never depends on `PATH` at all.
+This document uses `py -3 -m claude_token_lens`; on Route B, use
+`.venv\Scripts\python.exe -m claude_token_lens` in its place.
 
 **A genuinely offline machine (no PyPI access at all) will fail this
 route**, even from a local clone: this project's own `dependencies` are
@@ -109,7 +111,7 @@ proxy blocks either, use Route A instead.
 ## 2. Run `init`
 
 ```powershell
-claude-token-lens init
+py -3 -m claude_token_lens init
 ```
 
 (or `py -3 claude-token-lens.pyz init` for Route A). One line each for
@@ -134,7 +136,7 @@ every answer instead of asking, and prints exactly what it derived and
 why:
 
 ```powershell
-claude-token-lens init --non-interactive --no-install --no-service `
+py -3 -m claude_token_lens init --non-interactive --no-install --no-service `
   --config-dir C:\path\to\config --projects-root C:\path\to\projects
 ```
 
@@ -253,7 +255,7 @@ that happens keeps the history.
 Preview exactly what registration would do, without doing it:
 
 ```powershell
-claude-token-lens install-service --dry-run
+py -3 -m claude_token_lens install-service --dry-run
 ```
 
 On Windows this prints the PowerShell it would run to register a
@@ -303,7 +305,7 @@ lists every page.
 ## 5. Run the first report
 
 ```powershell
-claude-token-lens report
+py -3 -m claude_token_lens report
 ```
 
 (`report` is the default subcommand — `claude-token-lens` with no
@@ -335,8 +337,8 @@ proof in that case.)
 To find it again:
 
 ```powershell
-claude-token-lens apply --list-backups
-claude-token-lens apply --revert <TS>
+py -3 -m claude_token_lens apply --list-backups
+py -3 -m claude_token_lens apply --revert <TS>
 ```
 
 `--revert` restores the backup `apply` made under
@@ -347,7 +349,7 @@ discarding those edits.
 **Take everything back out.** Look first:
 
 ```powershell
-claude-token-lens uninstall --revert-changes --delete-data --dry-run
+py -3 -m claude_token_lens uninstall --revert-changes --delete-data --dry-run
 ```
 
 Then run it without `--dry-run`. It shows each step and asks before
@@ -455,11 +457,11 @@ python3 -m venv .venv
 python3 -m pip install git+https://github.com/PaulMorrisDev/claude-token-lens
 python3 -m pip install https://github.com/PaulMorrisDev/claude-token-lens/archive/refs/heads/main.zip
 
-claude-token-lens init
-claude-token-lens install-service --dry-run   # prints the systemd user unit / LaunchAgent plan; writes nothing
+python3 -m claude_token_lens init
+python3 -m claude_token_lens install-service --dry-run   # prints the systemd user unit / LaunchAgent plan; writes nothing
 curl http://127.0.0.1:8765/api/health
-claude-token-lens report
-claude-token-lens uninstall --revert-changes --delete-data --dry-run   # look first, then run without --dry-run
+python3 -m claude_token_lens report
+python3 -m claude_token_lens uninstall --revert-changes --delete-data --dry-run   # look first, then run without --dry-run
 ```
 
 Config defaults to `~/.claude/token-lens`/`~/.claude/projects`

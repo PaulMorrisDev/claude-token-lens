@@ -1,10 +1,10 @@
 # Report sections, in detail
 
-This file is the field-by-field companion to
-[`README.md`](../README.md#3-reading-the-report-sections). It lists every
-table each `build_section(...)` function produces today, and expands the
-two topics the README only summarises: the TTL section's utilisation
-metrics, and a worked example against a real, scrubbed transcript.
+This file lists every report section at a glance, then every table
+each `build_section(...)` function produces today. It also covers the
+TTL section's utilisation metrics, the recommendations, and a worked
+example against a real, scrubbed transcript. [`cli.md`](cli.md) lists
+the commands that print them.
 
 `report.build_report` assembles these sections into one `ReportModel`,
 in this order: `overview`, `usage`, `elasticity` (only under
@@ -30,6 +30,55 @@ directly against `TranscriptResult`/`SessionRecord` objects from
 `parse_transcript`, which is what the worked example at the end of this
 file does.
 
+## Sections at a glance
+
+`python -m claude_token_lens report` prints every section below, in the
+order of this table: Markdown by default, or `--json`, `--html` and
+`--csv-dir` for the other formats (see [`cli.md`](cli.md#report)). Each
+section is also, on its own, a `build_section(...)` function returning a
+`Section` of `Table`s ([`model.py`](../src/claude_token_lens/model.py)),
+fully tested and runnable from a short Python script against your own
+transcripts. That is how the [worked example](#worked-example) was made,
+and it's still useful when you want one section by itself.
+
+| Section key | Title | Module | What it answers |
+|---|---|---|---|
+| `overview` | Overview | `report.py` | corpus-wide totals (sessions, transcripts, turns, the four raw token counts, cost, cache-read cost share, cache ROI) plus a per-model breakdown |
+| `usage` | Usage | `usage.py` | day/week/month/project/entrypoint cost and token breakdowns, plus five-hour usage blocks (subscription billing only — see [`reference.md`](reference.md#what-it-reads-and-what-it-cant)) |
+| `elasticity` | Elasticity | `elasticity.py` | how many percentage points of a subscription's 5-hour/7-day/spend-limit window one million tokens (or one list-price dollar) is actually worth, measured from this machine's own usage-log samples — subscription billing only, and only when a usage log exists (see [`elasticity.md`](elasticity.md)) |
+| `sessions` | Sessions | `classify.py` | mode (interactive/long-agentic/overnight/mixed) and purpose (docs/refactor/test-triage/...) per session, with the evidence that produced each classification |
+| `recache` | Re-cache events | `recache.py` | which turns paid to re-write a prefix that should have been a cache hit, why, and what it cost — see [`concepts.md`](concepts.md#3-cache-rebuild-definitions-and-signatures) |
+| `ttl` | Cache TTL break-even | `ttl.py` | per agent type: observed cost vs. simulated 5m-only/1h-only cost, plus the utilisation metrics below |
+| `limits` | Usage limits | `limits.py` | usage-cap pauses (5-hour/weekly), harness-forced subagent terminations, and the desktop app's resume pings, as first-class attributable facts instead of behavioural noise — see [`limits.md`](limits.md) |
+| `carry` | Context carry cost per tool | `carry.py` | cost of a tool result riding along in the cached prefix on every turn after the one it entered on, by tool and by agent type, plus the saving a truncation cap would have made — see [`carry.md`](carry.md) |
+| `compaction_sim` | Compaction-window sweep | `compaction_sim.py` | modelled cost under other `autoCompactWindow` settings, a fidelity check against each session's actually-configured window, and a conservative "at least W" recommendation — see [`compaction-sim.md`](compaction-sim.md) |
+| `model_swap` | Model-swap counterfactual | `model_swap.py` | ceiling saving from repricing every already-observed turn one model tier down, per agent type and corpus-wide — see [`model-swap.md`](model-swap.md) |
+| `waste` | Wasted-turn spend | `waste.py` | spend on turns whose output was never used (tool error, interrupt, tool denial, harness-killed subagent), by cause, agent type and top session — see [`waste.md`](waste.md) |
+| `compactions` | Compactions | `compaction.py` | compaction count, trigger mix, pre/post/dropped tokens, and the re-cache cost of the turn right after each compaction |
+| `agent_startup` | Subagent startup | `context_budget.py` | what each agent type is given before its first turn, what it was given but never used, and what every agent type receives alike |
+| `agents` | Agents and information flow | `topology.py` | downward cost (briefing/system-prompt writes into each agent type), upward cost (`Agent`/`Workflow` tool-result sizes flowing back), skill roll-ups, spawn-depth chains |
+| `quality` | Quality signals | `quality.py` | whether the work went well: agent runs that didn't finish or likely ran out of turns, failed tool calls and shell commands, denials, corrections, edits redone, per agent type and per model and effort, with a significance test — see [`concepts.md`](concepts.md#7-quality-signals) |
+| `workstyle` | Workstyle | `workstyle.py` | one archetype per session/corpus: `overseer-fanout`, `plan-high-implement-low`, `workflow-heavy`, `effort-varied`, `chat-only`, `single-model`, `mixed` (the fallback when none of the other six match), with the evidence features |
+| `habits` | Work habits | `habits.py` | the "Weekly pace" digest, habits worth trying with a saving estimate and evidence, per-task and per-agent setup comparisons, and (once you rate sessions or use `/tl-feedback`) cost per piece of work that met its goal |
+| `workflows` | Workflows | `workflows.py` | per-run agent count, phase count, duration and cost from `<session>/workflows/wf_*.json` |
+| `phases` | Phases | `phases.py` | cost split across DISCOVERY (read/search only), IMPLEMENTATION (real edits or an ordinary shell command), VERIFICATION (a test/build tool, or a scratch-file edit), OTHER — only in the report when `--phases` is given |
+| `config` | Config | `report.py` via `snapshots.py` | one diff table per config key that changed across the window's snapshots (capped at 20 keys) — only present when `snapshot-config` snapshots exist for the window |
+| `context_budget` | Context budget | `context_budget.py` | an estimated breakdown of what a session's context window is spent on before any real work (system prompt and tools, skills, memory files, custom agents, MCP tools), plus ground truth where the statusline logged it |
+| `capture` | Capture | `habits.py` | what metrics capture has cost since it was turned on, measured from the transcripts, and what the habits and feedback that depend on it are worth a week — see [`capture.md`](capture.md) |
+| `scorecard` | Scorecard | `scorecard.py` | five 1-5 levels (cache efficiency, context hygiene, agent efficiency, config fit, data quality) plus an overall level (the minimum of the first four, never an average) |
+| `baseline_comparison` | Baseline comparison | `report.py` via `baseline.py` | before/after the last captured onboarding baseline, plus a per-mode breakdown — only present when `--baseline` resolves one (added unconditionally, even on the single-section subcommands) |
+
+Two more parts of the report aren't sections, so they aren't in the
+table. [Recommendations](#recommendations-recommendpy) is its own
+`ReportModel.recommendations` list, and [Diagnostics](#diagnostics-reportmodeldiagnostics)
+(parse-quality counters) is `ReportModel.diagnostics`, which every
+renderer prints directly rather than as a table.
+
+`config-diff --key K` prints one standalone plain-text table from
+`snapshots.build_config_diff_table` (see [`config_diff`](#config_diff-snapshotspy)).
+It doesn't go through `build_report`, so it isn't the same code as the
+report's own `config` section.
+
 ## `overview` (`report.py`)
 
 - `totals` — one `metric`/`value` row per corpus-wide total: sessions,
@@ -51,7 +100,7 @@ file does.
 
 Finance/enterprise-facing breakdowns by calendar period, project,
 entrypoint, and (subscription billing only) a fixed 5-hour local-calendar
-block grid — see [README section 1](../README.md#1-what-it-is-what-it-measures-and-what-it-cannot)
+block grid — see [what it reads, and what it can't](reference.md#what-it-reads-and-what-it-cant)
 for the billing-mode distinction every money column in this section
 respects.
 
@@ -843,8 +892,8 @@ outside a full report run.
 
 ## `config_diff` (`snapshots.py`)
 
-Reads the JSON files `hooks/snapshot-config.py` writes (see the
-README's [installation section](../README.md#4-installing-the-sessionstart-hook-and-the-statusline)).
+Reads the JSON files `hooks/snapshot-config.py` writes (see
+[The SessionStart hook](reference.md#the-sessionstart-hook)).
 
 - `config-diff-<key>` — `config-diff --key KEY` prints one, and
   `config-diff --auto-keys` prints one per changed key. Per distinct
@@ -1205,7 +1254,7 @@ baseline.
 
 Five 1-5 levels (1 poor, 5 excellent) summarising a corpus's cache
 efficiency, context hygiene, agent efficiency, config fit and data
-quality — see [README section 3](../README.md#3-reading-the-report-sections).
+quality — see [Sections at a glance](#sections-at-a-glance).
 
 - `dimensions` — one row per scored dimension: `dimension`,
   `level` (1-5), `label` (headed "Rating": `very poor`/`poor`/`fair`/
@@ -1238,10 +1287,25 @@ in its own way (a Markdown/HTML block per recommendation; a JSON array;
 excluded from CSV, which is table-shaped only). `recommend.recommend()`
 builds it by reading back cells from the report's own already-rendered
 tables — never a raw accumulator — so every recommendation's evidence
-is guaranteed to cite a real, checkable number. See
-[README section 3](../README.md#the-recommendations-block) for the
-`Recommendation` field table (`id`, `severity`, `category`, `scope`,
-`lever`, `evidence`).
+is guaranteed to cite a real, checkable number. Each `Recommendation`
+(`model.py`) has these fields:
+
+| Field | Meaning |
+|---|---|
+| `id` | stable identifier for the rule that fired (e.g. `ttl-switch`, `compaction-churn`) |
+| `severity` | `"info"` \| `"advice"` \| `"action"` |
+| `category` | `"settings"` \| `"workflow"` \| `"data"` |
+| `scope` | where the lever named below applies: `"user"` (`~/.claude/settings.json`), `"repo"` (a project `.claude/settings.json` or agent frontmatter path), or `"managed"` (an org-pushed `managed-settings.json` key the user can't change locally — the action text then also says "raise with your administrator") |
+| `lever` | the bare settings key or frontmatter path the recommendation would change (e.g. `promptCacheTtl`, `experimental.cacheTtl` in `<agent>.md`), or `None` |
+| `evidence` | one or more `(label, value, source_table, row_key)` tuples, each citing a real cell from a table already in the report — a test walks every recommendation this module produces and confirms the value it cites is genuine, not recomputed |
+| `why` | one plain sentence on why it matters |
+| `estimated_saving` / `saving_basis` | the saving phrased for your billing mode (`units.py`), and how it was worked out |
+| `changes` | the concrete edits proposed: `SettingChange` (`target` `settings`/`agent`, `key`, `agent`, `value` or a `suggested` description when the value needs your judgement, `current`, `note`, `unconfirmed`, `new_agent_file`) |
+| `fixes` | per change, from `fixes.py`: a six-part `explainer`, an `apply --set ... --dry-run` `command` (when the value is known), a `command_warning` when the command alone isn't enough, and a `prompt` to give Claude |
+
+The dashboard never changes your Claude Code settings. Each change comes
+with the prompt and, for a plain setting, the command. The command's
+`--dry-run` shows the diff first, and a real run prints how to undo it.
 
 Rules implemented today, in the order they run. From `recommend.py`'s
 own `_rule_*` functions: `ttl-switch`, `long-tool-waits`,
@@ -1261,9 +1325,11 @@ archetype (a `ttl-switch` recommendation for a `chat-only` session's
 subagents is suppressed, since a chat-only session barely has any), a
 minimum-sample size (`min_sessions`/`min_turns` in `config.toml`'s
 `[thresholds]` table), and managed-settings awareness (see
-[README section 6](../README.md#6-for-team-leads-and-enterprise)).
+[`team.md`](team.md#settings-for-teams-and-enterprise)).
 `report --patch-set` renders the whole set as unified-diff-style text
-via `recommend.render_patch_set`.
+via `recommend.render_patch_set`, showing the before and after value for
+each lever. A managed-scope lever is marked
+`# managed by policy -- shown for reference only`.
 
 With metrics capture on, some rules read the `habits` section too. Each
 cites the cell it used:

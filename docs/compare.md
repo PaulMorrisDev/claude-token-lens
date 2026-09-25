@@ -14,7 +14,7 @@ assumed rather than confirmed).
 ## `claude-token-lens compare`
 
 ```bash
-claude-token-lens compare \
+python -m claude_token_lens compare \
   --a window:2026-08-01..2026-08-31 \
   --b window:2026-09-01..2026-09-30 \
   --stratify purpose,mode \
@@ -153,7 +153,7 @@ either arm — still exits 0 with a full report.
 ## `claude-token-lens reconcile`
 
 ```bash
-claude-token-lens reconcile --admin-csv admin-export.csv --by day,model
+python -m claude_token_lens reconcile --admin-csv admin-export.csv --by day,model
 ```
 
 `reconcile` never makes a network call: it reads a CSV you already
