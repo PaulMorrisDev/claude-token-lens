@@ -3,14 +3,14 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "claude-token-lens"
+name = "claudeglass"
 version = "0.8.0"
-description = "Config-aware token and prompt-cache analytics for Claude Code transcripts"
+description = "Are you using Claude Code well? Finds the habits and settings that waste tokens, from the transcripts on your machine."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Paul Morris" }]
-keywords = ["claude", "claude-code", "tokens", "prompt-cache", "analytics"]
+keywords = ["claude", "claude-code", "anthropic", "tokens", "prompt-cache", "usage", "developer-tools", "analytics"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -25,19 +25,19 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/PaulMorrisDev/claude-token-lens"
-Repository = "https://github.com/PaulMorrisDev/claude-token-lens"
-Changelog = "https://github.com/PaulMorrisDev/claude-token-lens/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/PaulMorrisDev/claudeglass"
+Repository = "https://github.com/PaulMorrisDev/claudeglass"
+Changelog = "https://github.com/PaulMorrisDev/claudeglass/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 rich = ["rich>=13"]
 test = ["pytest>=8"]
 
 [project.scripts]
-claude-token-lens = "claude_token_lens.cli:main"
+claudeglass = "claudeglass.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-claude_token_lens = ["pricing.toml", "hooks/snapshot-config.py", "hooks/capture-hook.py", "hooks/capture-catalogue.json", "service/static/*", "service/static/vendor/*", "service/static/fonts/*", "profiles/catalogue/*.toml"]
+claudeglass = ["pricing.toml", "hooks/snapshot-config.py", "hooks/capture-hook.py", "hooks/capture-catalogue.json", "service/static/*", "service/static/vendor/*", "service/static/fonts/*", "profiles/catalogue/*.toml"]

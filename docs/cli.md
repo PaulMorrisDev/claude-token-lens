@@ -1,18 +1,18 @@
 # Command reference
 
-Every command runs as `python -m claude_token_lens <command>`. The
-shorter `claude-token-lens <command>` works too, but only when pip's
+Every command runs as `python -m claudeglass <command>`. The
+shorter `claudeglass <command>` works too, but only when pip's
 Scripts folder is on your `PATH`. With the single-file build, run
-`python claude-token-lens.pyz <command>`.
+`python claudeglass.pyz <command>`.
 
 This page groups the commands and says what each one is for. For the
 exact, current list of flags, run the command with `--help`:
 
 ```powershell
-python -m claude_token_lens report --help
+python -m claudeglass report --help
 ```
 
-With no command at all, `python -m claude_token_lens` runs `report`.
+With no command at all, `python -m claudeglass` runs `report`.
 Every command also accepts the [global flags](#global-flags), such as
 `--all-projects` and `--days`. The tables below list only the flags
 each command adds.
@@ -43,7 +43,7 @@ quality, to the scorecard and the recommendations.
 lists each section in order.
 
 ```powershell
-python -m claude_token_lens report --all-projects --days 30
+python -m claudeglass report --all-projects --days 30
 ```
 
 | Flag | What it does |
@@ -86,8 +86,8 @@ dashboard. Each check answers one question from your own sessions, with
 the evidence, fixes and tips.
 
 ```powershell
-python -m claude_token_lens check --all-projects
-python -m claude_token_lens check models
+python -m claudeglass check --all-projects
+python -m claudeglass check models
 ```
 
 Leave the ID out for every check's one-line answer. Give one to see it
@@ -102,8 +102,8 @@ sent, what it costs, and what to trim. It's **Agents & context ›
 Context** in the terminal.
 
 ```powershell
-python -m claude_token_lens review claude-md
-python -m claude_token_lens review skills
+python -m claudeglass review claude-md
+python -m claudeglass review skills
 ```
 
 The window comes from the global flags.
@@ -117,7 +117,7 @@ listens on 127.0.0.1 only, unless you pass `--allow-remote`.
 [`api.md`](api.md) and [`ui.md`](ui.md) cover the API and the pages.
 
 ```powershell
-python -m claude_token_lens serve
+python -m claudeglass serve
 ```
 
 | Flag | What it does |
@@ -150,7 +150,7 @@ for this project, and ends with a summary of what works.
 [`onboarding.md`](onboarding.md) lists every question.
 
 ```powershell
-python -m claude_token_lens init
+python -m claudeglass init
 ```
 
 | Flag | What it does |
@@ -193,8 +193,8 @@ from GitHub. Updating from 0.6.0 or older, `update` stops after the
 install; run `update --finish` once afterwards.
 
 ```powershell
-python -m claude_token_lens update --dry-run
-python -m claude_token_lens update
+python -m claudeglass update --dry-run
+python -m claudeglass update
 ```
 
 | Flag | What it does |
@@ -253,7 +253,7 @@ and backing the file up first. It offers to remove the `/tl-feedback`
 and `/tl-brief` skills, and removes the logon service.
 
 ```powershell
-python -m claude_token_lens uninstall --revert-changes --delete-data --dry-run
+python -m claudeglass uninstall --revert-changes --delete-data --dry-run
 ```
 
 | Flag | What it does |
@@ -287,9 +287,9 @@ its recommendation cards show the command for you to run.
 and what it refuses to do.
 
 ```powershell
-python -m claude_token_lens apply --set effortLevel=medium --scope user --dry-run
-python -m claude_token_lens apply interactive-chat --dry-run
-python -m claude_token_lens apply --revert 20260919T100252Z
+python -m claudeglass apply --set effortLevel=medium --scope user --dry-run
+python -m claudeglass apply interactive-chat --dry-run
+python -m claudeglass apply --revert 20260919T100252Z
 ```
 
 | Flag | What it does |
@@ -323,8 +323,8 @@ it's on. [`capture.md`](capture.md) covers the levels, tags, sampling
 and privacy.
 
 ```powershell
-python -m claude_token_lens capture status
-python -m claude_token_lens capture on --level essentials --for 7d
+python -m claudeglass capture status
+python -m claudeglass capture on --level essentials --for 7d
 ```
 
 | Action | What it does |
@@ -364,7 +364,7 @@ hashed. Every column is a count, a token total or a cost: never a
 prompt, tool output or file path.
 
 ```powershell
-python -m claude_token_lens export --format csv-flat --out usage.csv
+python -m claudeglass export --format csv-flat --out usage.csv
 ```
 
 | Flag | What it does |
@@ -385,12 +385,12 @@ a plan it adds the five-hour blocks used. Then comes the usage section. It's siz
 habit, not the full report.
 
 ```powershell
-python -m claude_token_lens monthly-report --out reports
+python -m claudeglass monthly-report --out reports
 ```
 
 | Flag | What it does |
 |---|---|
-| `--out DIR` | Required. Where to write `claude-token-lens-YYYY-MM.md` and `.html` |
+| `--out DIR` | Required. Where to write `claudeglass-YYYY-MM.md` and `.html` |
 | `--month YYYY-MM` | Default: last calendar month, in your time zone |
 | `--generated-at ISO8601` | Fix the trailing "Generated at" line, so a rerun is byte-identical. `SOURCE_DATE_EPOCH` works too |
 
@@ -403,7 +403,7 @@ them into `<config-dir>/team/` for `team-report`. It stops with exit
 code 2 and the reason at the first file that isn't valid.
 
 ```powershell
-python -m claude_token_lens import my-machine.json colleague-a.json
+python -m claudeglass import my-machine.json colleague-a.json
 ```
 
 ### `team-report`
@@ -427,7 +427,7 @@ has tagged half the sessions. A row needs a minimum number of sessions
 on each side to count. [`compare.md`](compare.md) has the details.
 
 ```powershell
-python -m claude_token_lens compare --a window:2026-09-01..2026-09-10 --b window:2026-09-11..2026-09-20
+python -m claudeglass compare --a window:2026-09-01..2026-09-10 --b window:2026-09-11..2026-09-20
 ```
 
 | Flag | What it does |
@@ -543,7 +543,7 @@ Every command reads these.
 | `--limit N` | Read at most N sessions |
 | `--window-by {last-reply,mtime,timestamp}` | What puts a session in the window: its last reply (the default), its file's modified time, or its first reply |
 | `--pricing PATH` | Use another rate card instead of the packaged one or your own in the config folder |
-| `--config-dir PATH` | This tool's own folder. Default `~/.claude/token-lens`, or `$CLAUDE_CONFIG_DIR/token-lens` |
+| `--config-dir PATH` | This tool's own folder. Default `~/.claude/claudeglass`, or `$CLAUDE_CONFIG_DIR/claudeglass` |
 | `--tz ZONE` | A time zone for this run only, such as `America/New_York`. Default: `tz` in `config.toml`, else your machine's |
 | `--group-by {agent,entrypoint,mode,model,project,purpose}` | How tables that support it are grouped |
 | `--no-cache` / `--rebuild-cache` | Skip the digest cache for this run, or empty it first and fill it again. Use one or the other |
@@ -581,6 +581,6 @@ The digest cache makes the warm run fast. It lives in
 transcript's path plus `SCHEMA_VERSION` (in `model.py`) and
 `PARSER_VERSION` (in `__init__.py`). A release that changes either one
 re-reads only the entries it needs to; see
-[`cache.py`](../src/claude_token_lens/cache.py). Delete the folder, or
+[`cache.py`](../src/claudeglass/cache.py). Delete the folder, or
 pass `--rebuild-cache`, to read everything again. The dashboard's own
 timings are in [`deploy.md`](deploy.md#performance).

@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-STATIC_DIR = REPO_ROOT / "src" / "claude_token_lens" / "service" / "static"
+STATIC_DIR = REPO_ROOT / "src" / "claudeglass" / "service" / "static"
 MANIFEST = STATIC_DIR / "THIRD_PARTY.sha256"
 PINNED_DIRS = ("vendor", "fonts")
 
@@ -97,13 +97,13 @@ def test_git_leaves_the_pinned_bytes_alone() -> None:
     windows-latest), git would rewrite the minified bundle's line endings
     and break its hash; the fonts are binary."""
     rules = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
-    assert re.search(r"^src/claude_token_lens/service/static/vendor/\*\* -text$", rules, re.MULTILINE)
-    assert re.search(r"^src/claude_token_lens/service/static/fonts/\*\* binary$", rules, re.MULTILINE)
+    assert re.search(r"^src/claudeglass/service/static/vendor/\*\* -text$", rules, re.MULTILINE)
+    assert re.search(r"^src/claudeglass/service/static/fonts/\*\* binary$", rules, re.MULTILINE)
 
 
 def test_package_data_ships_the_pinned_folders() -> None:
     config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    data = config["tool"]["setuptools"]["package-data"]["claude_token_lens"]
+    data = config["tool"]["setuptools"]["package-data"]["claudeglass"]
     for pattern in ("service/static/*", "service/static/vendor/*", "service/static/fonts/*"):
         assert pattern in data, pattern
 

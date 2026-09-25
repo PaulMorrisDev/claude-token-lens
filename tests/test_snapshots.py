@@ -1,4 +1,4 @@
-"""Tests for claude_token_lens.snapshots (WP7): loading the fixture
+"""Tests for claudeglass.snapshots (WP7): loading the fixture
 snapshot files, the session/snapshot join, auto-detected diff keys,
 co-changed keys, and the config-diff table's grouping/exclusion/notes.
 
@@ -17,13 +17,13 @@ import json
 import shutil
 from pathlib import Path
 
-from claude_token_lens import snapshots as snap_mod
+from claudeglass import snapshots as snap_mod
 
 from helpers import assert_privacy
 
 #: The fixture files live directly under tests/fixtures/snapshots/ (per the
 #: WP7 brief), not under the <config_dir>/snapshots/ layout load_snapshots()
-#: expects on a real config dir (config_dir being the token-lens directory
+#: expects on a real config dir (config_dir being the claudeglass directory
 #: itself -- see load_snapshots's docstring, fix config-dir). _load() below
 #: reads them straight off disk into Snapshot objects for the join/diff/table
 #: tests; test_load_snapshots_* separately proves load_snapshots() itself
@@ -42,10 +42,10 @@ def _load() -> list[snap_mod.Snapshot]:
 
 
 def _copy_fixtures_into_config_dir(config_dir: Path) -> None:
-    # Fix config-dir: config_dir is the token-lens directory itself
+    # Fix config-dir: config_dir is the claudeglass directory itself
     # (matching every caller's convention now -- see load_snapshots's
     # docstring), so snapshots live directly under it, not nested one
-    # more "token-lens" level down.
+    # more "claudeglass" level down.
     snapshots_dir = config_dir / "snapshots"
     snapshots_dir.mkdir(parents=True)
     for path in _FIXTURES_DIR.glob("*.json"):
@@ -501,7 +501,7 @@ def test_with_every_project_agents_adds_another_projects_agents_to_the_newest_sn
         effective_agents={"implementer": {"source": "project", "model": "haiku"}},
     )
     newest = _schema2_snapshot(
-        project_slug="token-lens", ts="20260923T000000Z", effective={"model": "sonnet"}, agents={}, effective_agents={}
+        project_slug="claudeglass", ts="20260923T000000Z", effective={"model": "sonnet"}, agents={}, effective_agents={}
     )
 
     view = snap_mod.with_every_project_agents([other, newest])
@@ -518,7 +518,7 @@ def test_with_every_project_agents_keeps_a_project_agent_over_a_newer_user_agent
         project_slug="revixo", ts="20260920T000000Z", agents={"reviewer": _agent("project", "opus")}
     )
     user = _schema2_snapshot(
-        project_slug="token-lens", ts="20260923T000000Z", agents={"reviewer": _agent("user", "sonnet")}
+        project_slug="claudeglass", ts="20260923T000000Z", agents={"reviewer": _agent("user", "sonnet")}
     )
 
     view = snap_mod.with_every_project_agents([project, user])
@@ -836,7 +836,7 @@ def test_snapshot_for_with_project_key_ignores_other_projects():
 def test_load_snapshots_skips_apply_stamps_that_record_no_config(tmp_path):
     import json as _json
 
-    from claude_token_lens.snapshots import diff_keys, load_snapshots
+    from claudeglass.snapshots import diff_keys, load_snapshots
 
     snaps_dir = tmp_path / "snapshots"
     snaps_dir.mkdir()

@@ -12,19 +12,19 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import model
-from claude_token_lens.handoff import (
+from claudeglass import model
+from claudeglass.handoff import (
     RULES,
     HandoffThresholds,
     build_section,
     compute_handoff,
     starting_context,
 )
-from claude_token_lens import habits
-from claude_token_lens.habits import Habits, Piece, SessionShape
-from claude_token_lens.model import EventKind, PlanStats, ReportModel, TranscriptMeta, TranscriptResult
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing
+from claudeglass import habits
+from claudeglass.habits import Habits, Piece, SessionShape
+from claudeglass.model import EventKind, PlanStats, ReportModel, TranscriptMeta, TranscriptResult
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing
 
 from helpers import assert_privacy, tool_result_block, tool_use_block, turn_line, user_block_line, user_str_line, write_jsonl
 

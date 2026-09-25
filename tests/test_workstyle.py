@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from claude_token_lens.model import SessionRecord
-from claude_token_lens.workstyle import (
+from claudeglass.model import SessionRecord
+from claudeglass.workstyle import (
     SessionFeatures,
     build_section,
     corpus_archetype,

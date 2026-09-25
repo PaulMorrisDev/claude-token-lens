@@ -31,18 +31,18 @@ trust:
 |---|---|---|
 | **A. `.pyz` download** | Nothing beyond Python itself — no `pip`, no network, no `git` | The default choice on a locked-down machine |
 | **B. `pip` from a local clone** | `pip`. It installs from the folder on disk, but pip may still need PyPI for its build tools (see below) | You already have the source checked out |
-| **C. `pip` from GitHub** | `pip` + network; `git` only for the `git+https` form, not for the zip-archive form | A normal, unrestricted machine |
+| **C. `pip` from PyPI or GitHub** | `pip` + network; `git` only for the `git+https` form | A normal, unrestricted machine |
 
 ### Route A: `.pyz` (recommended for a locked-down machine)
 
-Download `claude-token-lens.pyz` from the [Releases
-page](https://github.com/PaulMorrisDev/claude-token-lens/releases) (every
+Download `claudeglass.pyz` from the [Releases
+page](https://github.com/PaulMorrisDev/claudeglass/releases) (every
 tagged release attaches a pre-built one — no build step, no `pip`, no
 `git`). Then:
 
 ```powershell
-py -3 claude-token-lens.pyz --version
-py -3 claude-token-lens.pyz init
+py -3 claudeglass.pyz --version
+py -3 claudeglass.pyz init
 ```
 
 If you'd rather build it yourself from a checkout (needs the source,
@@ -50,37 +50,37 @@ not just the interpreter):
 
 ```powershell
 py -3 scripts\build-pyz.py
-py -3 dist\claude-token-lens.pyz --version
+py -3 dist\claudeglass.pyz --version
 ```
 
 Every subcommand works the same way from the archive: `py -3
-claude-token-lens.pyz <subcommand> ...`, in place of `py -3 -m
-claude_token_lens <subcommand> ...` everywhere else in this document.
+claudeglass.pyz <subcommand> ...`, in place of `py -3 -m
+claudeglass <subcommand> ...` everywhere else in this document.
 
 ### Route B: `pip` from a local clone
 
 ```powershell
 py -3 -m venv .venv
 .venv\Scripts\pip install <path-to-the-cloned-repo>
-.venv\Scripts\claude-token-lens --version
+.venv\Scripts\claudeglass --version
 ```
 
-If `.venv\Scripts\claude-token-lens.exe` isn't on `PATH` (it never is
+If `.venv\Scripts\claudeglass.exe` isn't on `PATH` (it never is
 unless you `activate` the venv), call it by its full path as above, or
 fall back to:
 
 ```powershell
-.venv\Scripts\python.exe -m claude_token_lens --version
+.venv\Scripts\python.exe -m claudeglass --version
 ```
 
 **`pip install --user .` (outside a venv) does *not* usually put
-`claude-token-lens.exe` on `PATH` either** — pip installs it under
+`claudeglass.exe` on `PATH` either** — pip installs it under
 `%APPDATA%\Python\Python3xx\Scripts`, which Windows doesn't add to
 `PATH` by default, and pip prints a warning to that effect at install
-time. `python -m claude_token_lens ...` is the reliable fallback in
+time. `python -m claudeglass ...` is the reliable fallback in
 every case above; it never depends on `PATH` at all.
-This document uses `py -3 -m claude_token_lens`; on Route B, use
-`.venv\Scripts\python.exe -m claude_token_lens` in its place.
+This document uses `py -3 -m claudeglass`; on Route B, use
+`.venv\Scripts\python.exe -m claudeglass` in its place.
 
 **A genuinely offline machine (no PyPI access at all) will fail this
 route**, even from a local clone: this project's own `dependencies` are
@@ -91,30 +91,36 @@ dependencies for a source install (PEP 517), and a fresh venv on Python
 distribution found for setuptools>=68` — that's the signal to fall
 back to Route A.
 
-### Route C: `pip` from GitHub
+### Route C: `pip` from PyPI or GitHub
 
 ```powershell
-py -3 -m pip install git+https://github.com/PaulMorrisDev/claude-token-lens
+py -3 -m pip install claudeglass
+```
+
+For the latest code on GitHub instead:
+
+```powershell
+py -3 -m pip install git+https://github.com/PaulMorrisDev/claudeglass
 ```
 
 No `git` on the machine? This works without it (a plain HTTPS
 download, no `git clone`):
 
 ```powershell
-py -3 -m pip install https://github.com/PaulMorrisDev/claude-token-lens/archive/refs/heads/main.zip
+py -3 -m pip install https://github.com/PaulMorrisDev/claudeglass/archive/refs/heads/main.zip
 ```
 
-Both need outbound HTTPS access to GitHub (and, same as Route B, to
-PyPI for the `setuptools`/`wheel` build dependencies) — if a corporate
+These need outbound HTTPS access to PyPI, or to GitHub (and, same as
+Route B, to PyPI for the `setuptools`/`wheel` build dependencies) — if a corporate
 proxy blocks either, use Route A instead.
 
 ## 2. Run `init`
 
 ```powershell
-py -3 -m claude_token_lens init
+py -3 -m claudeglass init
 ```
 
-(or `py -3 claude-token-lens.pyz init` for Route A). It prints
+(or `py -3 claudeglass.pyz init` for Route A). It prints
 `Looking for Claude Code history...`, then how many projects it found
 (naming any WSL distro, whose sessions it includes), and asks up to
 four questions:
@@ -134,7 +140,7 @@ it saves `config.toml`, copies the hook files, changes `settings.json`,
 writes the skill, starts the dashboard and reads this project's history
 for a first baseline, one line each. It ends with `Your setup`: each
 item done, off or needing attention, and what to open next. The same
-list comes back any time with `claude-token-lens status`.
+list comes back any time with `claudeglass status`.
 
 `init --advanced` also asks these, before the review:
 
@@ -155,13 +161,13 @@ every answer instead of asking, prints what it derived and why, then
 the review and the checklist:
 
 ```powershell
-py -3 -m claude_token_lens init --non-interactive --no-install --no-service `
+py -3 -m claudeglass init --non-interactive --no-install --no-service `
   --config-dir C:\path\to\config --projects-root C:\path\to\projects
 ```
 
 `--config-dir`/`--projects-root` are optional — omitted, they default
-to `%USERPROFILE%\.claude\token-lens` and `%USERPROFILE%\.claude\projects`
-respectively (or `%CLAUDE_CONFIG_DIR%\token-lens`/`...\projects` when
+to `%USERPROFILE%\.claude\claudeglass` and `%USERPROFILE%\.claude\projects`
+respectively (or `%CLAUDE_CONFIG_DIR%\claudeglass`/`...\projects` when
 that variable is set) — the same place Claude Code itself already
 keeps its transcripts, so on an ordinary machine you don't need to pass
 either.
@@ -203,9 +209,9 @@ copied to `settings.json.bak-<UTC time>` beside it. The hook command
 names your main Python install and the script by full path; the
 script needs only the standard library, so a deleted virtual
 environment can't break it. The statusline command names the Python
-you installed claude-token-lens into. Neither needs the `py` launcher
+you installed claudeglass into. Neither needs the `py` launcher
 or a `%VARIABLE%`, so both run under Git Bash. Say no and
-`settings.json` is left as it was; `claude-token-lens init --connect`
+`settings.json` is left as it was; `claudeglass init --connect`
 makes the change later. `--no-install` skips this step.
 
 If your existing hook command is broken (a mis-escaped path, a missing
@@ -218,10 +224,10 @@ place this tool ever spends your Claude usage. Say yes and Claude reads
 a short note at the start of a session (and a subagent's) and ends each
 reply with a one-line tag you will see, such as
 `[tl: task=bugfix brief=clear]`. Capture switches itself off after 14
-days unless you say otherwise: `claude-token-lens capture on --for 30d`
+days unless you say otherwise: `claudeglass capture on --for 30d`
 keeps it on longer. `/tl-feedback` is an optional self-review skill that
 costs nothing until you run it. Skip either at `init` time and turn it
-on later with `claude-token-lens capture on`/`capture feedback on`,
+on later with `claudeglass capture on`/`capture feedback on`,
 which ask the same way and show the same `settings.json`/skill-file
 diff first. Full detail: [`docs/onboarding.md`](onboarding.md).
 
@@ -246,7 +252,7 @@ diff first. Full detail: [`docs/onboarding.md`](onboarding.md).
   progress; figures fill in as it goes.
 - **It reads; it doesn't change.** Nothing about how Claude works
   changes until you apply a change yourself, through a prompt you give
-  Claude or `claude-token-lens apply`. A change takes effect in the next
+  Claude or `claudeglass apply`. A change takes effect in the next
   session you start.
 - **Cheaper isn't free.** A cheaper model, lower effort or an earlier
   summary can make Claude less thorough. Each change says what it trades
@@ -255,12 +261,12 @@ diff first. Full detail: [`docs/onboarding.md`](onboarding.md).
 - **Amounts on a Pro or Max plan are list-price equivalents** until the
   statusline has logged enough usage-limit readings.
 
-`claude-token-lens changes` prints the same list with everything the
+`claudeglass changes` prints the same list with everything the
 tool installed and the command that undoes each.
 
 ## 3. The logon service
 
-`init`'s service step asks whether to register `claude-token-lens serve`
+`init`'s service step asks whether to register `claudeglass serve`
 to start automatically at logon (default yes). `--no-service` skips the
 question. `--install-service` answers yes without asking. Under
 `--non-interactive` without `--install-service`, the answer is no.
@@ -271,17 +277,17 @@ that happens keeps the history.
 Preview exactly what registration would do, without doing it:
 
 ```powershell
-py -3 -m claude_token_lens install-service --dry-run
+py -3 -m claudeglass install-service --dry-run
 ```
 
 On Windows this prints the PowerShell it would run to register a
-**Scheduled Task named `ClaudeTokenLens`**, triggered at your own
+**Scheduled Task named `ClaudeGlass`**, triggered at your own
 logon, `-RunLevel Limited` (no admin rights requested or required, and
 none needed). Running from a `.pyz`? The printed command already
 points at that exact archive's absolute path (not `python -m
-claude_token_lens`, which cannot work once the code is inside a zip) —
+claudeglass`, which cannot work once the code is inside a zip) —
 confirm the line contains the full path to your `.pyz`, not a bare
-`claude_token_lens` module reference.
+`claudeglass` module reference.
 
 Registering also starts it straight away, on every system. Re-running
 `install-service` is safe: on Windows it stops the running copy,
@@ -291,7 +297,7 @@ again.
 Confirm it actually registered, two ways:
 
 ```powershell
-schtasks /Query /TN ClaudeTokenLens
+schtasks /Query /TN ClaudeGlass
 curl http://127.0.0.1:8765/api/health
 ```
 
@@ -309,7 +315,7 @@ http://127.0.0.1:8765
 ```
 
 Live once the service is running (started by the logon task, or by
-running `claude-token-lens serve` directly in a terminal you leave
+running `claudeglass serve` directly in a terminal you leave
 open). Loopback-only by default — nothing outside
 this machine can reach it unless you pass both `--bind <address>` and
 `--allow-remote`. It has no login, so don't do that on a shared network.
@@ -321,10 +327,10 @@ lists every page.
 ## 5. Run the first report
 
 ```powershell
-py -3 -m claude_token_lens report
+py -3 -m claudeglass report
 ```
 
-(`report` is the default subcommand — `claude-token-lens` with no
+(`report` is the default subcommand — `claudeglass` with no
 arguments does the same thing.) Scopes to the current directory's
 project by default; add `--all-projects` to report across every
 project under the projects root, or `--project <slug>` for a specific
@@ -353,8 +359,8 @@ proof in that case.)
 To find it again:
 
 ```powershell
-py -3 -m claude_token_lens apply --list-backups
-py -3 -m claude_token_lens apply --revert <TS>
+py -3 -m claudeglass apply --list-backups
+py -3 -m claudeglass apply --revert <TS>
 ```
 
 `--revert` restores the backup `apply` made under
@@ -365,7 +371,7 @@ discarding those edits.
 **Take everything back out.** Look first:
 
 ```powershell
-py -3 -m claude_token_lens uninstall --revert-changes --delete-data --dry-run
+py -3 -m claudeglass uninstall --revert-changes --delete-data --dry-run
 ```
 
 Then run it without `--dry-run`. It shows each step and asks before
@@ -383,7 +389,7 @@ making it:
    at all, and the file is named. Without `--revert-changes`, each one
    is listed with its `apply --revert` command.
 4. With `--delete-data`: deletes `<config-dir>` (default
-   `%USERPROFILE%\.claude\token-lens`): the database, snapshots, usage
+   `%USERPROFILE%\.claude\claudeglass`): the database, snapshots, usage
    log, profiles and backups. It refuses while any applied change is
    still in place, because the backups are the only way to undo it.
 
@@ -391,15 +397,15 @@ making it:
 Nothing removes the `settings.json.bak-*` copies; delete them yourself
 once you're happy.
 
-Finally, if installed via `pip`: `python -m pip uninstall claude-token-lens`. Via
+Finally, if installed via `pip`: `python -m pip uninstall claudeglass`. Via
 `.pyz`: delete the one file.
 
 ## 8. Update to a newer version
 
-From version 0.5 on, one command does it all for routes B and C:
+One command does it all for routes B and C:
 
 ```powershell
-py -3 -m claude_token_lens update
+py -3 -m claudeglass update
 ```
 
 It installs the newest version from GitHub (`--from <path-to-the-cloned-repo>`
@@ -418,32 +424,29 @@ for Route B, after a `git pull`), then hands over to the new copy
 answers yes to every question. A `.pyz` can't update itself: `update`
 says so and links the download.
 
-Updating from 0.6.0 or older, `update` stops after `install-service`.
-Run `py -3 -m claude_token_lens update --finish` once afterwards for the
-rest.
-
-On 0.4 or older, or to do it by hand, install the new version the same
-way you installed the first one:
+To do it by hand, install the new version the same way you installed
+the first one:
 
 | Route | Update |
 |---|---|
-| A (`.pyz`) | Download the new `claude-token-lens.pyz` from the [latest release](https://github.com/PaulMorrisDev/claude-token-lens/releases/latest) over the old file |
+| A (`.pyz`) | Download the new `claudeglass.pyz` from the [latest release](https://github.com/PaulMorrisDev/claudeglass/releases/latest) over the old file |
 | B (local clone) | `git pull` in the clone, then `.venv\Scripts\pip install --force-reinstall <path-to-the-cloned-repo>` |
-| C (GitHub) | `py -3 -m pip install --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens` |
+| C (PyPI) | `py -3 -m pip install --upgrade claudeglass` |
+| C (GitHub) | `py -3 -m pip install --force-reinstall git+https://github.com/PaulMorrisDev/claudeglass` |
 
-`--force-reinstall` is needed because pip skips a copy whose version
-number hasn't changed. Then finish with the same Python you just
+`--force-reinstall` is needed for a clone or GitHub because pip skips
+a copy whose version number hasn't changed. Then finish with the same Python you just
 updated:
 
 ```powershell
-py -3 -m claude_token_lens update --finish
+py -3 -m claudeglass update --finish
 ```
 
-(Route A: `py -3 claude-token-lens.pyz install-service`; Route B:
-`.venv\Scripts\python.exe -m claude_token_lens update --finish`.) It stops the
+(Route A: `py -3 claudeglass.pyz install-service`; Route B:
+`.venv\Scripts\python.exe -m claudeglass update --finish`.) It stops the
 running dashboard, re-registers the task for this install and starts it
 again. On Linux it restarts the service too; on macOS run
-`launchctl kickstart -k gui/$(id -u)/com.claude-token-lens` instead.
+`launchctl kickstart -k gui/$(id -u)/com.claudeglass` instead.
 The status line at the foot of the dashboard's sidebar shows the
 version it is running. If a new
 version reads transcripts differently, the dashboard re-reads them once
@@ -453,19 +456,107 @@ after the restart, so the first page load can be slow.
 
 | Symptom | Fix |
 |---|---|
-| WSL sessions missing from the dashboard | Run `init` again: it adds any WSL folder it finds. Or add it to `extra_projects_roots` in `config.toml` and run `install-service` to restart the dashboard. See the README's [Using Claude Code in WSL too](../README.md#using-claude-code-in-wsl-too) |
-| Dashboard still shows the old version after an update (see the foot of its sidebar) | Something else still holds port 8765: an older copy started by hand, from another Python install, or from Docker. The README's [An old dashboard won't go away](../README.md#an-old-dashboard-wont-go-away) shows how to find and stop it; then run `update --finish` with the Python you updated (section 8), which on Windows offers to stop an older copy itself |
-| Not sure setup worked | Run `claude-token-lens status`. It lists each part as done, off or needing attention, with the command that fixes it, and exits 1 only when something essential needs attention |
-| pip stops with "Failed to write executable" and `[WinError 2] ... claude-token-lens.exe' -> '...claude-token-lens.exe.deleteme'` | pip couldn't create the `claude-token-lens.exe` launcher in your Python's `Scripts` folder: you can't write there, or antivirus blocked the new `.exe`. Nothing here needs that launcher. Install for your user instead (`py -3 -m pip install --user --force-reinstall ...`), or use Route A, which pip never touches |
-| `claude-token-lens` not found | Use the full path to the venv's `Scripts\claude-token-lens.exe`, or `python -m claude_token_lens` (works regardless of `PATH`) |
-| The Data quality page says the SessionStart hook isn't running | The hook command names a Python that isn't installed (`py` with no launcher), uses `%USERPROFILE%` (Claude Code runs hooks through Git Bash, which doesn't expand it), or has a path broken by single backslashes in JSON. Run `claude-token-lens init --repair-hook`: it shows the fixed command and changes it without asking, after copying `settings.json` to `settings.json.bak-<UTC time>`. It keeps your own Python when it's found and writes any `%VARIABLE%` out in full; otherwise it names your main Python install by full path. It can only fix a command whose script exists: if the script is missing, run `claude-token-lens init --connect` first, which copies it back into `<config-dir>\hooks\` |
+| WSL sessions missing from the dashboard | Run `init` again: it adds any WSL folder it finds. Or add it to `extra_projects_roots` in `config.toml` and run `install-service` to restart the dashboard. See [Using Claude Code in WSL too](#using-claude-code-in-wsl-too) |
+| Dashboard still shows the old version after an update (see the foot of its sidebar) | Something else still holds port 8765: an older copy started by hand, from another Python install, or from Docker. [An old dashboard won't go away](#an-old-dashboard-wont-go-away) shows how to find and stop it; then run `update --finish` with the Python you updated (section 8), which on Windows offers to stop an older copy itself |
+| Not sure setup worked | Run `claudeglass status`. It lists each part as done, off or needing attention, with the command that fixes it, and exits 1 only when something essential needs attention |
+| pip stops with "Failed to write executable" and `[WinError 2] ... claudeglass.exe' -> '...claudeglass.exe.deleteme'` | pip couldn't create the `claudeglass.exe` launcher in your Python's `Scripts` folder: you can't write there, or antivirus blocked the new `.exe`. Nothing here needs that launcher. Install for your user instead (`py -3 -m pip install --user --force-reinstall ...`), or use Route A, which pip never touches |
+| `claudeglass` not found | Use the full path to the venv's `Scripts\claudeglass.exe`, or `python -m claudeglass` (works regardless of `PATH`). The dashboard's own commands already use the form that runs on your machine; set `CLAUDEGLASS_COMMAND` where the service runs to pick another |
+| http://127.0.0.1:8765 doesn't open | Run `python -m claudeglass serve` in a PowerShell window and leave it open; any error prints there. "Already in use by another serve" names the process that has the dashboard's database open: stop that one first |
+| A banner says the dashboard is **not updating** or its **last scan failed** | The background scan has stopped or keeps failing, so figures are frozen at the time shown. Restart the dashboard: `python -m claudeglass install-service` (or stop and start `serve`) |
+| Amounts are in dollars but you're on a plan | Run `python -m claudeglass init` again and answer `1` to "How do you pay for Claude Code?" |
+| `capture status` or **Setup › Capture** says your organisation allows only the hooks it deploys, or that hooks are turned off | A managed policy (`allowManagedHooksOnly` or `disableAllHooks`), or `disableAllHooks` in your own settings.json, stops Claude Code running any hook you add yourself. So capture, the config-snapshot hook and the status line can't run. Reports and the dashboard still work from your transcripts. Only your administrator can lift a managed policy |
+| The Data quality page says the SessionStart hook isn't running | The hook command names a Python that isn't installed (`py` with no launcher), uses `%USERPROFILE%` (Claude Code runs hooks through Git Bash, which doesn't expand it), or has a path broken by single backslashes in JSON. Run `claudeglass init --repair-hook`: it shows the fixed command and changes it without asking, after copying `settings.json` to `settings.json.bak-<UTC time>`. It keeps your own Python when it's found and writes any `%VARIABLE%` out in full; otherwise it names your main Python install by full path. It can only fix a command whose script exists: if the script is missing, run `claudeglass init --connect` first, which copies it back into `<config-dir>\hooks\` |
 | No usage-limit readings | The statusline runs only in Claude Code in a terminal, not in the desktop app or an IDE. Amounts stay list-price equivalents until readings arrive |
 | `py` launcher missing (`'py' is not recognized`) | Use `python`/`python3` directly, or reinstall Python from python.org with "py launcher" checked |
 | Python 3.10 or older | `pip install` refuses (`Requires-Python`); the `.pyz` fails at import with a `tomllib`-related error. Install 3.11+ (a user-level install needs no admin rights) |
-| Execution policy blocks a `.ps1` script | `install-service`/`init` never need this — they shell out via `powershell.exe -ExecutionPolicy Bypass -Command ...` themselves. Only affects the legacy `scripts\windows\Register-TokenLensTask.ps1` path; run it the same way: `powershell -ExecutionPolicy Bypass -File scripts\windows\Register-TokenLensTask.ps1` |
+| Execution policy blocks a `.ps1` script | `install-service`/`init` never need this — they shell out via `powershell.exe -ExecutionPolicy Bypass -Command ...` themselves. Only affects the legacy `scripts\windows\Register-ClaudeGlassTask.ps1` path; run it the same way: `powershell -ExecutionPolicy Bypass -File scripts\windows\Register-ClaudeGlassTask.ps1` |
 | Corporate proxy blocks `pip`/PyPI/GitHub | Use Route A (`.pyz`) — no network access needed once downloaded |
-| `CLAUDE_CONFIG_DIR` already set (for Claude Code itself) | Harmless — `claude-token-lens` reads it too and keeps its own files in `<CLAUDE_CONFIG_DIR>\token-lens`. The connect step, `--repair-hook`, `apply`, `changes`, `uninstall` and the dashboard all use `<CLAUDE_CONFIG_DIR>\settings.json`; the ones that change it show the change first. `--config-dir` moves only this tool's own folder: `settings.json` is never looked for beside it, and the hook and statusline commands `init` adds then carry the same `--config-dir`, so snapshots and the usage log land where the dashboard reads them. Pass `--claude-root` to name Claude Code's folder yourself |
-| Port 8765 already in use | `claude-token-lens serve --port <other>`, or `claude-token-lens install-service --port <other>` for the logon task (`init`'s service step always uses 8765). The dashboard and `/api/health` URLs change to match |
+| `CLAUDE_CONFIG_DIR` already set (for Claude Code itself) | Harmless — `claudeglass` reads it too and keeps its own files in `<CLAUDE_CONFIG_DIR>\claudeglass`. The connect step, `--repair-hook`, `apply`, `changes`, `uninstall` and the dashboard all use `<CLAUDE_CONFIG_DIR>\settings.json`; the ones that change it show the change first. `--config-dir` moves only this tool's own folder: `settings.json` is never looked for beside it, and the hook and statusline commands `init` adds then carry the same `--config-dir`, so snapshots and the usage log land where the dashboard reads them. Pass `--claude-root` to name Claude Code's folder yourself |
+| Port 8765 already in use | `claudeglass serve --port <other>`, or `claudeglass install-service --port <other>` for the logon task (`init`'s service step always uses 8765). The dashboard and `/api/health` URLs change to match |
+
+### An old dashboard won't go away
+
+Only one program can use port 8765. If an old copy holds it, the new one
+can't start, and your browser keeps showing the old one. See what is
+using the port:
+
+```powershell
+Get-NetTCPConnection -LocalPort 8765 -State Listen | ForEach-Object { Get-Process -Id $_.OwningProcess } | Format-Table Id, ProcessName, Path
+```
+
+- **`python`, `pythonw` or `py`:** an old copy. Stop it, then start the
+  new one:
+
+  ```powershell
+  Get-NetTCPConnection -LocalPort 8765 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+  python -m claudeglass install-service
+  ```
+
+- **Anything with `docker` in its name:** the old Docker setup. Run
+  `docker compose down` in the folder you started it from, or stop the
+  container in Docker Desktop. Then run
+  `python -m claudeglass install-service`.
+
+Then reload http://127.0.0.1:8765 and check the version at the foot of
+the sidebar.
+
+### An update doesn't take (more than one Python)
+
+`update` and `pip install` change only the Python you run them with. If
+the dashboard was set up from a different Python, it keeps running the
+old copy. Run the update with the Python you want to keep; the one
+`python` finds is the easiest. Use a normal PowerShell window, not
+Administrator; nothing here needs it:
+
+```powershell
+python -m claudeglass update
+```
+
+It points the logon task and the status line at this Python, fixes hook
+entries that name a Python that no longer exists, and offers to remove
+the copies for other Pythons. Your settings and history live in
+`%USERPROFILE%\.claude\claudeglass`, which every copy shares, so nothing
+is lost.
+
+To see which Python the dashboard runs, and which one `python` is:
+
+```powershell
+(Get-ScheduledTask ClaudeGlass).Actions | Format-List Execute, Arguments
+(Get-Command python).Source
+```
+
+## Using Claude Code in WSL too
+
+If you also run Claude Code inside WSL (Ubuntu on Windows), its sessions
+are kept inside Linux, in
+`\\wsl.localhost\<distro>\home\<you>\.claude\projects`. Install
+ClaudeGlass on **Windows**, not inside WSL, and run
+`python -m claudeglass init`. It finds those folders itself and
+includes them, naming each distro when it starts. The dashboard then
+shows your Windows and WSL sessions together. A **Where** column on
+**Spend › Sessions** says which is which ("This computer" or
+"WSL: Ubuntu").
+
+- It only reads those folders, the same as your Windows one. It changes
+  nothing inside WSL.
+- While the dashboard runs, it looks in them every 30 seconds, which
+  keeps WSL running in the background. If WSL is shut down, the
+  dashboard carries on with what it already has. It picks up the rest
+  when WSL is back.
+- The "Connect to Claude Code" hook is for Claude Code on Windows. The
+  copy of Claude Code inside WSL has its own settings and doesn't need
+  it.
+- Added a WSL distro later? Run `init` again. To list the folders by
+  hand, put them in `config.toml` (in `%USERPROFILE%\.claude\claudeglass`)
+  and restart the dashboard with
+  `python -m claudeglass install-service`:
+
+  ```toml
+  extra_projects_roots = ['\\wsl.localhost\Ubuntu\home\alice\.claude\projects']
+  ```
+
+  A one-off command can take several folders too:
+  `python -m claudeglass report --all-projects --projects-root <folder> --projects-root <another>`.
 
 ## POSIX (Linux/macOS) quick variant
 
@@ -476,27 +567,27 @@ name and default paths.
 python3 --version                       # needs 3.11+
 
 # Route A: .pyz
-python3 claude-token-lens.pyz --version
-python3 claude-token-lens.pyz init
+python3 claudeglass.pyz --version
+python3 claudeglass.pyz init
 
 # Route B: pip from a local clone
 python3 -m venv .venv
 .venv/bin/pip install <path-to-the-cloned-repo>
-.venv/bin/claude-token-lens --version    # or: .venv/bin/python -m claude_token_lens --version
+.venv/bin/claudeglass --version    # or: .venv/bin/python -m claudeglass --version
 
 # Route C: pip from GitHub
-python3 -m pip install git+https://github.com/PaulMorrisDev/claude-token-lens
-python3 -m pip install https://github.com/PaulMorrisDev/claude-token-lens/archive/refs/heads/main.zip
+python3 -m pip install git+https://github.com/PaulMorrisDev/claudeglass
+python3 -m pip install https://github.com/PaulMorrisDev/claudeglass/archive/refs/heads/main.zip
 
-python3 -m claude_token_lens init
-python3 -m claude_token_lens install-service --dry-run   # prints the systemd user unit / LaunchAgent plan; writes nothing
+python3 -m claudeglass init
+python3 -m claudeglass install-service --dry-run   # prints the systemd user unit / LaunchAgent plan; writes nothing
 curl http://127.0.0.1:8765/api/health
-python3 -m claude_token_lens report
-python3 -m claude_token_lens uninstall --revert-changes --delete-data --dry-run   # look first, then run without --dry-run
+python3 -m claudeglass report
+python3 -m claudeglass uninstall --revert-changes --delete-data --dry-run   # look first, then run without --dry-run
 ```
 
-Config defaults to `~/.claude/token-lens`/`~/.claude/projects`
-(or `$CLAUDE_CONFIG_DIR/token-lens`/`.../projects`). See
+Config defaults to `~/.claude/claudeglass`/`~/.claude/projects`
+(or `$CLAUDE_CONFIG_DIR/claudeglass`/`.../projects`). See
 [`docs/deploy.md`](deploy.md) for what `install-service` actually
 registers on Linux (`systemctl --user`) and macOS (`launchctl`), and
 [`docs/onboarding.md`](onboarding.md) for the full `init`/`baseline`

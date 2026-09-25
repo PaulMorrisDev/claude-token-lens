@@ -1,4 +1,4 @@
-"""Tests for WP6's statusline renderer (src/claude_token_lens/statusline.py)."""
+"""Tests for WP6's statusline renderer (src/claudeglass/statusline.py)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import installer, statusline
+from claudeglass import installer, statusline
 
 
 def _write_transcript(path: Path, assistant_ts_iso: str) -> None:
@@ -48,8 +48,8 @@ def test_render_status_full_payload_matches_plan_example(tmp_path):
 
 def test_render_status_minimal_payload_falls_back():
     now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
-    assert statusline.render_status({}, now, 300) == "token-lens"
-    assert statusline.render_status(None, now, 300) == "token-lens"
+    assert statusline.render_status({}, now, 300) == "claudeglass"
+    assert statusline.render_status(None, now, 300) == "claudeglass"
 
 
 def test_render_status_partial_payload_only_renders_present_segments():
@@ -66,8 +66,8 @@ def test_render_status_ctx_rounds_to_nearest_k():
 
 def test_render_status_ctx_tolerates_missing_used_tokens():
     now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
-    assert statusline.render_status({"context_window": {}}, now, 300) == "token-lens"
-    assert statusline.render_status({"context_window": "not a dict"}, now, 300) == "token-lens"
+    assert statusline.render_status({"context_window": {}}, now, 300) == "claudeglass"
+    assert statusline.render_status({"context_window": "not a dict"}, now, 300) == "claudeglass"
 
 
 def test_render_status_cache_warm_without_expires_at_omits_countdown():
@@ -152,7 +152,7 @@ def test_render_status_effective_ttl_none_skips_ttl_segment(tmp_path):
     transcript = tmp_path / "session.jsonl"
     _write_transcript(transcript, now.isoformat().replace("+00:00", "Z"))
     payload = {"transcript_path": str(transcript)}
-    assert statusline.render_status(payload, now, None) == "token-lens"
+    assert statusline.render_status(payload, now, None) == "claudeglass"
 
 
 # -- TTL countdown from a constructed tmp transcript -------------------------
@@ -191,13 +191,13 @@ def test_render_status_ttl_1h_label_from_transcript_ephemeral_hint(tmp_path):
 
 def test_render_status_ttl_missing_transcript_path_skips_segment():
     now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
-    assert statusline.render_status({}, now, 300) == "token-lens"
+    assert statusline.render_status({}, now, 300) == "claudeglass"
 
 
 def test_render_status_ttl_nonexistent_transcript_file_skips_segment(tmp_path):
     now = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
     payload = {"transcript_path": str(tmp_path / "does-not-exist.jsonl")}
-    assert statusline.render_status(payload, now, 300) == "token-lens"
+    assert statusline.render_status(payload, now, 300) == "claudeglass"
 
 
 def test_render_status_ttl_reads_only_tail_of_large_transcript(tmp_path):
@@ -278,14 +278,14 @@ def test_resolve_effective_ttl_from_top_level_cache_ttl():
 
 
 def test_resolve_effective_ttl_from_config_toml(tmp_path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir()
     (config_dir / "config.toml").write_text('default_ttl = "1h"\n', encoding="utf-8")
     assert statusline.resolve_effective_ttl({}, config_dir) == 3600
 
 
 def test_resolve_effective_ttl_payload_wins_over_config(tmp_path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir()
     (config_dir / "config.toml").write_text('default_ttl = "1h"\n', encoding="utf-8")
     assert statusline.resolve_effective_ttl({"cache_ttl": "5m"}, config_dir) == 300
@@ -302,18 +302,18 @@ def test_main_malformed_stdin_exits_0_with_fallback_line(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO("{not valid json"))
     rc = statusline.main([])
     assert rc == 0
-    assert capsys.readouterr().out.strip() == "token-lens"
+    assert capsys.readouterr().out.strip() == "claudeglass"
 
 
 def test_main_empty_stdin_exits_0(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
     rc = statusline.main([])
     assert rc == 0
-    assert capsys.readouterr().out.strip() == "token-lens"
+    assert capsys.readouterr().out.strip() == "claudeglass"
 
 
 def test_main_full_payload_prints_line_and_logs_usage_row(monkeypatch, capsys, tmp_path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     payload = {
         "context_window": {"used_tokens": 10000},
@@ -325,7 +325,7 @@ def test_main_full_payload_prints_line_and_logs_usage_row(monkeypatch, capsys, t
     out = capsys.readouterr().out.strip()
     assert out == "ctx 10k | 5h 50%"
 
-    from claude_token_lens.tools import log_usage
+    from claudeglass.tools import log_usage
     csv_path = config_dir / "usage-log.csv"
     assert csv_path.exists()
     rows = log_usage.load_usage_log(csv_path)
@@ -381,14 +381,14 @@ def test_tag_limit_hit_rows_tolerates_non_numeric_used_percentage():
 
 
 def test_main_full_window_logs_limit_hit_source(monkeypatch, capsys, tmp_path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     payload = {"rate_limits": {"five_hour": {"used_percentage": 100}}}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     rc = statusline.main([])
     assert rc == 0
 
-    from claude_token_lens.tools import log_usage
+    from claudeglass.tools import log_usage
 
     csv_path = config_dir / "usage-log.csv"
     rows = log_usage.load_usage_log(csv_path)
@@ -398,14 +398,14 @@ def test_main_full_window_logs_limit_hit_source(monkeypatch, capsys, tmp_path):
 
 
 def test_main_partial_window_keeps_statusline_source(monkeypatch, capsys, tmp_path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     payload = {"rate_limits": {"five_hour": {"used_percentage": 50}}}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     rc = statusline.main([])
     assert rc == 0
 
-    from claude_token_lens.tools import log_usage
+    from claudeglass.tools import log_usage
 
     csv_path = config_dir / "usage-log.csv"
     rows = log_usage.load_usage_log(csv_path)
@@ -434,7 +434,7 @@ def test_main_explicit_config_dir_flag_wins_over_env_var(monkeypatch, capsys, tm
 
     assert rc == 0
     assert (explicit_config_dir / "usage-log.csv").exists()
-    assert not (env_config_dir / "token-lens" / "usage-log.csv").exists()
+    assert not (env_config_dir / "claudeglass" / "usage-log.csv").exists()
     assert not (env_config_dir / "usage-log.csv").exists()
 
 
@@ -442,7 +442,7 @@ def test_main_no_rate_limits_still_logs_context_window_row(monkeypatch, capsys, 
     """S1-context-budget: a payload with no ``rate_limits`` at all still
     gets its own ``context_window`` row logged, independently of the
     rate_limits-driven append -- see statusline.py's module docstring."""
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     payload = {"context_window": {"used_tokens": 1000}}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
@@ -451,7 +451,7 @@ def test_main_no_rate_limits_still_logs_context_window_row(monkeypatch, capsys, 
     csv_path = config_dir / "usage-log.csv"
     assert csv_path.exists()
 
-    from claude_token_lens import context_budget
+    from claudeglass import context_budget
 
     rows = context_budget.load_context_window_rows(csv_path)
     assert len(rows) == 1
@@ -459,7 +459,7 @@ def test_main_no_rate_limits_still_logs_context_window_row(monkeypatch, capsys, 
 
 
 def test_main_no_context_window_and_no_rate_limits_does_not_create_usage_log(monkeypatch, capsys, tmp_path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     payload = {}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
@@ -476,7 +476,7 @@ def test_main_exception_during_stdin_read_falls_back(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", _RaisingStdin())
     rc = statusline.main([])
     assert rc == 0
-    assert capsys.readouterr().out.strip() == "token-lens"
+    assert capsys.readouterr().out.strip() == "claudeglass"
 
 
 def test_main_stdout_reconfigure_failure_is_swallowed(monkeypatch, capsys):
@@ -492,7 +492,7 @@ def test_main_stdout_reconfigure_failure_is_swallowed(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
     rc = statusline.main([])
     assert rc == 0
-    assert fake_stdout.getvalue().strip() == "token-lens"
+    assert fake_stdout.getvalue().strip() == "claudeglass"
 
 
 def test_main_never_raises_when_print_itself_fails(monkeypatch, capsys):
@@ -536,8 +536,8 @@ def test_print_install_fragment_contains_both_platforms():
     assert "Windows:" in text
     assert "POSIX" in text
     windows_command, posix_command = _extract_commands(text)
-    assert windows_command == f"{_WIN_EXE} -m claude_token_lens.statusline"
-    assert posix_command == f"{_POSIX_EXE} -m claude_token_lens.statusline"
+    assert windows_command == f"{_WIN_EXE} -m claudeglass.statusline"
+    assert posix_command == f"{_POSIX_EXE} -m claudeglass.statusline"
     assert '"statusLine"' in text
     # Each platform's JSON fragment must itself be valid JSON.
     for block in text.split("Windows:\n", 1)[1].split("\n\nPOSIX"):
@@ -563,7 +563,7 @@ def _extract_commands(text: str) -> tuple[str, str]:
     ``print_install_fragment``-shaped report -- each platform's JSON
     block decoded properly rather than string-matched, since a Windows
     path's backslashes are JSON-escaped in the fragment text itself
-    (``"C:\\\\...\\\\claude-token-lens.pyz"``).
+    (``"C:\\\\...\\\\claudeglass.pyz"``).
     """
     _, _, rest = text.partition("Windows:\n")
     windows_json, _, posix_block = rest.partition("POSIX (Linux/macOS):\n")
@@ -574,16 +574,16 @@ def _extract_commands(text: str) -> tuple[str, str]:
 
 def test_print_install_fragment_pyz_mode_uses_archive_path_not_dash_m(tmp_path):
     """When invoked from a ``.pyz`` build, ``python -m
-    claude_token_lens.statusline`` does not work -- the package lives
+    claudeglass.statusline`` does not work -- the package lives
     inside the archive, not on ``sys.path``. Passing ``pyz_path`` explicitly
     (mirroring ``installer.plan_service_install``'s own parameter) must
     produce the archive-path form instead, matching
     ``installer._serve_argv``'s ``[exe, str(pyz_path), *args]`` shape.
     """
-    pyz_path = tmp_path / "claude-token-lens.pyz"
+    pyz_path = tmp_path / "claudeglass.pyz"
     text = statusline.print_install_fragment(pyz_path=pyz_path, python=_PY)
 
-    assert "-m claude_token_lens.statusline" not in text
+    assert "-m claudeglass.statusline" not in text
     windows_command, posix_command = _extract_commands(text)
     assert windows_command == f'{_WIN_EXE} "{pyz_path}" statusline'
     assert posix_command == f'{_POSIX_EXE} "{pyz_path}" statusline'
@@ -594,9 +594,9 @@ def test_print_install_fragment_pyz_mode_resolves_relative_path(tmp_path, monkey
     embedded as an absolute path -- the fragment ends up pasted into
     settings.json and run from an arbitrary working directory later."""
     monkeypatch.chdir(tmp_path)
-    text = statusline.print_install_fragment(pyz_path=Path("claude-token-lens.pyz"), python=_PY)
+    text = statusline.print_install_fragment(pyz_path=Path("claudeglass.pyz"), python=_PY)
     windows_command, posix_command = _extract_commands(text)
-    abs_path = str((tmp_path / "claude-token-lens.pyz").resolve())
+    abs_path = str((tmp_path / "claudeglass.pyz").resolve())
     assert windows_command == f'{_WIN_EXE} "{abs_path}" statusline'
     assert posix_command == f'{_POSIX_EXE} "{abs_path}" statusline'
 
@@ -604,18 +604,18 @@ def test_print_install_fragment_pyz_mode_resolves_relative_path(tmp_path, monkey
 def test_print_install_fragment_auto_detects_pyz_from_sys_argv(monkeypatch, tmp_path):
     """With no explicit ``pyz_path``, the fragment auto-detects the same
     way ``installer.detect_pyz_path``/``install-service`` already does --
-    from ``sys.argv[0]`` -- so a plain ``claude-token-lens.pyz init`` run
+    from ``sys.argv[0]`` -- so a plain ``claudeglass.pyz init`` run
     (which calls this with no arguments, see ``cli._cmd_init``) still gets
     the pyz-aware fragment without any extra wiring.
     """
-    archive = tmp_path / "claude-token-lens.pyz"
+    archive = tmp_path / "claudeglass.pyz"
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("__main__.py", "print('hi')\n")
     monkeypatch.setattr(installer.sys, "argv", [str(archive)])
 
     text = statusline.print_install_fragment(python=_PY)
 
-    assert "-m claude_token_lens.statusline" not in text
+    assert "-m claudeglass.statusline" not in text
     windows_command, posix_command = _extract_commands(text)
     abs_path = str(archive.resolve())
     assert windows_command == f'{_WIN_EXE} "{abs_path}" statusline'
@@ -625,14 +625,14 @@ def test_print_install_fragment_auto_detects_pyz_from_sys_argv(monkeypatch, tmp_
 def test_print_install_fragment_no_pyz_keeps_dash_m_form():
     text = statusline.print_install_fragment(pyz_path=None, python=_PY)
     windows_command, posix_command = _extract_commands(text)
-    assert windows_command == f"{_WIN_EXE} -m claude_token_lens.statusline"
-    assert posix_command == f"{_POSIX_EXE} -m claude_token_lens.statusline"
+    assert windows_command == f"{_WIN_EXE} -m claudeglass.statusline"
+    assert posix_command == f"{_POSIX_EXE} -m claudeglass.statusline"
 
 
 def test_install_command_names_this_python_by_full_path():
     # The fragment for this platform never depends on the py launcher or
     # a python3 on PATH.
-    assert statusline.install_command(pyz_path=None, python=_PY) == f'"{_PY}" -m claude_token_lens.statusline'
+    assert statusline.install_command(pyz_path=None, python=_PY) == f'"{_PY}" -m claudeglass.statusline'
 
 
 # -- S1-exports: cache trailing CSV columns ----------------------------------
@@ -745,7 +745,7 @@ def test_load_usage_log_ground_truth_missing_file_returns_empty(tmp_path):
 
 
 def test_load_usage_log_ground_truth_ignores_non_ground_truth_rows(tmp_path):
-    from claude_token_lens.tools import log_usage as log_usage_mod
+    from claudeglass.tools import log_usage as log_usage_mod
 
     csv_path = tmp_path / "usage-log.csv"
     log_usage_mod.append_rows(
@@ -807,7 +807,7 @@ def test_report_cli_renders_with_old_and_new_format_usage_log(tmp_path):
     tables without error."""
     from helpers import turn_line, write_jsonl
 
-    from claude_token_lens import cli as cli_mod
+    from claudeglass import cli as cli_mod
 
     projects_root = tmp_path / "projects"
     project_dir = projects_root / "proj-a"
@@ -817,7 +817,7 @@ def test_report_cli_renders_with_old_and_new_format_usage_log(tmp_path):
         [turn_line(input_tokens=100 + i, output_tokens=20, cache_read_input_tokens=10) for i in range(3)],
     )
 
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir()
 
     now = datetime(2026, 9, 18, tzinfo=timezone.utc)
@@ -859,7 +859,7 @@ def test_report_cli_scopes_cache_ground_truth_to_the_report_window(tmp_path, cap
     """
     from helpers import turn_line, write_jsonl
 
-    from claude_token_lens import cli as cli_mod
+    from claudeglass import cli as cli_mod
 
     projects_root = tmp_path / "projects"
     project_dir = projects_root / "proj-a"
@@ -868,7 +868,7 @@ def test_report_cli_scopes_cache_ground_truth_to_the_report_window(tmp_path, cap
     now_iso = now.isoformat().replace("+00:00", "Z")
     write_jsonl(project_dir / "s1.jsonl", [turn_line(timestamp=now_iso, input_tokens=100)])
 
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir()
     csv_path = config_dir / "usage-log.csv"
 
@@ -1066,7 +1066,7 @@ def test_append_context_window_row_upgrades_a_legacy_6_column_header(tmp_path):
     16-column row sitting under a 6-column header forever. Appending a
     ground-truth row must now upgrade the header once, atomically,
     padding every existing row out to the new width."""
-    from claude_token_lens.tools import log_usage as log_usage_mod
+    from claudeglass.tools import log_usage as log_usage_mod
 
     csv_path = tmp_path / "usage-log.csv"
     now = datetime(2026, 9, 18, tzinfo=timezone.utc)
@@ -1113,7 +1113,7 @@ def test_load_usage_log_upgraded_file_is_readable_by_dict_reader_without_none_ke
     must not corrupt log_usage.load_usage_log's dict rows with a
     literal ``None`` key -- the overflow lands under "_extra" instead.
     """
-    from claude_token_lens.tools import log_usage as log_usage_mod
+    from claudeglass.tools import log_usage as log_usage_mod
 
     csv_path = tmp_path / "usage-log.csv"
     # Write a legacy-shaped header directly, then a longer row under it,
@@ -1263,7 +1263,7 @@ def test_ensure_ground_truth_header_short_header_upgrades_a_large_file(tmp_path)
 
 
 def test_record_payload_keys_writes_dotted_names_only(tmp_path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir()
     payload = {
         "context_window": {"used_tokens": 1000},
@@ -1287,7 +1287,7 @@ def test_record_payload_keys_writes_dotted_names_only(tmp_path):
 
 
 def test_record_payload_keys_does_not_rewrite_when_unchanged(tmp_path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir()
     payload = {"a": 1, "b": {"c": 2}}
     statusline.record_payload_keys(payload, config_dir)
@@ -1298,7 +1298,7 @@ def test_record_payload_keys_does_not_rewrite_when_unchanged(tmp_path):
 
 
 def test_record_payload_keys_caps_at_max_recorded_keys(tmp_path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir()
     payload = {f"key_{i}": i for i in range(500)}
     statusline.record_payload_keys(payload, config_dir)
@@ -1307,7 +1307,7 @@ def test_record_payload_keys_caps_at_max_recorded_keys(tmp_path):
 
 
 def test_main_records_payload_keys(monkeypatch, capsys, tmp_path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     payload = {"context_window": {"used_tokens": 10000}}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
@@ -1360,13 +1360,13 @@ def test_scoped_usage_log_rows_filters_sessions_and_window(tmp_path):
 
 # -- second line: feedback note and coaching hints --------------------------
 
-from claude_token_lens.capture_catalogue import FEEDBACK_NOTE
+from claudeglass.capture_catalogue import FEEDBACK_NOTE
 
 NOW = datetime(2026, 9, 24, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _capture_config(tmp_path, body):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir(exist_ok=True)
     (config_dir / "config.toml").write_text(body, encoding="utf-8")
     return config_dir
@@ -1594,8 +1594,8 @@ def test_ground_truth_values_reads_cost_and_recache():
 
 
 def test_ground_truth_signal_is_salted_numbers_only_and_gated_by_level(tmp_path):
-    from claude_token_lens import signals
-    from claude_token_lens.parse import load_or_create_salt
+    from claudeglass import signals
+    from claudeglass.parse import load_or_create_salt
 
     config_dir = _sig4_config(tmp_path)
     salt = load_or_create_salt(config_dir)
@@ -1621,7 +1621,7 @@ def test_ground_truth_signal_is_salted_numbers_only_and_gated_by_level(tmp_path)
 
 
 def test_ground_truth_signal_is_a_noop_when_capture_is_off(tmp_path):
-    from claude_token_lens.parse import load_or_create_salt
+    from claudeglass.parse import load_or_create_salt
 
     config_dir = _sig4_config(tmp_path, level="off")
     load_or_create_salt(config_dir)
@@ -1630,7 +1630,7 @@ def test_ground_truth_signal_is_a_noop_when_capture_is_off(tmp_path):
 
 
 def test_ground_truth_signal_respects_capture_until(tmp_path):
-    from claude_token_lens.parse import load_or_create_salt
+    from claudeglass.parse import load_or_create_salt
 
     config_dir = _sig4_config(tmp_path, until="2026-09-24T11:00:00Z")
     load_or_create_salt(config_dir)
@@ -1646,7 +1646,7 @@ def test_ground_truth_signal_never_creates_the_salt(tmp_path):
 
 
 def test_ground_truth_signal_skips_a_payload_with_no_numbers_to_report(tmp_path):
-    from claude_token_lens.parse import load_or_create_salt
+    from claudeglass.parse import load_or_create_salt
 
     config_dir = _sig4_config(tmp_path)
     load_or_create_salt(config_dir)
@@ -1655,8 +1655,8 @@ def test_ground_truth_signal_skips_a_payload_with_no_numbers_to_report(tmp_path)
 
 
 def test_ground_truth_signal_is_throttled_per_session_then_lifts(tmp_path):
-    from claude_token_lens import signals
-    from claude_token_lens.parse import load_or_create_salt
+    from claudeglass import signals
+    from claudeglass.parse import load_or_create_salt
 
     config_dir = _sig4_config(tmp_path)
     load_or_create_salt(config_dir)
@@ -1673,8 +1673,8 @@ def test_ground_truth_signal_is_throttled_per_session_then_lifts(tmp_path):
 
 
 def test_ground_truth_signal_rotates_by_month(tmp_path):
-    from claude_token_lens import signals
-    from claude_token_lens.parse import load_or_create_salt
+    from claudeglass import signals
+    from claudeglass.parse import load_or_create_salt
 
     config_dir = _sig4_config(tmp_path)
     load_or_create_salt(config_dir)
@@ -1688,8 +1688,8 @@ def test_ground_truth_signal_rotates_by_month(tmp_path):
 
 
 def test_main_writes_the_ground_truth_signal_end_to_end(tmp_path, monkeypatch, capsys):
-    from claude_token_lens import signals
-    from claude_token_lens.parse import load_or_create_salt
+    from claudeglass import signals
+    from claudeglass.parse import load_or_create_salt
 
     config_dir = _sig4_config(tmp_path)
     salt = load_or_create_salt(config_dir)

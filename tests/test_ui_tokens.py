@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-APP_CSS = REPO_ROOT / "src" / "claude_token_lens" / "service" / "static" / "app.css"
+APP_CSS = REPO_ROOT / "src" / "claudeglass" / "service" / "static" / "app.css"
 
 _HEX_TOKEN = re.compile(r"--([\w-]+):\s*(#[0-9a-fA-F]{6})\s*;")
 _ANY_TOKEN = re.compile(r"--([\w-]+):\s*([^;]+?)\s*;")

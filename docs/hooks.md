@@ -68,7 +68,7 @@ subagents alike):
 - **Time waited**: the run times Claude Code records (`durationMs`), and
   how much of that was on failed runs.
 
-Token Lens's own capture note is folded into its hook's row, and the
+ClaudeGlass's own capture note is folded into its hook's row, and the
 [capture section](capture.md) prices it too. Claude Code's built-in
 context is left out of the table, since you can't change it; a note
 gives its total.
@@ -104,7 +104,7 @@ None of them changes a setting. Each gives a prompt to hand Claude.
   `hooks_min_context_usd` (default $1.00 at list price) to keep. It
   suggests a shorter message, adding context only when it matters, or
   turning a plugin's hook off where it isn't needed. The saving is at
-  most the cost of keeping that context. Token Lens's own capture hook
+  most the cost of keeping that context. ClaudeGlass's own capture hook
   is left out: the capture section covers it.
 
 All thresholds live in `config.toml`'s `[thresholds]` table under the

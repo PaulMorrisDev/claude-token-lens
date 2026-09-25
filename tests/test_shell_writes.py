@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from claude_token_lens.shell_writes import write_targets
+from claudeglass.shell_writes import write_targets
 
 CWD = "C:\\Dev\\app"
 

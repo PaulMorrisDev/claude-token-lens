@@ -12,8 +12,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from claude_token_lens.model import TranscriptMeta
-from claude_token_lens.parse import detect_provider, parse_transcript
+from claudeglass.model import TranscriptMeta
+from claudeglass.parse import detect_provider, parse_transcript
 
 from helpers import assert_privacy, tool_use_block, turn_line, user_str_line, write_jsonl
 

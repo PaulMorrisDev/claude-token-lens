@@ -22,10 +22,10 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import classify, discovery, workstyle
-from claude_token_lens.model import EventKind, TranscriptMeta, TranscriptResult
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing
+from claudeglass import classify, discovery, workstyle
+from claudeglass.model import EventKind, TranscriptMeta, TranscriptResult
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing
 
 from helpers import assert_privacy
 

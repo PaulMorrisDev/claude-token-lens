@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-from claude_token_lens import advice, fixes
-from claude_token_lens.model import (
+from claudeglass import advice, fixes
+from claudeglass.model import (
     Column,
     Diagnostics,
     PricingMeta,
@@ -14,8 +14,8 @@ from claude_token_lens.model import (
     Section,
     Table,
 )
-from claude_token_lens.snapshots import Snapshot
-from claude_token_lens.units import Units
+from claudeglass.snapshots import Snapshot
+from claudeglass.units import Units
 
 
 def _model_swap_report(rows) -> ReportModel:
@@ -86,7 +86,7 @@ def test_model_tier_cards_merge_into_one_with_a_change_per_agent_type():
     assert tier[0].saving_usd == 60.0
     assert tier[0].estimated_saving.startswith("At most 60.00 USD")
     fixes.attach_fixes(tier)
-    assert fixes.command_for(reviewer, tier[0].scope).startswith("claude-token-lens apply --set model=haiku")
+    assert fixes.command_for(reviewer, tier[0].scope).startswith("claudeglass apply --set model=haiku")
     assert tier[0].fixes[1]["command"] is None  # a built-in needs a new agent file
 
     (main_card,) = [r for r in out if r.id == "model-tier-main"]
@@ -484,7 +484,7 @@ def test_model_tier_leaves_out_an_agent_often_retried_on_a_larger_model():
 
 
 def test_model_tier_leaves_out_an_agent_whose_runs_said_they_needed_a_larger_model():
-    from claude_token_lens import habits
+    from claudeglass import habits
 
     report = _model_swap_report(
         [

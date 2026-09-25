@@ -448,13 +448,13 @@ written" section).
 
 ## CLI
 
-- `claude-token-lens snapshot-config --project-dir PATH` — runs the same
+- `claudeglass snapshot-config --project-dir PATH` — runs the same
   hook logic for an explicit project directory instead of the current
   one. (Named `--project-dir`, not `--project`: the common `--project`
   flag every subcommand already has means "a repeatable project slug to
   filter a report by" — reusing it here for a single directory path
   would collide with that meaning.)
-- `claude-token-lens probe-config [--project-dir PATH]` — runs the same
+- `claudeglass probe-config [--project-dir PATH]` — runs the same
   scan **without** a session and without writing a snapshot file; prints
   the settings-layers and effective-config tables as Markdown. Defaults
   to the current directory. Its output never contains a raw path —

@@ -1,4 +1,4 @@
-"""Tests for V3-compare's ``compare.py`` (``claude-token-lens compare``):
+"""Tests for V3-compare's ``compare.py`` (``claudeglass compare``):
 ``parse_arm_spec``'s four spec forms and their error paths, the
 ``compare()`` entry point's overview/stratum/co-changed tables against
 synthetic corpora built with ``tests/helpers``, the minimum-sample gate
@@ -16,12 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import cli
-from claude_token_lens import compare as compare_mod
-from claude_token_lens import snapshots as snapshots_mod
-from claude_token_lens.config import Config
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.pricing import load_pricing
+from claudeglass import cli
+from claudeglass import compare as compare_mod
+from claudeglass import snapshots as snapshots_mod
+from claudeglass.config import Config
+from claudeglass.corpus import load_corpus
+from claudeglass.pricing import load_pricing
 
 from helpers import assert_privacy, attachment_line, turn_line, write_jsonl
 
@@ -628,7 +628,7 @@ def test_cli_compare_bad_arm_spec_exits_2(tmp_path, capsys):
     )
     assert exit_code == 2
     err = capsys.readouterr().err
-    assert "claude-token-lens compare:" in err
+    assert "claudeglass compare:" in err
     assert "not-a-valid-spec" in err
 
 
@@ -717,7 +717,7 @@ def _write_tagged(project_dir: Path, session_id: str, day: str, task: str | None
 
     # SEC-P2: a `[tl: ...]` tag only counts once a capture note has been
     # seen and the metric it answers was requested -- "task" here.
-    note_text = "Token Lens metrics capture (tl-cap v1 task): ..."
+    note_text = "ClaudeGlass metrics capture (tl-cap v1 task): ..."
     note = attachment_line(
         "hook_additional_context",
         rendered=f"<system-reminder>\nSessionStart hook additional context: {note_text}\n</system-reminder>",

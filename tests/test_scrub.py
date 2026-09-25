@@ -13,7 +13,7 @@ import hmac
 import json
 from pathlib import Path
 
-from claude_token_lens.tools import scrub
+from claudeglass.tools import scrub
 
 from helpers import (
     attachment_line,
@@ -375,8 +375,8 @@ def test_scrub_session_end_to_end_produces_a_privacy_clean_directory(tmp_path):
     assert ok, violations
 
     # Round-trips through discovery/parse unchanged.
-    from claude_token_lens import discovery
-    from claude_token_lens.parse import parse_transcript
+    from claudeglass import discovery
+    from claudeglass.parse import parse_transcript
 
     sessions = discovery.find_sessions(out_dir)
     assert len(sessions) == 1

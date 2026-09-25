@@ -12,8 +12,8 @@ import zipfile
 from itertools import count
 from pathlib import Path
 
-from claude_token_lens.service import codewatch
-from claude_token_lens.service.codewatch import CodeWatch
+from claudeglass.service import codewatch
+from claudeglass.service.codewatch import CodeWatch
 
 #: Each write gets its own modification time, so a rewrite always moves
 #: it, however coarse the file system's clock.
@@ -28,7 +28,7 @@ def _write(path: Path, text: str) -> None:
 
 
 def _package(tmp_path: Path) -> Path:
-    root = tmp_path / "claude_token_lens"
+    root = tmp_path / "claudeglass"
     _write(root / "__init__.py", '__version__ = "1.0.0"\n')
     _write(root / "report.py", "def build():\n    return 1\n")
     _write(root / "pricing.toml", "[models]\n")
@@ -140,17 +140,17 @@ def test_id_names_the_code_loaded_at_start(tmp_path: Path):
 
 
 def test_a_pyz_is_watched_as_its_archive(tmp_path: Path):
-    archive = tmp_path / "claude-token-lens.pyz"
+    archive = tmp_path / "claudeglass.pyz"
 
     def build(version: str) -> None:
         with zipfile.ZipFile(archive, "w") as zf:
-            zf.writestr("claude_token_lens/__init__.py", f'__version__ = "{version}"\n')
-            zf.writestr("claude_token_lens/report.py", "def build():\n    return 1\n")
+            zf.writestr("claudeglass/__init__.py", f'__version__ = "{version}"\n')
+            zf.writestr("claudeglass/report.py", "def build():\n    return 1\n")
         stamp = next(_MTIMES)
         os.utime(archive, ns=(stamp, stamp))
 
     build("1.0.0")
-    root = archive / "claude_token_lens"
+    root = archive / "claudeglass"
     watch = CodeWatch(root)
     assert watch.check().changed is False
     build("2.0.0")
@@ -166,7 +166,7 @@ def test_version_on_disk_is_none_when_unreadable(tmp_path: Path):
 
 
 def test_the_real_package_reads_as_unchanged():
-    from claude_token_lens import __version__
+    from claudeglass import __version__
 
     watch = CodeWatch()
     assert watch.root == codewatch.package_root()

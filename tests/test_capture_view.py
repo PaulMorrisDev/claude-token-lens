@@ -6,10 +6,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from claude_token_lens import capture, capture_catalogue as catalogue, capture_view, habits
-from claude_token_lens.config import CaptureConfig
-from claude_token_lens.hook_health import CaptureHookHealth, HookSpec
-from claude_token_lens.units import Units
+from claudeglass import capture, capture_catalogue as catalogue, capture_view, habits
+from claudeglass.config import CaptureConfig
+from claudeglass.hook_health import CaptureHookHealth, HookSpec
+from claudeglass.units import Units
 
 from helpers import assert_privacy, elasticity_with_slope
 
@@ -113,10 +113,10 @@ def test_step_down_note_names_the_specific_command_once_its_dropped_metrics_are_
     assert habits.metric_list(named) in step[0]
     assert not any(f"{i}," in step[0] or f"{i})" in step[0] for i in dropped if "_" in i)
     assert "stops collecting them" in step[0]
-    assert "[capture] level in Token Lens's config.toml" in step[0] and "settings.json" in step[0]
+    assert "[capture] level in ClaudeGlass's config.toml" in step[0] and "settings.json" in step[0]
     assert (
-        "'claude-token-lens capture level essentials --dry-run' shows what stepping down would change and writes "
-        "nothing; 'claude-token-lens capture level standard' undoes it."
+        "'claudeglass capture level essentials --dry-run' shows what stepping down would change and writes "
+        "nothing; 'claudeglass capture level standard' undoes it."
     ) in step[0]
     # The specific command replaces the generic "lower the level" note, not both at once.
     assert not any(note.startswith("Enough collected for every metric on") for note in notes)
@@ -269,15 +269,15 @@ def test_describe_and_config_block():
 
 def test_change_commands():
     before = _on()
-    assert capture_view.change_commands(before, {"level": "off"}) == ["claude-token-lens capture off"]
-    assert capture_view.change_commands(before, {"level": "deep"}) == ["claude-token-lens capture level deep"]
+    assert capture_view.change_commands(before, {"level": "off"}) == ["claudeglass capture off"]
+    assert capture_view.change_commands(before, {"level": "deep"}) == ["claudeglass capture level deep"]
     assert capture_view.change_commands(before, {"metrics": ["task", "fit"]}) == [
-        "claude-token-lens capture enable fit",
-        "claude-token-lens capture disable brief level shift size retry session_end waits permissions turn_signals",
+        "claudeglass capture enable fit",
+        "claudeglass capture disable brief level shift size retry session_end waits permissions turn_signals",
     ]
     assert capture_view.change_commands(before, {"feedback": ["feedback_note"], "sample": 50}) == [
-        "claude-token-lens capture enable feedback_note",
-        "claude-token-lens capture on --sample 50",
+        "claudeglass capture enable feedback_note",
+        "claudeglass capture on --sample 50",
     ]
 
 
@@ -304,7 +304,7 @@ def test_several_missing_hooks_make_one_sentence_and_a_list():
     block = capture_view.hooks_block(health)
     assert block["summary"] == (
         "settings.json lacks 2 of the hook entries your metrics need, so they aren't captured. "
-        "Run 'claude-token-lens capture connect' to fix it."
+        "Run 'claudeglass capture connect' to fix it."
     )
     assert len(block["missing"]) == 2
 
@@ -338,7 +338,7 @@ def test_a_missing_brief_skill_is_a_row_note_and_a_banner_note():
     row = _rows(data)["brief_templates"]
     assert row["needs_install"] is True
     assert row["install_note"] == capture_view.BRIEF_SKILL_STATES["missing"] == "The /tl-brief skill isn't installed"
-    assert row["install_command"] == capture_view.BRIEF_COMMAND == "claude-token-lens capture brief on"
+    assert row["install_command"] == capture_view.BRIEF_COMMAND == "claudeglass capture brief on"
     assert data["banner"]["notes"] == [capture_view.BRIEF_SKILL_NOTES["missing"]]
     assert data["commands"]["brief"] == capture_view.BRIEF_COMMAND
     installed = capture_view.view(config, brief_skill="installed")

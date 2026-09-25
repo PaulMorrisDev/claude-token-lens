@@ -26,7 +26,7 @@ def elasticity_with_slope(slope: float = 0.5):
     list-price equivalent. Shared by every test module that needs a
     subscription :class:`units.Units` with a real fit (UX-2 / finding
     F3's "no bare '$' and no doubled 'about' under a subscription" test)."""
-    from claude_token_lens import elasticity as elasticity_mod
+    from claudeglass import elasticity as elasticity_mod
 
     thresholds = elasticity_mod.ElasticityThresholds()
     fit = elasticity_mod.FitResult(

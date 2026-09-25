@@ -15,8 +15,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from claude_token_lens.model import EventKind, TranscriptMeta
-from claude_token_lens.parse import _escape_newlines, _redact_paths, parse_transcript
+from claudeglass.model import EventKind, TranscriptMeta
+from claudeglass.parse import _escape_newlines, _redact_paths, parse_transcript
 
 from helpers import (
     assert_privacy,

@@ -24,7 +24,7 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-STATIC_DIR = REPO_ROOT / "src" / "claude_token_lens" / "service" / "static"
+STATIC_DIR = REPO_ROOT / "src" / "claudeglass" / "service" / "static"
 
 
 def _text(name: str) -> str:

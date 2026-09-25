@@ -36,8 +36,8 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import __version__, baseline as baseline_mod, cli, discovery
-from claude_token_lens.snapshots import snapshot_project_key
+from claudeglass import __version__, baseline as baseline_mod, cli, discovery
+from claudeglass.snapshots import snapshot_project_key
 
 from helpers import assert_privacy, turn_line, write_jsonl
 
@@ -113,7 +113,7 @@ def test_default_subcommand_constant_is_report():
 def test_group_by_choices_match_classify_group_keys():
     import argparse
 
-    from claude_token_lens import classify
+    from claudeglass import classify
 
     parser = cli._make_parser()
     subparsers_action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
@@ -225,7 +225,7 @@ def _write_profile_toml(path: Path, *, settings: dict | None = None, agents: dic
 
 def test_cmd_apply_user_scope_resolves_claude_root_independently_of_config_dir(tmp_path):
     claude_root = Path(os.environ["CLAUDE_CONFIG_DIR"])
-    config_dir = tmp_path / "somewhere" / "else" / "token-lens"
+    config_dir = tmp_path / "somewhere" / "else" / "claudeglass"
     profile_path = tmp_path / "sample.toml"
     _write_profile_toml(profile_path, settings={"effortLevel": "high"})
 
@@ -242,7 +242,7 @@ def test_cmd_apply_user_scope_resolves_claude_root_independently_of_config_dir(t
 
 def test_cmd_apply_user_scope_agent_patch_finds_claude_root_agents_file(tmp_path):
     claude_root = Path(os.environ["CLAUDE_CONFIG_DIR"])
-    config_dir = tmp_path / "somewhere" / "else" / "token-lens"
+    config_dir = tmp_path / "somewhere" / "else" / "claudeglass"
     agents_dir = claude_root / "agents"
     agents_dir.mkdir(parents=True)
     (agents_dir / "reviewer.md").write_text("---\nmodel: opus\n---\n\nBody.\n", encoding="utf-8")
@@ -256,7 +256,7 @@ def test_cmd_apply_user_scope_agent_patch_finds_claude_root_agents_file(tmp_path
 
 def test_cmd_apply_claude_root_flag_overrides_default(tmp_path):
     explicit_root = tmp_path / "explicit-claude-root"
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     profile_path = tmp_path / "sample.toml"
     _write_profile_toml(profile_path, settings={"effortLevel": "high"})
 
@@ -328,7 +328,7 @@ def test_cmd_apply_dry_run_exits_nonzero_when_plan_would_be_refused(tmp_path, ca
     profile naming an agent with no corresponding file, and no
     --force) must say so and exit non-zero, not print a clean diff and
     exit 0 as if the apply would succeed."""
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     profile_path = tmp_path / "sample.toml"
     _write_profile_toml(profile_path, agents={"ghost": {"model": "opus"}})
 
@@ -384,8 +384,8 @@ def test_backtest_reports_no_predictions_without_a_store(tmp_path, capsys):
 
 
 def test_backtest_lists_judged_and_pending_predictions(tmp_path, capsys):
-    from claude_token_lens.service.serve import STORE_FILENAME
-    from claude_token_lens.service.store import Store
+    from claudeglass.service.serve import STORE_FILENAME
+    from claudeglass.service.store import Store
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -477,7 +477,7 @@ def test_snapshot_config_project_dir_runs_the_hook_for_an_explicit_directory(tmp
     (project / ".claude" / "settings.json").write_text(
         json.dumps({"model": "opus"}), encoding="utf-8"
     )
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
 
     exit_code = cli.main(
         [
@@ -501,7 +501,7 @@ def test_snapshot_config_project_dir_runs_the_hook_for_an_explicit_directory(tmp
 def test_snapshot_config_without_project_dir_uses_cwd(tmp_path, capsys, monkeypatch):
     project = tmp_path / "cwd-project"
     project.mkdir(parents=True)
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     monkeypatch.chdir(project)
 
     exit_code = cli.main(["snapshot-config", "--config-dir", str(config_dir)])
@@ -519,7 +519,7 @@ def test_probe_config_renders_markdown_with_no_raw_paths(tmp_path, capsys):
     (project / ".claude" / "settings.json").write_text(
         json.dumps({"model": "sonnet", "effortLevel": "high"}), encoding="utf-8"
     )
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
 
     exit_code = cli.main(
         [
@@ -547,7 +547,7 @@ def test_probe_config_renders_markdown_with_no_raw_paths(tmp_path, capsys):
 def test_probe_config_defaults_to_the_current_directory(tmp_path, capsys, monkeypatch):
     project = tmp_path / "cwd-probe-project"
     project.mkdir(parents=True)
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     monkeypatch.chdir(project)
 
     exit_code = cli.main(["probe-config", "--config-dir", str(config_dir)])
@@ -559,7 +559,7 @@ def test_probe_config_defaults_to_the_current_directory(tmp_path, capsys, monkey
 def test_probe_config_no_effective_keys_notes_it(tmp_path, capsys):
     project = tmp_path / "empty-project"
     project.mkdir(parents=True)
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
 
     exit_code = cli.main(
         ["probe-config", "--config-dir", str(config_dir), "--project-dir", str(project)]
@@ -578,7 +578,7 @@ def test_report_renders_markdown(tmp_path, capsys):
     exit_code = cli.main(["report", "--projects-root", str(root), "--project", "proj-a"])
     assert exit_code == 0
     out = capsys.readouterr().out
-    assert out.startswith("# Claude token lens report")
+    assert out.startswith("# ClaudeGlass report")
     assert "## Overview" in out
     assert "## Diagnostics" in out
 
@@ -658,7 +658,7 @@ def test_report_baseline_unresolved_id_omits_section_and_notes_how_to_fix(tmp_pa
     assert exit_code == 0
     assert "## Before and after" not in out
     assert "no such baseline was found" in out
-    assert "claude-token-lens baseline --list" in out
+    assert "claudeglass baseline --list" in out
 
 
 def test_report_baseline_latest_with_none_saved_yet_omits_section(tmp_path, capsys):
@@ -685,7 +685,7 @@ def test_report_without_baseline_flag_has_no_note_or_section(tmp_path, capsys):
     assert exit_code == 0
     assert "## Before and after" not in out
     # No --baseline flag given at all -- no resolution attempted, so no
-    # "no baseline found"/"run `claude-token-lens baseline`" note either
+    # "no baseline found"/"run `claudeglass baseline`" note either
     # (unlike test_report_baseline_latest_with_none_saved_yet_omits_section,
     # where --baseline latest IS given but resolves to nothing).
     assert "no such baseline" not in out
@@ -832,7 +832,7 @@ def test_team_report_with_no_imported_documents_exits_1(tmp_path, capsys):
     exit_code = cli.main(["team-report", "--config-dir", str(config_dir)])
     out = capsys.readouterr().err
     assert exit_code == 1
-    assert "run `claude-token-lens import" in out
+    assert "run `claudeglass import" in out
 
 
 def test_team_report_json_output(tmp_path, capsys):
@@ -1011,7 +1011,7 @@ def _force_patch_set_text(monkeypatch, text: str = "--- a/settings.json\n+++ b/s
     *where* the text lands for each output mode, not about which
     recommendation rules fire.
     """
-    from claude_token_lens import recommend
+    from claudeglass import recommend
 
     monkeypatch.setattr(recommend, "render_patch_set", lambda recs: text)
 
@@ -1187,7 +1187,7 @@ def test_no_cache_and_warm_cache_give_byte_identical_output(tmp_path, capsys):
     # Backdate the file so the digest cache doesn't treat it as a live
     # session (cache.py: mtime < 60s is always a miss).
     _write_project(root, "proj-a", age_seconds=120)
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
 
     base_args = [
         "report",
@@ -1225,7 +1225,7 @@ def test_config_diff_renders_a_table(tmp_path, capsys):
     _write_project(root, "proj-diff", age_seconds=120)
 
     config_dir = tmp_path / "claude-home" / ".claude"
-    snapshots_dir = config_dir / "token-lens" / "snapshots"
+    snapshots_dir = config_dir / "claudeglass" / "snapshots"
     snapshots_dir.mkdir(parents=True, exist_ok=True)
     (snapshots_dir / "20200101T000000Z.json").write_text(
         json.dumps({"ts": "20200101T000000Z", "user_settings": {"model": "sonnet"}}),
@@ -1244,7 +1244,7 @@ def test_config_diff_renders_a_table(tmp_path, capsys):
             "--project",
             "proj-diff",
             "--config-dir",
-            str(config_dir / "token-lens"),
+            str(config_dir / "claudeglass"),
             "--key",
             "user_settings.model",
         ]
@@ -1257,7 +1257,7 @@ def test_config_diff_renders_a_table(tmp_path, capsys):
 
 def test_config_diff_finds_snapshots_written_by_the_hook_at_the_same_config_dir(tmp_path, capsys):
     """Fix config-dir: an explicit --config-dir now means the same thing
-    everywhere -- the token-lens directory itself, with snapshots
+    everywhere -- the claudeglass directory itself, with snapshots
     directly under it (see hooks/snapshot-config.py's
     resolve_config_dir and snapshots.load_snapshots docstrings). A user
     who points the *same* --config-dir value at both `snapshot-config`
@@ -1269,7 +1269,7 @@ def test_config_diff_finds_snapshots_written_by_the_hook_at_the_same_config_dir(
     root = tmp_path / "projects"
     _write_project(root, "proj-diff", age_seconds=120)
 
-    config_dir = tmp_path / "my-custom-token-lens"
+    config_dir = tmp_path / "my-custom-claudeglass"
     snapshots_dir = config_dir / "snapshots"  # the hook's own layout for this same --config-dir
     snapshots_dir.mkdir(parents=True, exist_ok=True)
     (snapshots_dir / "20200101T000000Z.json").write_text(
@@ -1312,7 +1312,7 @@ def test_snapshot_config_hook_and_config_diff_agree_on_the_same_config_dir(tmp_p
     hook_path = (
         Path(__file__).resolve().parent.parent
         / "src"
-        / "claude_token_lens"
+        / "claudeglass"
         / "hooks"
         / "snapshot-config.py"
     )
@@ -1321,7 +1321,7 @@ def test_snapshot_config_hook_and_config_diff_agree_on_the_same_config_dir(tmp_p
     (home / ".claude" / "settings.json").write_text(
         json.dumps({"model": "sonnet"}), encoding="utf-8"
     )
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
 
     env = os.environ.copy()
     env["HOME"] = str(home)
@@ -1368,9 +1368,9 @@ def test_config_diff_honors_session_overrides(tmp_path, capsys, monkeypatch):
     root = tmp_path / "projects"
     _write_project(root, "proj-diff", age_seconds=120)
 
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir(parents=True, exist_ok=True)
-    snapshots_dir = config_dir.parent / "token-lens" / "snapshots"
+    snapshots_dir = config_dir.parent / "claudeglass" / "snapshots"
     snapshots_dir.mkdir(parents=True, exist_ok=True)
     (snapshots_dir / "20200101T000000Z.json").write_text(
         json.dumps({"ts": "20200101T000000Z", "user_settings": {"model": "sonnet"}}),
@@ -1426,7 +1426,7 @@ def test_config_diff_requires_key_or_auto_keys(tmp_path, capsys):
 def test_report_exits_2_with_clean_message_on_misordered_scorecard_thresholds(tmp_path, capsys):
     root = tmp_path / "projects"
     _write_project(root, "proj-a")
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "config.toml").write_text(
         "[thresholds.scorecard]\n"
@@ -1459,7 +1459,7 @@ def test_report_exits_2_with_clean_message_on_misordered_scorecard_thresholds(tm
 def test_tz_flag_overrides_config_toml_for_this_run(tmp_path, capsys, monkeypatch):
     root = tmp_path / "projects"
     _write_project(root, "proj-a")
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "config.toml").write_text('tz = "UTC"\n', encoding="utf-8")
 
@@ -1494,7 +1494,7 @@ def test_tz_flag_overrides_config_toml_for_this_run(tmp_path, capsys, monkeypatc
 def test_tz_flag_defaults_to_config_toml_value_when_absent(tmp_path, capsys, monkeypatch):
     root = tmp_path / "projects"
     _write_project(root, "proj-a")
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "config.toml").write_text('tz = "UTC"\n', encoding="utf-8")
 
@@ -1657,7 +1657,7 @@ def test_report_against_the_real_fixture_exits_0_with_nonempty_sections(capsys):
 
 def test_python_dash_m_version_exits_0():
     result = subprocess.run(
-        [sys.executable, "-m", "claude_token_lens", "--version"],
+        [sys.executable, "-m", "claudeglass", "--version"],
         capture_output=True,
         text=True,
         cwd=str(Path(__file__).parent.parent / "src"),
@@ -1672,7 +1672,7 @@ def test_python_dash_m_bad_input_exits_2():
     # fixture" with none of its required flags is a real, always
     # available bad-input case instead (see module docstring).
     result = subprocess.run(
-        [sys.executable, "-m", "claude_token_lens", "scrub-fixture"],
+        [sys.executable, "-m", "claudeglass", "scrub-fixture"],
         capture_output=True,
         text=True,
         cwd=str(Path(__file__).parent.parent / "src"),
@@ -1682,7 +1682,7 @@ def test_python_dash_m_bad_input_exits_2():
 
 
 def test_statusline_cli_forwards_config_dir_flag(tmp_path, monkeypatch, capsys):
-    """``claude-token-lens statusline --config-dir PATH`` must actually
+    """``claudeglass statusline --config-dir PATH`` must actually
     write there. A v0.2 release bug: ``_cmd_statusline`` parsed
     ``--config-dir`` via the "common" argparse group (it's in ``--help``
     for every subcommand) but never forwarded it to
@@ -1719,7 +1719,7 @@ def test_cmd_apply_set_explains_the_change_then_reverts(tmp_path, capsys):
     assert cli.main(base) == 0
     out = capsys.readouterr().out
     assert "Change: effortLevel" in out
-    ts = re.search(r"To revert: claude-token-lens apply --revert (\S+)", out).group(1)
+    ts = re.search(r"To revert: claudeglass apply --revert (\S+)", out).group(1)
     assert json.loads(settings.read_text(encoding="utf-8")) == {"effortLevel": "medium"}
 
     settings.write_text('{"effortLevel": "low"}', encoding="utf-8")
@@ -1836,7 +1836,7 @@ def test_cmd_apply_launch_omits_effort_flag_without_an_effort_level(tmp_path, ca
 
 
 def test_check_lists_every_quick_action_and_runs_one_in_full(tmp_path, capsys):
-    from claude_token_lens.quick_actions import CHECK_IDS
+    from claudeglass.quick_actions import CHECK_IDS
 
     root = tmp_path / "projects"
     _write_project(root, "proj-a")
@@ -1851,7 +1851,7 @@ def test_check_lists_every_quick_action_and_runs_one_in_full(tmp_path, capsys):
 
 
 def test_cli_reports_merge_the_dashboards_session_tags_over_sessions_toml(tmp_path):
-    from claude_token_lens.service.store import Store
+    from claudeglass.service.store import Store
 
     store = Store(str(tmp_path / "service.db"))
     store.open()

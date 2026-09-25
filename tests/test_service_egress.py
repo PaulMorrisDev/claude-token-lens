@@ -42,10 +42,10 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import corpus as corpus_mod
-from claude_token_lens.service import api as service_api
-from claude_token_lens.service.contracts import ServeOptions
-from claude_token_lens.service.store import Store
+from claudeglass import corpus as corpus_mod
+from claudeglass.service import api as service_api
+from claudeglass.service.contracts import ServeOptions
+from claudeglass.service.store import Store
 
 from helpers import turn_line, write_jsonl
 
@@ -63,15 +63,15 @@ def _build_corpus(tmp_path: Path) -> corpus_mod.Corpus:
 
 
 def _install_fake_rebuild(monkeypatch, corpus: corpus_mod.Corpus) -> None:
-    import claude_token_lens.service as service_pkg
+    import claudeglass.service as service_pkg
 
-    fake = types.ModuleType("claude_token_lens.service.rebuild")
+    fake = types.ModuleType("claudeglass.service.rebuild")
 
     def corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         return corpus
 
     fake.corpus_from_store = corpus_from_store
-    monkeypatch.setitem(sys.modules, "claude_token_lens.service.rebuild", fake)
+    monkeypatch.setitem(sys.modules, "claudeglass.service.rebuild", fake)
     monkeypatch.setattr(service_pkg, "rebuild", fake, raising=False)
 
 

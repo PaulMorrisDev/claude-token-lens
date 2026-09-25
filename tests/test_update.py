@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from claude_token_lens import __version__, cli, hook_health, installer, upgrade
+from claudeglass import __version__, cli, hook_health, installer, upgrade
 
 
 def _args(*extra):
@@ -50,7 +50,7 @@ def test_update_installs_then_hands_over_to_the_new_version(capsys):
     assert runner.calls[0][1:4] == ["-m", "pip", "install"]
     assert runner.calls[0][-1] == cli.UPDATE_SOURCE
     # The finishing steps run in a new process, so they are the new version's.
-    assert runner.calls[-1][:5] == [sys.executable, "-m", "claude_token_lens", "update", "--finish"]
+    assert runner.calls[-1][:5] == [sys.executable, "-m", "claudeglass", "update", "--finish"]
     assert "Installed version 9.9.9" in capsys.readouterr().out
 
 
@@ -174,7 +174,7 @@ def _old_copy(tmp_path) -> upgrade.Copy:
 def _statusline(tmp_path, python: str) -> Path:
     settings = tmp_path / "claude" / "settings.json"
     settings.parent.mkdir(exist_ok=True)
-    command = f'"{python}" -m claude_token_lens.statusline --config-dir "{tmp_path / "cfg"}"'
+    command = f'"{python}" -m claudeglass.statusline --config-dir "{tmp_path / "cfg"}"'
     settings.write_text(json.dumps({"statusLine": {"type": "command", "command": command}}), encoding="utf-8")
     return settings
 
@@ -251,7 +251,7 @@ def test_finish_repoints_a_statusline_that_runs_another_python(tmp_path):
     rc, out = _Finish(tmp_path).run(answers="y\n")
     assert rc == 0
     command = json.loads(settings.read_text(encoding="utf-8"))["statusLine"]["command"]
-    assert command.startswith(f'"{sys.executable}" -m claude_token_lens.statusline --config-dir')
+    assert command.startswith(f'"{sys.executable}" -m claudeglass.statusline --config-dir')
     assert "The previous settings.json is at" in out
 
 
@@ -269,7 +269,7 @@ def test_finish_removes_a_copy_nothing_uses_after_a_yes(tmp_path):
     rc, out = finish.run(answers="y\n")
     assert rc == 0
     assert finish.copies_asked_with == [copy.python]
-    assert [copy.python, "-m", "pip", "uninstall", "-y", "claude-token-lens"] in finish.commands
+    assert [copy.python, "-m", "pip", "uninstall", "-y", "claudeglass"] in finish.commands
     assert "version 0.5.0" in out and "Removed." in out
 
 
@@ -291,7 +291,7 @@ def test_finish_keeps_a_copy_the_statusline_still_runs(tmp_path):
     _rc, out = finish.run(answers="n\n")  # no to the statusline change
     assert not any("uninstall" in c for c in finish.commands)
     assert "The statusline still runs it" in out
-    assert "-m pip uninstall claude-token-lens" in out
+    assert "-m pip uninstall claudeglass" in out
 
 
 def test_finish_keeps_the_copy_the_logon_service_still_starts(tmp_path):
@@ -408,8 +408,8 @@ def test_other_copies_passes_the_name_as_an_argument():
         return subprocess.CompletedProcess(command, 1)
 
     upgrade.other_copies(["py"], runner=runner, this_prefix="x")
-    assert seen[0][1] == "-c" and seen[0][-1] == "claude-token-lens"
-    assert "claude-token-lens" not in seen[0][2]
+    assert seen[0][1] == "-c" and seen[0][-1] == "claudeglass"
+    assert "claudeglass" not in seen[0][2]
 
 
 def test_port_holder_parses_the_process():
@@ -449,7 +449,7 @@ def test_registered_python_reads_the_systemd_unit(tmp_path, monkeypatch):
     assert installer.registered_python("linux") is None
     unit = tmp_path / ".config" / "systemd" / "user" / installer.SYSTEMD_UNIT_NAME
     unit.parent.mkdir(parents=True)
-    unit.write_text("[Service]\nExecStart=/opt/py/bin/python3 -m claude_token_lens serve\n", encoding="utf-8")
+    unit.write_text("[Service]\nExecStart=/opt/py/bin/python3 -m claudeglass serve\n", encoding="utf-8")
     assert installer.registered_python("linux") == "/opt/py/bin/python3"
 
 
@@ -459,7 +459,7 @@ def test_registered_python_reads_the_launch_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     plist = tmp_path / "Library" / "LaunchAgents" / f"{installer.LAUNCHD_LABEL}.plist"
     plist.parent.mkdir(parents=True)
-    plist.write_bytes(plistlib.dumps({"ProgramArguments": ["/usr/local/bin/python3", "-m", "claude_token_lens"]}))
+    plist.write_bytes(plistlib.dumps({"ProgramArguments": ["/usr/local/bin/python3", "-m", "claudeglass"]}))
     assert installer.registered_python("macos") == "/usr/local/bin/python3"
 
 
@@ -471,7 +471,7 @@ def test_plan_statusline_python_changes_only_the_interpreter(tmp_path):
     plan = hook_health.plan_statusline_python("/new/python3", claude_root=tmp_path / "claude")
     assert plan.new_text is not None
     command = json.loads(plan.new_text)["statusLine"]["command"]
-    assert command == f'"/new/python3" -m claude_token_lens.statusline --config-dir "{tmp_path / "cfg"}"'
+    assert command == f'"/new/python3" -m claudeglass.statusline --config-dir "{tmp_path / "cfg"}"'
     assert hook_health.statusline_python(tmp_path / "claude") == "/old/python3"
 
 

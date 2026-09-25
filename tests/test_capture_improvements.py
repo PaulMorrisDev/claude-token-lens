@@ -22,9 +22,9 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import events, parse, probe
-from claude_token_lens.model import TranscriptMeta
-from claude_token_lens.parse import parse_transcript
+from claudeglass import events, parse, probe
+from claudeglass.model import TranscriptMeta
+from claudeglass.parse import parse_transcript
 
 from helpers import (
     assert_privacy,
@@ -283,7 +283,7 @@ def test_read_target_hashes_cover_reads_and_edits_go_to_edit_target_hashes(tmp_p
 
 
 def test_load_or_create_salt_persists_across_calls(tmp_path: Path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     salt1 = parse.load_or_create_salt(config_dir)
     assert len(salt1) == 32
     salt2 = parse.load_or_create_salt(config_dir)
@@ -294,7 +294,7 @@ def test_load_or_create_salt_persists_across_calls(tmp_path: Path):
 def test_load_or_create_salt_missing_file_regenerates(tmp_path: Path):
     """A missing salt file (the common, expected "first use" case) is
     still treated as "no salt yet" and silently regenerated."""
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     salt = parse.load_or_create_salt(config_dir)
     assert len(salt) == 32
 
@@ -306,7 +306,7 @@ def test_load_or_create_salt_other_read_errors_propagate(monkeypatch, tmp_path: 
     would rotate the salt on what is usually a transient condition,
     breaking every session-id hash this tool has already written
     (signals/, a cache's provenance header) without telling anyone."""
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     config_dir.mkdir(parents=True)
     (config_dir / "salt").write_bytes(b"x" * 32)
 
@@ -336,7 +336,7 @@ def test_load_or_create_salt_survives_a_newline_byte(monkeypatch, tmp_path: Path
     assert len(pinned) == 32
     monkeypatch.setattr(parse.secrets, "token_bytes", lambda n: pinned)
 
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     salt1 = parse.load_or_create_salt(config_dir)
     assert salt1 == pinned
     assert (config_dir / "salt").stat().st_size == 32
@@ -347,7 +347,7 @@ def test_load_or_create_salt_survives_a_newline_byte(monkeypatch, tmp_path: Path
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX-only file mode bits")
 def test_load_or_create_salt_sets_owner_only_perms(tmp_path: Path):
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     parse.load_or_create_salt(config_dir)
     mode = (config_dir / "salt").stat().st_mode & 0o777
     assert mode == 0o600
@@ -357,7 +357,7 @@ def test_load_or_create_salt_defaults_to_claude_config_dir(monkeypatch, tmp_path
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / ".claude"))
     salt = parse.load_or_create_salt()
     assert len(salt) == 32
-    assert (tmp_path / ".claude" / "token-lens" / "salt").exists()
+    assert (tmp_path / ".claude" / "claudeglass" / "salt").exists()
 
 
 # -- A4: Turn.human_prompt_chars / human_prompt_has_paste ------------------

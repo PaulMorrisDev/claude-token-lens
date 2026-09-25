@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens.service import serve, storelock
-from claude_token_lens.service.contracts import ServeOptions
-from claude_token_lens.service.storelock import StoreLock
+from claudeglass.service import serve, storelock
+from claudeglass.service.contracts import ServeOptions
+from claudeglass.service.storelock import StoreLock
 
 from helpers import turn_line, write_jsonl
 
@@ -56,7 +56,7 @@ def test_once_prints_watcher_stats_line(tmp_path: Path, capsys):
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert "claude-token-lens serve --once:" in out
+    assert "claudeglass serve --once:" in out
     assert "duration_s=" in out
     assert "discovery_s=" in out
     assert "parse_s=" in out
@@ -99,13 +99,13 @@ def test_serve_start_refreshes_an_outdated_hook_file(tmp_path: Path):
     import json
     from importlib import resources
 
-    from claude_token_lens import capture_catalogue as cat
+    from claudeglass import capture_catalogue as cat
 
     root = tmp_path / "projects"
     config_dir = tmp_path / "config"
     hooks_dir = config_dir / "hooks"
     hooks_dir.mkdir(parents=True)
-    packaged = (resources.files("claude_token_lens") / "hooks" / cat.HOOK_SCRIPT).read_bytes()
+    packaged = (resources.files("claudeglass") / "hooks" / cat.HOOK_SCRIPT).read_bytes()
     old = b"# an older copy this tool wrote\n"
     (hooks_dir / cat.HOOK_SCRIPT).write_bytes(old)
     (hooks_dir / ".manifest.json").write_text(
@@ -156,7 +156,7 @@ def test_the_dashboard_answers_while_the_first_scan_is_still_running(tmp_path: P
     import json
     import threading
 
-    from claude_token_lens.service import watcher as watcher_mod
+    from claudeglass.service import watcher as watcher_mod
 
     root = tmp_path / "projects"
     _write_session(root, "proj-a", "sess-a1", [turn_line(timestamp="2026-09-18T12:00:00.000Z")])
@@ -178,7 +178,7 @@ def test_the_dashboard_answers_while_the_first_scan_is_still_running(tmp_path: P
 
     monkeypatch.setattr(serve, "ThreadingHTTPServer", _RecordingServer)
     # No real schtasks/systemctl probe from a test.
-    from claude_token_lens import installer
+    from claudeglass import installer
 
     monkeypatch.setattr(installer, "is_registered", lambda *a, **k: None)
 
@@ -245,7 +245,7 @@ def test_the_lock_is_dropped_when_its_holder_dies(tmp_path: Path):
     store_path = tmp_path / "service.db"
     holder_script = (
         "import sys, time\n"
-        "from claude_token_lens.service.storelock import StoreLock\n"
+        "from claudeglass.service.storelock import StoreLock\n"
         f"StoreLock({str(store_path)!r}).acquire({{'pid': 1}})\n"
         "print('held', flush=True)\n"
         "time.sleep(60)\n"
@@ -283,8 +283,8 @@ def _serve_on_a_fake_package(tmp_path: Path, monkeypatch, *, relaunch: bool, **o
     import json
     import threading
 
-    from claude_token_lens import installer
-    from claude_token_lens.service.codewatch import CodeWatch
+    from claudeglass import installer
+    from claudeglass.service.codewatch import CodeWatch
 
     package = tmp_path / "package"
     package.mkdir()
@@ -363,7 +363,7 @@ def test_exit_on_code_change_exits_so_the_service_starts_again(tmp_path: Path, m
 
 
 def test_exit_on_code_change_stays_up_when_it_cannot_be_started_again(tmp_path: Path, monkeypatch):
-    """No relaunch arranged (on Windows: no ClaudeTokenLens task to start
+    """No relaunch arranged (on Windows: no ClaudeGlass task to start
     again): exiting would leave no dashboard at all, so it stays up and
     says to restart it -- and doesn't claim it will restart by itself."""
     package, server, thread, result, relaunches, health = _serve_on_a_fake_package(

@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-STATIC_DIR = REPO_ROOT / "src" / "claude_token_lens" / "service" / "static"
+STATIC_DIR = REPO_ROOT / "src" / "claudeglass" / "service" / "static"
 
 #: docs/writing-help.md's "Not" column, plus the internal field-name
 #: families a reader should never see.

@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import workflows
-from claude_token_lens.model import TranscriptMeta, WorkflowRun
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing, price_turn
+from claudeglass import workflows
+from claudeglass.model import TranscriptMeta, WorkflowRun
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing, price_turn
 
 from helpers import assert_privacy, turn_line, write_jsonl
 
@@ -145,7 +145,7 @@ def _write_agent(tmp_path: Path, run_id: str, name: str, output_tokens: int) -> 
 
 
 def test_link_workflow_agents_matches_by_parent_directory_and_sums_cost(tmp_path):
-    from claude_token_lens.model import WorkflowRun
+    from claudeglass.model import WorkflowRun
 
     run = WorkflowRun(run_id="wf_run_a", session_id="sess-wf", agent_count=2, phases=1)
 
@@ -172,7 +172,7 @@ def test_link_workflow_agents_matches_by_parent_directory_and_sums_cost(tmp_path
 
 
 def test_link_workflow_agents_no_matches_leaves_cost_zero(tmp_path):
-    from claude_token_lens.model import WorkflowRun
+    from claudeglass.model import WorkflowRun
 
     run = WorkflowRun(run_id="wf_lonely", session_id="sess-wf")
     unrelated = _write_agent(tmp_path, "wf_other", "agent-x", output_tokens=100)
@@ -185,7 +185,7 @@ def test_link_workflow_agents_no_matches_leaves_cost_zero(tmp_path):
 
 
 def test_link_workflow_agents_ignores_subs_with_no_path(tmp_path):
-    from claude_token_lens.model import TranscriptResult, WorkflowRun
+    from claudeglass.model import TranscriptResult, WorkflowRun
 
     run = WorkflowRun(run_id="wf_no_path")
     orphan = TranscriptResult(meta=TranscriptMeta(path="", kind="workflow-agent"))

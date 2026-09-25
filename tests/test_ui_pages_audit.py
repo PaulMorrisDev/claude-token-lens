@@ -23,10 +23,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from claude_token_lens import helptext
+from claudeglass import helptext
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-STATIC_DIR = REPO_ROOT / "src" / "claude_token_lens" / "service" / "static"
+STATIC_DIR = REPO_ROOT / "src" / "claudeglass" / "service" / "static"
 
 
 def _static_text(name: str) -> str:

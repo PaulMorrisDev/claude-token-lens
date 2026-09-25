@@ -1,11 +1,11 @@
-"""Tests for :mod:`claude_token_lens.units`: :class:`Units`/:class:`Amount`
+"""Tests for :mod:`claudeglass.units`: :class:`Units`/:class:`Amount`
 phrase amounts for the billing mode, and :meth:`Amount.phrase` must never
 double "about" when a subscription's own weekly-limit-share text already
 opens with it (plan finding F3, proposal UX-2)."""
 
 from __future__ import annotations
 
-from claude_token_lens.units import NO_LIMIT_SHARE_HINT, Amount, Units
+from claudeglass.units import NO_LIMIT_SHARE_HINT, Amount, Units
 
 from helpers import elasticity_with_slope as _elasticity_with_slope
 

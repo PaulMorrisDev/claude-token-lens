@@ -1,4 +1,4 @@
 # The vendored d3 and fonts are pinned by sha256 in
 # service/static/THIRD_PARTY.sha256: git must not rewrite their bytes.
-src/claude_token_lens/service/static/vendor/** -text
-src/claude_token_lens/service/static/fonts/** binary
+src/claudeglass/service/static/vendor/** -text
+src/claudeglass/service/static/fonts/** binary

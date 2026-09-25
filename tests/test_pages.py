@@ -28,9 +28,9 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import pages
+from claudeglass import pages
 
-SRC = Path(__file__).resolve().parent.parent / "src" / "claude_token_lens"
+SRC = Path(__file__).resolve().parent.parent / "src" / "claudeglass"
 
 _LINKS_JS = SRC / "service" / "static" / "links.js"
 
@@ -244,7 +244,7 @@ def test_no_page_token_in_recommendation_why_title_or_fix_prompt_command():
 
 
 def _model_with_a_token():
-    from claude_token_lens.model import Column, Help, ReportModel, Section, Table
+    from claudeglass.model import Column, Help, ReportModel, Section, Table
 
     table = Table(
         name="t",
@@ -261,9 +261,9 @@ def _model_with_a_token():
 def test_markdown_and_html_strip_tokens_but_json_keeps_them():
     import json
 
-    from claude_token_lens.render.html import render_html
-    from claude_token_lens.render.json_out import render_json
-    from claude_token_lens.render.markdown import render_markdown
+    from claudeglass.render.html import render_html
+    from claudeglass.render.json_out import render_json
+    from claudeglass.render.markdown import render_markdown
 
     model = _model_with_a_token()
 
@@ -290,8 +290,8 @@ def test_markdown_and_html_strip_tokens_but_json_keeps_them():
 
 
 def test_cli_print_table_strips_tokens(capsys):
-    from claude_token_lens.cli import _print_table
-    from claude_token_lens.model import Column, Table
+    from claudeglass.cli import _print_table
+    from claudeglass.model import Column, Table
 
     table = Table(
         name="t",
@@ -307,7 +307,7 @@ def test_cli_print_table_strips_tokens(capsys):
 
 
 def test_quick_actions_render_markdown_strips_tokens():
-    from claude_token_lens import quick_actions as qa
+    from claudeglass import quick_actions as qa
 
     result = {
         "question": "Is anything costing tokens?",

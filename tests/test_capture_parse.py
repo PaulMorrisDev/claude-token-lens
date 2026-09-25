@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import cache, capture_catalogue, capture_tags, events
-from claude_token_lens.model import CaptureTag, EventKind, PlanStats, TranscriptMeta
-from claude_token_lens.parse import parse_transcript
+from claudeglass import cache, capture_catalogue, capture_tags, events
+from claudeglass.model import CaptureTag, EventKind, PlanStats, TranscriptMeta
+from claudeglass.parse import parse_transcript
 
 from helpers import (
     assert_privacy,
@@ -145,7 +145,7 @@ def test_every_vocabulary_word_is_short_and_plain():
 
 def test_the_reply_tag_and_brief_markers_land_on_the_turns(tmp_path):
     result = _parse(tmp_path, [
-        _note("Token Lens metrics capture (tl-cap v1 task,level,skill): ..."),
+        _note("ClaudeGlass metrics capture (tl-cap v1 task,level,skill): ..."),
         attachment_line("skill_listing", rendered="- grill-me: x", names=["grill-me"]),
         user_str_line("[spawn: specialist] [retry: scope] fix the flaky test in tests/test_x.py", origin={"kind": "human"}),
         _reply("Fixed.\n[tl: task=test level=hard skill=would-help:grill-me]"),
@@ -173,7 +173,7 @@ def test_a_skill_call_that_errors_cannot_self_authorise_a_later_tag(tmp_path):
     # taken back before it ever reaches Turn.skills_invoked, so it can't
     # self-authorise the very claim about the skill it tried and failed.
     result = _parse(tmp_path, [
-        _note("Token Lens metrics capture (tl-cap v1 skill): ..."),
+        _note("ClaudeGlass metrics capture (tl-cap v1 skill): ..."),
         turn_line(content=[
             tool_use_block("Skill", "tu1", {"skill": "grill-me"}),
         ]),
@@ -190,7 +190,7 @@ def test_a_skill_call_that_succeeds_can_authorise_a_later_tag(tmp_path):
     # Positive control for the previous test: a genuinely successful
     # call is real evidence, and still validates a later claim about it.
     result = _parse(tmp_path, [
-        _note("Token Lens metrics capture (tl-cap v1 skill): ..."),
+        _note("ClaudeGlass metrics capture (tl-cap v1 skill): ..."),
         turn_line(content=[
             tool_use_block("Skill", "tu1", {"skill": "grill-me"}),
         ]),
@@ -217,7 +217,7 @@ def test_the_last_text_block_decides(tmp_path):
 
 
 def test_a_capture_note_is_its_own_hook_output_sized_from_rendered(tmp_path):
-    text = "Token Lens metrics capture (tl-cap v1 task,brief,level): end each final reply with one line ..."
+    text = "ClaudeGlass metrics capture (tl-cap v1 task,brief,level): end each final reply with one line ..."
     line = _note(text)
     event = events.classify_line(line)
     assert (event.kind, event.subkind) == (EventKind.HOOK_OUTPUT, "capture_note")
@@ -226,7 +226,7 @@ def test_a_capture_note_is_its_own_hook_output_sized_from_rendered(tmp_path):
 
 
 def test_a_capture_note_without_rendered_adds_the_wrapper_it_is_shown_in():
-    text = "Token Lens metrics capture (tl-cap v1 task): ..."
+    text = "ClaudeGlass metrics capture (tl-cap v1 task): ..."
     with_rendered = events.classify_line(_note(text, hook="SubagentStart"))
     without = events.classify_line(_note(text, hook="SubagentStart", rendered=False))
     assert without.size_chars == with_rendered.size_chars
@@ -241,18 +241,18 @@ def test_a_pre_rendered_capture_note_still_takes_the_fallback_path(tmp_path):
     ``_attachment_content_chars``), not silently come back sized ``None``.
 
     Pinned against real numbers, not just internal consistency: the
-    essentials level's SessionStart note is exactly 799 characters, and
+    essentials level's SessionStart note is exactly 800 characters, and
     the wrapper Claude Code puts around a hook's additional context
     (``_HOOK_CONTEXT_WRAPPER_CHARS``, 63) plus ``len("SessionStart")``
-    (12) is exactly 75, for 874 total.
+    (12) is exactly 75, for 875 total.
     """
     text = capture_catalogue.note_text(capture_catalogue.level_metrics("essentials"), "main")
-    assert len(text) == 799
+    assert len(text) == 800
     line = _note(text, hook="SessionStart", rendered=False)
     assert "rendered" not in line
     event = events.classify_line(line)
     assert (event.kind, event.subkind) == (EventKind.HOOK_OUTPUT, "capture_note")
-    assert event.size_chars == 874
+    assert event.size_chars == 875
 
 
 def test_other_hook_context_is_unchanged():
@@ -268,8 +268,8 @@ def test_a_hook_system_message_takes_no_context():
 
 
 def test_note_chars_land_on_the_next_turn_and_the_meta_counts_notes(tmp_path):
-    first = _note("Token Lens metrics capture (tl-cap v1 task,brief): ...")
-    again = _note("Token Lens metrics capture (tl-cap v1 task,brief,size): ...")
+    first = _note("ClaudeGlass metrics capture (tl-cap v1 task,brief): ...")
+    again = _note("ClaudeGlass metrics capture (tl-cap v1 task,brief,size): ...")
     result = _parse(tmp_path, [
         first,
         user_str_line("hi", origin={"kind": "human"}),
@@ -377,7 +377,7 @@ def test_a_task_notification_is_sized(tmp_path):
 
 def test_the_new_fields_survive_the_digest_cache(tmp_path):
     result = _parse(tmp_path, [
-        _note("Token Lens metrics capture (tl-cap v1 task,missing): ..."),
+        _note("ClaudeGlass metrics capture (tl-cap v1 task,missing): ..."),
         user_str_line("[spawn: isolate] do it in src/a.py", origin={"kind": "human"}),
         turn_line(content=[tool_use_block("ExitPlanMode", "tu_p", {"plan": "1. a\n2. b"})]),
         user_block_line([tool_result_block("tu_p", "ok")]),

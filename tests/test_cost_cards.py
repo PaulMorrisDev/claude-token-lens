@@ -34,10 +34,10 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens.pricing import load_pricing
+from claudeglass.pricing import load_pricing
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-STATIC_DIR = REPO_ROOT / "src" / "claude_token_lens" / "service" / "static"
+STATIC_DIR = REPO_ROOT / "src" / "claudeglass" / "service" / "static"
 
 
 def _static_text(name: str) -> str:

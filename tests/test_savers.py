@@ -1,5 +1,5 @@
 """Tests for v4-saver-roi: third-party token-saver tool ROI
-(``src/claude_token_lens/savers.py``).
+(``src/claudeglass/savers.py``).
 
 Most branches are exercised on hand-built ``model.Turn``/
 ``model.TranscriptResult``/``model.SessionRecord`` instances (the
@@ -18,8 +18,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from claude_token_lens import model, savers
-from claude_token_lens.model import (
+from claudeglass import model, savers
+from claudeglass.model import (
     Classification,
     Diagnostics,
     PricingMeta,
@@ -30,11 +30,11 @@ from claude_token_lens.model import (
     TranscriptMeta,
     TranscriptResult,
 )
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.render.tables import format_cell
-from claude_token_lens.snapshots import Snapshot
-from claude_token_lens.units import Units
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing
+from claudeglass.render.tables import format_cell
+from claudeglass.snapshots import Snapshot
+from claudeglass.units import Units
 
 from helpers import (
     assert_privacy,

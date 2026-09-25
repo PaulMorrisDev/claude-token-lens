@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import capture_catalogue as cat
-from claude_token_lens import cli, footprint, hook_health, installer, setup_flow, signals
-from claude_token_lens.config import CAPTURE_LOG_NAME, SIGNAL_RETENTION_DEFAULT_DAYS, CaptureConfig, load_capture_log, load_config
+from claudeglass import capture_catalogue as cat
+from claudeglass import cli, footprint, hook_health, installer, setup_flow, signals
+from claudeglass.config import CAPTURE_LOG_NAME, SIGNAL_RETENTION_DEFAULT_DAYS, CaptureConfig, load_capture_log, load_config
 
 NOW = datetime(2026, 9, 24, 6, 0, tzinfo=timezone.utc)
 ESSENTIALS = hook_health.capture_specs(cat.level_metrics("essentials"))
@@ -34,7 +34,7 @@ def _claude_folder(tmp_path, monkeypatch):
 
 def _claude(tmp_path, settings=None):
     claude = tmp_path / "claude"
-    config_dir = claude / "token-lens"
+    config_dir = claude / "claudeglass"
     config_dir.mkdir(parents=True)
     if settings is not None:
         (claude / "settings.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
@@ -184,7 +184,7 @@ def test_check_capture_spots_a_percent_variable(tmp_path):
 def _packaged(name: str) -> bytes:
     from importlib import resources
 
-    return (resources.files("claude_token_lens") / "hooks" / name).read_bytes()
+    return (resources.files("claudeglass") / "hooks" / name).read_bytes()
 
 
 def _connect_essentials(config_dir):
@@ -352,7 +352,7 @@ def test_hook_files_are_copied_from_the_package(tmp_path):
 
     written = hook_health.install_hook_files(tmp_path, [cat.HOOK_SCRIPT, cat.CATALOGUE_FILE, hook_health.HOOK_SCRIPT_NAME])
     for path in written:
-        packaged = resources.files("claude_token_lens") / "hooks" / path.name
+        packaged = resources.files("claudeglass") / "hooks" / path.name
         assert path.read_bytes() == packaged.read_bytes()
     # SEC-P7/ROB-P7: a SHA-256 manifest of what was just written sits alongside.
     installed = {p.name for p in (tmp_path / "hooks").iterdir()} - {".manifest.json"}
@@ -404,7 +404,7 @@ def test_a_no_to_the_settings_change_keeps_the_level_and_says_how_to_connect(tmp
     assert rc == 0
     assert load_config(config_dir=config_dir).capture.level == "standard"
     assert _settings(config_dir) == {}
-    assert "claude-token-lens capture connect" in out and "can't be captured" in out
+    assert "claudeglass capture connect" in out and "can't be captured" in out
 
 
 def test_on_yes_connects_everything_and_a_second_run_changes_nothing(tmp_path):
@@ -538,7 +538,7 @@ def test_off_keeps_the_entries_and_remove_takes_them_out(tmp_path):
     assert load_config(config_dir=config_dir).capture == CaptureConfig(level="off")
     assert len(_entries(_settings(config_dir))) == len(ESSENTIALS) + 1  # and the Stop entry of their own
     rc, out = _capture(config_dir, "remove", "--dry-run")
-    assert "Dry run: settings.json left unchanged. Run 'claude-token-lens capture remove'" in out
+    assert "Dry run: settings.json left unchanged. Run 'claudeglass capture remove'" in out
     rc, out = _capture(config_dir, "remove", "--yes")
     assert _settings(config_dir) == {"hooks": {"Stop": [{"hooks": [mine]}]}}
 
@@ -685,7 +685,7 @@ def test_status_while_on_shows_what_it_measured(tmp_path):
     config_dir = _claude(tmp_path, {})
     _api_billing(config_dir)
     start = _session(config_dir, captured=True)
-    from claude_token_lens.config import set_capture
+    from claudeglass.config import set_capture
 
     set_capture(config_dir, level="essentials", now=start - timedelta(hours=1))
     rc, out = _capture(config_dir, "status")
@@ -808,7 +808,7 @@ def test_status_never_prints_a_raw_matcher_or_tool_name(tmp_path):
 
 def test_status_shows_deeps_measured_wait_when_its_tool_note_metrics_are_on(tmp_path):
     config_dir = _claude(tmp_path, {})
-    from claude_token_lens.config import set_capture
+    from claudeglass.config import set_capture
     from helpers import attachment_line, turn_line, user_str_line, write_jsonl
 
     set_capture(config_dir, level="deep", now=datetime.now(timezone.utc) - timedelta(days=2))
@@ -840,7 +840,7 @@ def test_status_shows_deeps_measured_wait_when_its_tool_note_metrics_are_on(tmp_
 
 def test_status_hides_deep_wait_when_its_tool_note_metrics_are_off(tmp_path):
     config_dir = _claude(tmp_path, {})
-    from claude_token_lens.config import set_capture
+    from claudeglass.config import set_capture
 
     # Standard doesn't turn on big_output/web, so there's nothing to show
     # even though there's a session in the window.
@@ -896,7 +896,7 @@ def test_init_warns_shows_estimates_and_connects_after_a_yes(tmp_path):
     assert "What each level would have cost over your last 14 days" in out
     assert "Metrics capture level: off, free, essentials, standard, deep [off]:" in out
     assert "Metrics capture will switch itself off on 2026-10-08 06:00 UTC (14 days from now)" in out
-    assert "claude-token-lens capture on --for 30d" in out
+    assert "claudeglass capture on --for 30d" in out
     assert "Turn off that time limit (capture then runs until you switch it off) (y/n) [n]:" in out
     assert "Saved to config.toml: metrics capture Standard (since 2026-09-24, until 2026-10-08 06:00)." in out
     assert load_config(config_dir).capture.level == "standard"
@@ -996,7 +996,7 @@ def test_init_capture_level_flag_without_connecting_prints_the_command(tmp_path)
     config_dir = _claude(tmp_path, {})
     out = _init(config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials")
     assert "This uses your tokens" in out
-    assert "add the hooks it needs later with 'claude-token-lens capture connect'" in out
+    assert "add the hooks it needs later with 'claudeglass capture connect'" in out
     assert load_config(config_dir).capture.level == "essentials"
     assert _settings(config_dir) == {}
 
@@ -1061,10 +1061,10 @@ def test_feedback_on_dry_run_and_a_no_write_no_skill(tmp_path):
     assert "Dry run: config.toml left unchanged." in out and "Dry run: the skill is left as it is." in out
     assert not _skill(config_dir).exists() and not (config_dir / "config.toml").exists()
     rc, out = _capture(config_dir, "feedback", "on", stdin="n\n")
-    assert "Left as it is. Run 'claude-token-lens capture feedback on'" in out
+    assert "Left as it is. Run 'claudeglass capture feedback on'" in out
     assert not _skill(config_dir).exists()
     rc, out = _capture(config_dir, "status")
-    assert "The /tl-feedback skill isn't installed: claude-token-lens capture feedback on" in out
+    assert "The /tl-feedback skill isn't installed: claudeglass capture feedback on" in out
 
 
 def test_an_old_skill_is_shown_as_a_diff_and_someone_elses_is_left_alone(tmp_path):
@@ -1122,7 +1122,7 @@ def test_the_skill_is_listed_and_taken_out_by_uninstall(tmp_path, monkeypatch, c
     assert "feedback_skill" not in {i.key for i in footprint.inventory(config_dir, service_registered=False)}
     _capture(config_dir, "feedback", "on", "--yes")
     item = {i.key: i for i in footprint.inventory(config_dir, service_registered=False)}["feedback_skill"]
-    assert item.status == "installed" and item.undo == "claude-token-lens capture feedback off"
+    assert item.status == "installed" and item.undo == "claudeglass capture feedback off"
     assert "None until you run it" in item.token_cost
     plan = footprint.plan_uninstall(config_dir)
     assert plan.feedback_skill == _skill(config_dir)
@@ -1162,7 +1162,7 @@ def test_brief_off_removes_only_the_brief_skill(tmp_path):
     _capture(config_dir, "feedback", "on", "--yes")
     _capture(config_dir, "brief", "on", "--yes")
     rc, out = _capture(config_dir, "brief", "off", stdin="n\n")
-    assert "Left as it is. Run 'claude-token-lens capture brief off'" in out and _brief_skill(config_dir).is_file()
+    assert "Left as it is. Run 'claudeglass capture brief off'" in out and _brief_skill(config_dir).is_file()
     rc, out = _capture(config_dir, "brief", "off", "--yes")
     assert "This removes the /tl-brief skill" in out and not _brief_skill(config_dir).parent.exists()
     assert _skill(config_dir).is_file()
@@ -1175,7 +1175,7 @@ def test_enabling_brief_templates_installs_the_skill_and_status_says_when_it_is_
     _capture(config_dir, "enable", "brief_templates", "--yes")
     assert _brief_skill(config_dir).is_file()
     _brief_skill(config_dir).unlink()
-    assert "The /tl-brief skill isn't installed: claude-token-lens capture brief on" in _capture(config_dir, "status")[1]
+    assert "The /tl-brief skill isn't installed: claudeglass capture brief on" in _capture(config_dir, "status")[1]
     _capture(config_dir, "connect", "--yes")
     assert _brief_skill(config_dir).is_file()
     _capture(config_dir, "disable", "brief_templates", "--yes")
@@ -1206,7 +1206,7 @@ def test_the_brief_skill_is_listed_and_taken_out_by_uninstall(tmp_path, monkeypa
     assert "brief_skill" not in {i.key for i in footprint.inventory(config_dir, service_registered=False)}
     _capture(config_dir, "brief", "on", "--yes")
     item = {i.key: i for i in footprint.inventory(config_dir, service_registered=False)}["brief_skill"]
-    assert item.status == "installed" and item.undo == "claude-token-lens capture brief off"
+    assert item.status == "installed" and item.undo == "claudeglass capture brief off"
     assert footprint.plan_uninstall(config_dir).brief_skill == _brief_skill(config_dir)
     cli.main(["uninstall", "--yes", "--config-dir", str(config_dir)])
     out = capsys.readouterr().out
@@ -1217,7 +1217,7 @@ def test_init_at_deep_skips_the_feedback_question_and_adds_the_skill(tmp_path):
     out = _init(config_dir, "--non-interactive", "--no-install", "--capture-level", "deep")
     assert load_config(config_dir).capture.feedback == list(cat.DEEP_FEEDBACK_IDS)
     assert "Feedback after a piece of work" not in out
-    assert "The /tl-feedback skill: add it with 'claude-token-lens capture feedback on'." in out
+    assert "The /tl-feedback skill: add it with 'claudeglass capture feedback on'." in out
     assert not _skill(config_dir).exists()
     out = _init(config_dir, "--non-interactive", "--connect")
     assert "The /tl-feedback survey is on, as part of Deep." in out
@@ -1250,7 +1250,7 @@ def test_init_feedback_no_and_non_interactive_leave_it_off(tmp_path):
 def test_init_feedback_flag_without_connecting_prints_the_command(tmp_path):
     config_dir = _claude(tmp_path, {})
     out = _init(config_dir, "--non-interactive", "--no-install", "--feedback", "on")
-    assert "The /tl-feedback skill: add it with 'claude-token-lens capture feedback on'." in out
+    assert "The /tl-feedback skill: add it with 'claudeglass capture feedback on'." in out
     assert not _skill(config_dir).exists()
     assert load_config(config_dir).capture.feedback == ["feedback_skill", "feedback_note"]
 
@@ -1271,7 +1271,7 @@ def test_init_asks_about_feedback_after_capture(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert out.index("Metrics capture (optional)") < out.index("Ready to set up:")
-    assert out.index("The /tl-feedback skill: add it with 'claude-token-lens capture feedback on'.") > out.index(
+    assert out.index("The /tl-feedback skill: add it with 'claudeglass capture feedback on'.") > out.index(
         "Ready to set up:"
     )
 
@@ -1280,9 +1280,9 @@ def test_status_says_when_the_status_line_is_someone_elses(tmp_path):
     config_dir = _claude(tmp_path, {"statusLine": {"type": "command", "command": "my-own-line"}})
     _capture(config_dir, "feedback", "on", "--yes")
     rc, out = _capture(config_dir, "status")
-    assert "Your status line isn't Token Lens's, so this second line won't show there" in out
+    assert "Your status line isn't ClaudeGlass's, so this second line won't show there" in out
     (config_dir.parent / "settings.json").write_text(
-        json.dumps({"statusLine": {"type": "command", "command": "claude-token-lens statusline"}}), encoding="utf-8"
+        json.dumps({"statusLine": {"type": "command", "command": "claudeglass statusline"}}), encoding="utf-8"
     )
     assert "Your status line isn't" not in _capture(config_dir, "status")[1]
 
@@ -1357,7 +1357,7 @@ def test_prune_removes_old_usage_log_rows_too(tmp_path):
     # SIG-5: usage-log.csv is written unconditionally, capture on or off,
     # so `capture prune` must sweep it alongside signal files and
     # capture-log.jsonl.
-    from claude_token_lens.tools import log_usage
+    from claudeglass.tools import log_usage
 
     config_dir = _claude(tmp_path, {})
     csv_path = log_usage.default_usage_log_path(config_dir)

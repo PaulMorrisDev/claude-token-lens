@@ -12,15 +12,15 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from claude_token_lens import capture, capture_catalogue as catalogue, parse
-from claude_token_lens.capture_tags import (
+from claudeglass import capture, capture_catalogue as catalogue, parse
+from claudeglass.capture_tags import (
     asks_for_feedback,
     feedback_from_answers,
     parse_feedback_tag,
 )
-from claude_token_lens.model import Feedback, TranscriptMeta
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing, price_turn
+from claudeglass.model import Feedback, TranscriptMeta
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing, price_turn
 
 from helpers import (
     assert_privacy,
@@ -100,7 +100,7 @@ def _run(
         result = {"questions": asked, "answers": {catalogue.HANDOFF_QUESTION.question: handoff}}
         lines.append(user_block_line([tool_result_block(f"{tu}_h", "User has answered your questions.")],
                                      toolUseResult=result, timestamp=_ts(second + 2)))
-    thanks = "Thanks: Token Lens will use this for your savings tips."
+    thanks = "Thanks: ClaudeGlass will use this for your savings tips."
     lines.append(_reply(second + 3, text=f"Recorded.\n\n{tag}\n{thanks}" if tag else thanks))
     return lines
 

@@ -6,8 +6,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from claude_token_lens.profiles import goals
-from claude_token_lens.units import Units
+from claudeglass.profiles import goals
+from claudeglass.units import Units
 
 from test_whatif import _model
 
@@ -466,7 +466,7 @@ def test_a_profile_covering_several_tasks_scales_by_their_combined_share():
     # F11: a catalogue profile's `for` covers several tasks (implementation-
     # heavy: feature, bugfix, debug, ...); /api/whatif scales by their
     # shares added up. debug has no row of its own, so it adds nothing.
-    from claude_token_lens import whatif
+    from claudeglass import whatif
 
     model = _with_task_data(by_task=[
         {"task": "all", "cost": 200.0, "main_cost": 100.0},

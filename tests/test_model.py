@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from claude_token_lens import model
-from claude_token_lens.render import escape_md, format_cell
+from claudeglass import model
+from claudeglass.render import escape_md, format_cell
 
 # Appendix A2's detection table, plus SCHEDULED_TASK from A1: the full set
 # of EventKind members the WP0 brief calls out by name. v3-limits adds

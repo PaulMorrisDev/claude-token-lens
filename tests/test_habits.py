@@ -16,11 +16,11 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from claude_token_lens import capture as capture_mod, capture_catalogue as catalogue, habits, parse
-from claude_token_lens.habits import AgentFact, CycleFact, Habits, Item, Piece
-from claude_token_lens.model import CaptureTag, Recommendation, TranscriptMeta
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing
+from claudeglass import capture as capture_mod, capture_catalogue as catalogue, habits, parse
+from claudeglass.habits import AgentFact, CycleFact, Habits, Item, Piece
+from claudeglass.model import CaptureTag, Recommendation, TranscriptMeta
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing
 
 from helpers import (
     assert_privacy,
@@ -406,7 +406,7 @@ def test_apply_covered_by_drops_the_saving_and_names_the_rule_when_it_fired():
     (``habits.COVERED_BY``). When that rule actually fired in this
     report, the playbook's own effort_fit saving is dropped -- shown
     once, by the rule, not twice."""
-    from claude_token_lens.model import ReportModel, Recommendation, Section
+    from claudeglass.model import ReportModel, Recommendation, Section
 
     h = Habits(cycles=[_cycle(loops=1, loop_cost=1.0)])
     table = habits.playbook_table(h, habits.playbook(h))
@@ -444,7 +444,7 @@ def test_apply_covered_by_leaves_the_saving_alone_when_the_rule_did_not_fire():
     """The same habit, but its covering rule never fired in this report
     (e.g. below threshold) -- its own saving is the only estimate there
     is, so it must not be dropped."""
-    from claude_token_lens.model import ReportModel, Section
+    from claudeglass.model import ReportModel, Section
 
     h = Habits(cycles=[_cycle(loops=1, loop_cost=1.0)])
     table = habits.playbook_table(h, habits.playbook(h))
@@ -662,7 +662,7 @@ def _plan_session(tmp_path, name: str, *, edit: bool = True, handoff: str | None
                                            "answers": {catalogue.HANDOFF_QUESTION.question: handoff}},
                             timestamp=_ts(14)),
         ]
-    lines.append(_reply(15, text="Thanks: Token Lens will use this for your savings tips."))
+    lines.append(_reply(15, text="Thanks: ClaudeGlass will use this for your savings tips."))
     top = _parse(tmp_path, f"{name}.jsonl", lines, kind="top-level")
     return NS(top=top, subs=[], session_id=name, project_dir="p", slug="p")
 
@@ -711,7 +711,7 @@ def test_collect_folds_in_the_free_signals_by_session():
     session's ``SessionSignals`` -- one end_reason count per session that
     logged one, waits and permission prompts added up across all of
     them."""
-    from claude_token_lens import signals
+    from claudeglass import signals
 
     session_signals = {
         "s1": signals.SessionSignals(
@@ -910,8 +910,8 @@ def test_the_capture_section_surfaces_a_step_down_suggestion_when_ready_and_stab
     rows = dict(table.rows)
     assert rows["step_down_target"] == "standard"
     assert rows["step_down_tokens_saved"] > 0
-    assert any("claude-token-lens capture level standard --dry-run" in n for n in table.notes)
-    assert any("claude-token-lens capture level deep" in n for n in table.notes)
+    assert any("claudeglass capture level standard --dry-run" in n for n in table.notes)
+    assert any("claudeglass capture level deep" in n for n in table.notes)
     # What changes, where, the trade-off and the undo (no apply button).
     note = next(n for n in table.notes if "--dry-run" in n)
     # The dropped metrics by their Capture page names, never their ids.
@@ -1273,8 +1273,8 @@ def test_capture_step_down_suggestion_when_ready_and_stable():
     assert suggestion["session_note_tokens_saved"] >= 0 and suggestion["subagent_note_tokens_saved"] >= 0
     weeks = capture_mod.weeks_since(config.enabled_at)
     assert suggestion["weekly_usd_saved"] == pytest.approx(2.0 * len(dropped) / weeks)
-    assert suggestion["command"] == "claude-token-lens capture level standard --dry-run"
-    assert suggestion["undo_command"] == "claude-token-lens capture level deep"
+    assert suggestion["command"] == "claudeglass capture level standard --dry-run"
+    assert suggestion["undo_command"] == "claudeglass capture level deep"
 
 
 def test_capture_step_down_suggestion_none_when_a_dropped_metric_lacks_answers():

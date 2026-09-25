@@ -12,12 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import model
-from claude_token_lens.capture_catalogue import HOOK_SCRIPT
-from claude_token_lens.hook_costs import RULES, HookThresholds, build_section, compute_hook_costs
-from claude_token_lens.model import EventKind, ReportModel, TranscriptMeta, TranscriptResult
-from claude_token_lens.parse import _hook_label, _hook_script_is_relative, parse_transcript
-from claude_token_lens.pricing import load_pricing
+from claudeglass import model
+from claudeglass.capture_catalogue import HOOK_SCRIPT
+from claudeglass.hook_costs import RULES, HookThresholds, build_section, compute_hook_costs
+from claudeglass.model import EventKind, ReportModel, TranscriptMeta, TranscriptResult
+from claudeglass.parse import _hook_label, _hook_script_is_relative, parse_transcript
+from claudeglass.pricing import load_pricing
 
 from helpers import (
     assert_privacy,
@@ -55,7 +55,7 @@ def _hook_events(result: TranscriptResult) -> list[model.Event]:
     ("command", "label"),
     [
         (RELATIVE, "index-first-guard.ps1"),
-        ('py -3 "C:\\Users\\someone\\.claude\\token-lens\\hooks\\snapshot-config.py"', "snapshot-config.py"),
+        ('py -3 "C:\\Users\\someone\\.claude\\claudeglass\\hooks\\snapshot-config.py"', "snapshot-config.py"),
         ('node "${CLAUDE_PLUGIN_ROOT}/hooks/check.js" --fast', "check.js"),
         ("Checking UI changes", "Checking UI changes"),
         ("jq -r .tool_input.command /home/someone/log.json", "jq -r .tool_input.command <path>"),
@@ -77,7 +77,7 @@ def test_a_hook_is_labelled_by_its_script_or_a_redacted_command_prefix(command, 
         ('py -3 "C:\\hooks\\guard.py"', False),
         ("bash ~/hooks/guard.sh", False),
         # A settings.json "\t" read as a tab stays inside the quoted path.
-        ('py -3 "%USERPROFILE%\\.claude\token-lens\\hooks\\snapshot-config.py"', False),
+        ('py -3 "%USERPROFILE%\\.claude\\claudeglass\\hooks\tools\\snapshot-config.py"', False),
         ('bash "hooks/my\tdir/guard.sh"', True),
         ("guard.sh", False),
         ("Checking UI changes", False),

@@ -1,9 +1,9 @@
-"""Tests for the v0.3 Task 1 ``src/claude_token_lens/team.py`` module:
-:func:`~claude_token_lens.team.machine_id`'s stability/non-reversibility,
-:func:`~claude_token_lens.team.build_team_aggregate`'s structure and
-privacy guarantees, :func:`~claude_token_lens.team.validate_team_document`'s
+"""Tests for the v0.3 Task 1 ``src/claudeglass/team.py`` module:
+:func:`~claudeglass.team.machine_id`'s stability/non-reversibility,
+:func:`~claudeglass.team.build_team_aggregate`'s structure and
+privacy guarantees, :func:`~claudeglass.team.validate_team_document`'s
 schema/length checks, the ``<config_dir>/team/`` save/load round trip
-(latest-per-machine), and :func:`~claude_token_lens.team.build_team_report_section`'s
+(latest-per-machine), and :func:`~claudeglass.team.build_team_report_section`'s
 cross-machine comparison tables with the minimum-sample rule.
 """
 
@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import team
-from claude_token_lens.config import Config
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.pricing import load_pricing
+from claudeglass import team
+from claudeglass.config import Config
+from claudeglass.corpus import load_corpus
+from claudeglass.pricing import load_pricing
 
 from helpers import assert_privacy_deep, turn_line, write_jsonl
 
@@ -191,7 +191,7 @@ def test_agent_type_group_label_differs_from_project_slug_hash_for_the_same_name
     # and salt must not collide with the project-slug namespace.
     salt = b"z" * 32
     agent_label = team._agent_type_group_label("shared-name", salt)
-    from claude_token_lens.exports import _hash_slug
+    from claudeglass.exports import _hash_slug
 
     slug_hash = _hash_slug("shared-name", salt)
     assert agent_label.removeprefix("custom:") != slug_hash[:8]
@@ -220,7 +220,7 @@ def test_group_row_sessions_never_exceeds_total_sessions_in_corpus(tmp_path):
 
 
 def test_scorecard_in_document_matches_scorecard_dimensions_metric(tmp_path):
-    from claude_token_lens.report import build_report, scorecard_dimensions_metric
+    from claudeglass.report import build_report, scorecard_dimensions_metric
 
     corpus = _two_session_corpus(tmp_path)
     config_dir = tmp_path / "config"
@@ -527,11 +527,11 @@ def test_team_report_section_privacy(tmp_path):
 
 
 def test_cli_import_rejects_traversal_machine_id_and_exits_2(tmp_path, capsys):
-    from claude_token_lens import cli
+    from claudeglass import cli
 
     doc_path = tmp_path / "evil.json"
     doc_path.write_text(json.dumps(_valid_doc(machine_id="../../evil/PWNED")), encoding="utf-8")
-    config_dir = tmp_path / "home" / "token-lens"
+    config_dir = tmp_path / "home" / "claudeglass"
 
     exit_code = cli.main(["import", str(doc_path), "--config-dir", str(config_dir)])
 
@@ -544,11 +544,11 @@ def test_cli_import_rejects_traversal_machine_id_and_exits_2(tmp_path, capsys):
 
 
 def test_cli_import_accepts_a_well_formed_document(tmp_path, capsys):
-    from claude_token_lens import cli
+    from claudeglass import cli
 
     doc_path = tmp_path / "good.json"
     doc_path.write_text(json.dumps(_valid_doc()), encoding="utf-8")
-    config_dir = tmp_path / "home" / "token-lens"
+    config_dir = tmp_path / "home" / "claudeglass"
 
     exit_code = cli.main(["import", str(doc_path), "--config-dir", str(config_dir)])
 
@@ -562,11 +562,11 @@ def test_cli_import_creates_a_missing_team_directory_rather_than_crashing(tmp_pa
     """S2 regression: import used to raise an unhandled FileNotFoundError
     (a Python traceback, exit 1) when <config_dir>/team didn't exist yet
     -- it must create the directory and succeed instead."""
-    from claude_token_lens import cli
+    from claudeglass import cli
 
     doc_path = tmp_path / "good.json"
     doc_path.write_text(json.dumps(_valid_doc()), encoding="utf-8")
-    config_dir = tmp_path / "brand-new-home" / "token-lens"
+    config_dir = tmp_path / "brand-new-home" / "claudeglass"
     assert not config_dir.exists()
 
     exit_code = cli.main(["import", str(doc_path), "--config-dir", str(config_dir)])

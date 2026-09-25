@@ -1,8 +1,8 @@
 """Tests for the v3 ``install-service``/``uninstall-service`` milestone's
-:mod:`claude_token_lens.installer`: platform detection, the three
+:mod:`claudeglass.installer`: platform detection, the three
 platform plans (Windows/Linux/macOS), dry-run (writes/runs nothing),
 install/uninstall call sequences via a recording runner, the ``.pyz``
-action form, and :func:`~claude_token_lens.installer.is_registered`.
+action form, and :func:`~claudeglass.installer.is_registered`.
 
 Every test here uses an injected recording runner instead of the real
 ``subprocess.run`` -- this module (like the rest of the suite) must
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import installer
+from claudeglass import installer
 
 
 class _FakeResult:
@@ -80,7 +80,7 @@ def test_detect_pyz_path_none_for_an_ordinary_script(monkeypatch, tmp_path):
 
 
 def test_detect_pyz_path_finds_a_real_zip(monkeypatch, tmp_path):
-    archive = tmp_path / "claude-token-lens.pyz"
+    archive = tmp_path / "claudeglass.pyz"
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("__main__.py", "print('hi')\n")
     monkeypatch.setattr(installer.sys, "argv", [str(archive)])
@@ -94,18 +94,18 @@ def test_detect_pyz_path_none_when_argv_empty(monkeypatch):
 
 def test_detect_pyz_path_resolves_a_relative_argv0(monkeypatch, tmp_path):
     """A user who ``cd``s into the archive's own directory and runs ``py -3
-    claude-token-lens.pyz ...`` gets a relative ``sys.argv[0]`` -- but the
+    claudeglass.pyz ...`` gets a relative ``sys.argv[0]`` -- but the
     Scheduled Task/systemd/launchd action this feeds
     (``_serve_argv``/``plan_service_install``) runs from a different
     working directory (e.g. Windows starts a logon task from
     ``%SystemRoot%\\System32``), where a relative path would silently fail
     to resolve. ``detect_pyz_path`` must always hand back an absolute path.
     """
-    archive = tmp_path / "claude-token-lens.pyz"
+    archive = tmp_path / "claudeglass.pyz"
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("__main__.py", "print('hi')\n")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(installer.sys, "argv", ["claude-token-lens.pyz"])
+    monkeypatch.setattr(installer.sys, "argv", ["claudeglass.pyz"])
     result = installer.detect_pyz_path()
     assert result is not None
     assert result.is_absolute()
@@ -164,7 +164,7 @@ def test_plan_windows_prefers_pythonw_beside_the_interpreter(tmp_path):
 def test_plan_windows_pyz_action_form(tmp_path):
     python_exe = tmp_path / "python.exe"
     python_exe.write_text("", encoding="utf-8")
-    pyz_path = tmp_path / "claude-token-lens.pyz"
+    pyz_path = tmp_path / "claudeglass.pyz"
     plan = installer.plan_service_install(
         str(python_exe),
         tmp_path / "projects",
@@ -174,8 +174,8 @@ def test_plan_windows_pyz_action_form(tmp_path):
     )
     script = plan.commands[0][-1]
     assert str(pyz_path) in script
-    # The .pyz form invokes the archive directly, not `-m claude_token_lens`.
-    assert "-m claude_token_lens" not in script
+    # The .pyz form invokes the archive directly, not `-m claudeglass`.
+    assert "-m claudeglass" not in script
 
 
 def test_plan_linux_writes_systemd_unit_with_real_execstart(tmp_path):
@@ -197,20 +197,20 @@ def test_plan_linux_writes_systemd_unit_with_real_execstart(tmp_path):
         ["systemctl", "--user", "enable", "--now", installer.SYSTEMD_UNIT_NAME],
         ["systemctl", "--user", "restart", installer.SYSTEMD_UNIT_NAME],
     ]
-    assert plan.probe_command == ["systemctl", "--user", "is-enabled", "claude-token-lens"]
+    assert plan.probe_command == ["systemctl", "--user", "is-enabled", "claudeglass"]
     assert plan.uninstall_commands == [["systemctl", "--user", "disable", "--now", installer.SYSTEMD_UNIT_NAME]]
     assert plan.uninstall_files == [unit_path]
     assert any("enable-linger" in note for note in plan.notes)
 
 
 def test_plan_linux_pyz_action_form(tmp_path):
-    pyz_path = tmp_path / "claude-token-lens.pyz"
+    pyz_path = tmp_path / "claudeglass.pyz"
     plan = installer.plan_service_install(
         "/usr/bin/python3", tmp_path / "projects", tmp_path / "config", platform="linux", pyz_path=pyz_path
     )
     (_, content), = plan.files_to_write.items()
     assert str(pyz_path) in content
-    assert "-m claude_token_lens" not in content
+    assert "-m claudeglass" not in content
 
 
 def test_plan_macos_writes_launch_agent_plist(tmp_path):
@@ -358,8 +358,8 @@ def test_uninstall_windows_stops_the_task_before_removing_it(tmp_path, capsys):
     assert "Stop-ScheduledTask" in runner.calls[0][-1]
     assert "Unregister-ScheduledTask" in runner.calls[1][-1]
     out = capsys.readouterr().out
-    assert "Stopped Scheduled Task 'ClaudeTokenLens' (a running dashboard is shut down)." in out
-    assert "Removed Scheduled Task 'ClaudeTokenLens'." in out
+    assert "Stopped Scheduled Task 'ClaudeGlass' (a running dashboard is shut down)." in out
+    assert "Removed Scheduled Task 'ClaudeGlass'." in out
     assert out.index("Stopped Scheduled Task") < out.index("Removed Scheduled Task")
 
 
@@ -400,7 +400,7 @@ def test_uninstall_posix_stop_is_part_of_the_removal_command(tmp_path, capsys, m
     "platform,expected_probe",
     [
         ("windows", ["schtasks", "/Query", "/TN", installer.TASK_NAME]),
-        ("linux", ["systemctl", "--user", "is-enabled", "claude-token-lens"]),
+        ("linux", ["systemctl", "--user", "is-enabled", "claudeglass"]),
     ],
 )
 def test_is_registered_true_on_zero_exit(platform, expected_probe):
@@ -435,7 +435,7 @@ def test_is_registered_defaults_to_detect_platform(monkeypatch):
     monkeypatch.setattr(installer.sys, "platform", "linux")
     runner = _RecordingRunner(returncode=0)
     assert installer.is_registered(runner=runner) is True
-    assert runner.calls == [["systemctl", "--user", "is-enabled", "claude-token-lens"]]
+    assert runner.calls == [["systemctl", "--user", "is-enabled", "claudeglass"]]
 
 
 # --------------------------------------------------------------------
@@ -494,7 +494,7 @@ def test_relaunch_after_exit_starts_the_task_again_once_this_process_ends():
 
 @pytest.mark.parametrize("returncode", [1, None])
 def test_relaunch_after_exit_refuses_without_the_task(returncode):
-    """Not running as the ClaudeTokenLens task (or can't tell): starting
+    """Not running as the ClaudeGlass task (or can't tell): starting
     it would start the wrong thing, or nothing, so serve stays up."""
     spawner = _RecordingSpawner()
     if returncode is None:

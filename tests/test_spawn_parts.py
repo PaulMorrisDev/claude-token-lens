@@ -10,10 +10,10 @@ import shlex
 
 import pytest
 
-from claude_token_lens import cli, context_budget, fixes
-from claude_token_lens.config import Config
-from claude_token_lens.elasticity import ElasticityStats, FitResult
-from claude_token_lens.model import (
+from claudeglass import cli, context_budget, fixes
+from claudeglass.config import Config
+from claudeglass.elasticity import ElasticityStats, FitResult
+from claudeglass.model import (
     Column,
     Diagnostics,
     PricingMeta,
@@ -24,9 +24,9 @@ from claude_token_lens.model import (
     SettingChange,
     Table,
 )
-from claude_token_lens.recommend import recommend
-from claude_token_lens.snapshots import Snapshot
-from claude_token_lens.units import NO_LIMIT_SHARE_HINT, Units
+from claudeglass.recommend import recommend
+from claudeglass.snapshots import Snapshot
+from claudeglass.units import NO_LIMIT_SHARE_HINT, Units
 
 PRICE = 3.75  # USD per million tokens written (a Sonnet-class 5m cache write)
 
@@ -95,7 +95,7 @@ def test_large_claude_md_on_a_custom_agent_suggests_omit_claude_md():
     # 3,000 tokens x 10 spawns x 3.75 USD per million = 0.1125 USD.
     assert rec.estimated_saving == "0.11 USD across the spawns in this report."
     assert rec.fixes[0]["command"] == (
-        "claude-token-lens apply --set omitClaudeMd=true --agent reviewer --scope user --dry-run"
+        "claudeglass apply --set omitClaudeMd=true --agent reviewer --scope user --dry-run"
     )
     # The rules the agent needs are moved into its own prompt before the
     # flag is set; the command, which only sets the flag, says so.
@@ -286,7 +286,7 @@ def test_every_command_parses_with_the_real_parser():
     parser = cli._make_parser()
     for command in commands:
         argv = shlex.split(command)
-        assert argv[0] == "claude-token-lens"
+        assert argv[0] == "claudeglass"
         args = parser.parse_args(argv[1:])
         assert args.dry_run and args.set_values
         profile, err = cli._one_off_profile(args.set_values, args.agent)
@@ -367,7 +367,7 @@ def test_command_for_repo_scope_names_the_project_dir():
 
 
 def _with_rules(report, agent_type: str, used: int, unused: int):
-    from claude_token_lens import habits
+    from claudeglass import habits
 
     runs = [habits.AgentFact(session_id="s", agent_type=agent_type, week="", cost=1.0, rules=word)
             for word, n in (("used", used), ("unused", unused)) for _ in range(n)]

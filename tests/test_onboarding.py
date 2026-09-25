@@ -1,7 +1,7 @@
 """Tests for the v0.3 ``init`` milestone's
-``src/claude_token_lens/onboarding.py``: :func:`~claude_token_lens.
-onboarding.detect`, :func:`~claude_token_lens.onboarding.load_answers_file`/
-:func:`~claude_token_lens.onboarding.gather_answers` (an ``--answers``
+``src/claudeglass/onboarding.py``: :func:`~claudeglass.
+onboarding.detect`, :func:`~claudeglass.onboarding.load_answers_file`/
+:func:`~claudeglass.onboarding.gather_answers` (an ``--answers``
 file, interactive stdin prompting, and ``--non-interactive`` derivation,
 each exercised directly against :class:`Detection`/hand-built answers
 data), and what ``init`` (``setup_flow.run``) writes from them, end to
@@ -17,9 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import cli, discovery, installer, onboarding, setup_flow
-from claude_token_lens.baseline import list_baselines
-from claude_token_lens.config import Config, load_config
+from claudeglass import cli, discovery, installer, onboarding, setup_flow
+from claudeglass.baseline import list_baselines
+from claudeglass.config import Config, load_config
 
 from helpers import assert_privacy_deep, turn_line, write_jsonl
 
@@ -355,7 +355,7 @@ def test_init_non_interactive_connects_only_with_the_flag(tmp_path, monkeypatch)
     assert setup_flow.run(*cli._setup_flow_inputs(args), stdin=io.StringIO(""), stdout=stdout) == 0
     out = stdout.getvalue()
     assert "(derived) connect: not given on the command line; left unconnected (pass --connect to connect)" in out
-    assert "Connect to Claude Code: not now. Run 'claude-token-lens init --connect' to connect." in out
+    assert "Connect to Claude Code: not now. Run 'claudeglass init --connect' to connect." in out
 
 
 def test_init_runs_an_initial_baseline_when_sessions_exist(tmp_path, monkeypatch):
@@ -528,7 +528,7 @@ def test_ask_capture_until_defaults_to_a_14_day_box_on_a_blank_answer():
     assert until == "2026-10-08T06:00:00+00:00"
     assert notes == []
     assert "switch itself off on 2026-10-08 06:00 UTC (14 days from now)" in out.getvalue()
-    assert "claude-token-lens capture on --for 30d" in out.getvalue()
+    assert "claudeglass capture on --for 30d" in out.getvalue()
     assert "Turn off that time limit" in out.getvalue()
 
 

@@ -2,7 +2,7 @@
 its name doesn't match ``test_*.py``/``*_test.py`` and it defines no
 ``test_*`` functions, so ``pytest`` never collects it).
 
-Measures one ``claude-token-lens serve`` watcher's first ("cold") and
+Measures one ``claudeglass serve`` watcher's first ("cold") and
 second ("warm, nothing changed") tick against a real corpus, without
 ever touching a real ``~/.claude`` installation -- always pass a
 throwaway ``--config-dir``, never the default one ``config.py`` would
@@ -51,11 +51,11 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from claude_token_lens.cache import DigestCache  # noqa: E402
-from claude_token_lens.service.contracts import ServeOptions, WatcherStats  # noqa: E402
-from claude_token_lens.service.serve import STORE_FILENAME  # noqa: E402
-from claude_token_lens.service.store import Store  # noqa: E402
-from claude_token_lens.service.watcher import FileWatcher  # noqa: E402
+from claudeglass.cache import DigestCache  # noqa: E402
+from claudeglass.service.contracts import ServeOptions, WatcherStats  # noqa: E402
+from claudeglass.service.serve import STORE_FILENAME  # noqa: E402
+from claudeglass.service.store import Store  # noqa: E402
+from claudeglass.service.watcher import FileWatcher  # noqa: E402
 
 #: WatcherStats fields added by S1-perf item 5 -- printed as "n/a" when
 #: benchmarking a pre-S1-perf watcher build so this script works across

@@ -1,5 +1,5 @@
 """Tests for WP3: RE-CACHE detection and reporting
-(``src/claude_token_lens/recache.py``).
+(``src/claudeglass/recache.py``).
 
 Two styles of fixture are used, matching the rest of the suite:
 
@@ -20,10 +20,10 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import recache
-from claude_token_lens.model import EventKind, Table, TranscriptMeta, TranscriptResult, Turn
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing
+from claudeglass import recache
+from claudeglass.model import EventKind, Table, TranscriptMeta, TranscriptResult, Turn
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing
 
 from helpers import attachment_line, turn_line, user_str_line, write_jsonl
 

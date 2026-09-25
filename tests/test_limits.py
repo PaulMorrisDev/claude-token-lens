@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from claude_token_lens import limits
-from claude_token_lens.model import TranscriptMeta
-from claude_token_lens.parse import parse_transcript
+from claudeglass import limits
+from claudeglass.model import TranscriptMeta
+from claudeglass.parse import parse_transcript
 
 from helpers import assert_privacy, turn_line, user_str_line, write_jsonl
 
@@ -176,7 +176,7 @@ def test_csv_cross_check_counts_exhaustion_rows_against_transcript_hits(tmp_path
 
 
 def test_signals_cross_check_counts_quota_waits_and_turn_failures(tmp_path: Path):
-    from claude_token_lens import signals
+    from claudeglass import signals
 
     path = _session_limit_fixture(tmp_path)
     result = parse_transcript(path, TranscriptMeta(path=str(path), session_id="sess1"))

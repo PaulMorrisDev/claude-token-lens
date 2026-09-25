@@ -40,22 +40,22 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import backtest, capture_view, footprint, helptext, quick_actions, setup_status, skills_review
-from claude_token_lens.config import CaptureConfig, Config
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.profiles import goals
-from claude_token_lens.profiles import schema as profile_schema
-from claude_token_lens.report import build_report
-from claude_token_lens.render.json_out import render_json, to_jsonable
-from claude_token_lens.service.store import Store
-from claude_token_lens.snapshots import Snapshot
-from claude_token_lens.units import Units
+from claudeglass import backtest, capture_view, footprint, helptext, quick_actions, setup_status, skills_review
+from claudeglass.config import CaptureConfig, Config
+from claudeglass.corpus import load_corpus
+from claudeglass.pricing import load_pricing
+from claudeglass.profiles import goals
+from claudeglass.profiles import schema as profile_schema
+from claudeglass.report import build_report
+from claudeglass.render.json_out import render_json, to_jsonable
+from claudeglass.service.store import Store
+from claudeglass.snapshots import Snapshot
+from claudeglass.units import Units
 
 from helpers import turn_line, write_jsonl
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-STATIC_DIR = REPO_ROOT / "src" / "claude_token_lens" / "service" / "static"
+STATIC_DIR = REPO_ROOT / "src" / "claudeglass" / "service" / "static"
 API_MD = REPO_ROOT / "docs" / "api.md"
 README_MD = REPO_ROOT / "README.md"
 SECTIONS_REFERENCE_MD = REPO_ROOT / "docs" / "sections-reference.md"
@@ -332,7 +332,7 @@ def test_no_inline_script_bodies(name: str) -> None:
 
 def test_no_button_label_or_handler_says_apply() -> None:
     """UX-8/F2: the "No Apply button" hard constraint -- the dashboard
-    only ever offers a prompt or a ``claude-token-lens ... --dry-run``
+    only ever offers a prompt or a ``claudeglass ... --dry-run``
     command; it never claims to apply a Claude Code config change
     itself (the one documented exception, the Capture page writing
     ``[capture]`` into this tool's own config.toml, is a settings
@@ -421,7 +421,7 @@ def test_dated_report_tables_fold_to_their_latest_rows() -> None:
     five_hour_blocks oldest first, so a capped Usage by day opened on the
     oldest days. NEWEST_LAST tables fold to their last rows until sorted;
     every name is a real table."""
-    from claude_token_lens.helptext import TABLE_COPY
+    from claudeglass.helptext import TABLE_COPY
 
     source = _app_js()
     match = re.search(r"export var NEWEST_LAST = \{([^}]*)\};", source)
@@ -776,7 +776,7 @@ def test_app_js_restart_note_matches_fixes() -> None:
     the CLI and the reports print (fixes.RESTART_NOTE)."""
     import re
 
-    from claude_token_lens.fixes import RESTART_NOTE
+    from claudeglass.fixes import RESTART_NOTE
 
     match = re.search(r"(?:export\s+)?(?:var|let|const) RESTART_NOTE =((?:\s*\"[^\"]*\"\s*\+?)+);", _app_js())
     assert match, "the dashboard no longer defines RESTART_NOTE"
@@ -785,7 +785,7 @@ def test_app_js_restart_note_matches_fixes() -> None:
 
 def test_pyproject_declares_static_as_package_data() -> None:
     data = tomllib.loads(PYPROJECT_TOML.read_text(encoding="utf-8"))
-    package_data = data["tool"]["setuptools"]["package-data"]["claude_token_lens"]
+    package_data = data["tool"]["setuptools"]["package-data"]["claudeglass"]
     assert any("service/static" in entry for entry in package_data), package_data
 
 
@@ -1119,7 +1119,7 @@ def test_fixture_server_serves_index_at_root(fixture_server: str) -> None:
     status, content_type, body = _get(fixture_server, "/")
     assert status == 200
     assert content_type.startswith("text/html")
-    assert b"claude-token-lens" in body
+    assert b"claudeglass" in body
 
 
 @pytest.mark.parametrize(
@@ -1538,6 +1538,16 @@ def test_the_setup_card_shows_until_every_essential_part_works() -> None:
     assert "codeBlockWithCopy(withCli(item.fix)" in item_src, "each fix is a command to copy, in this install's form"
     assert "renderLogonNotice" not in app_js
 
+    # The fix arrives already in this install's form, and the module has
+    # the command's name: withCli must not swap it in a second time
+    # ("python -m python -m claudeglass init").
+    with_cli = _function_source(app_js, "withCli")
+    pattern = re.search(r"text\.replace\(/(.+)/g,", with_cli).group(1).replace("\\/", "/")
+    swap = lambda text: re.sub(pattern, lambda m: m.group(1) + "python -m claudeglass ", text)  # noqa: E731
+    assert swap("python -m claudeglass init") == "python -m claudeglass init"
+    assert swap("Run claudeglass init") == "Run python -m claudeglass init"
+    assert swap("my-claudeglass init") == "my-claudeglass init"
+
     overview = _function_source(app_js, "renderOverview")
     assert 'fetchJson("/api/setup/status")' in overview and "renderSetupCard(" in overview, "the Overview lost the card"
     assert '"/api/setup/status", renderSetupList' in _function_source(app_js, "renderDataQuality"), (
@@ -1548,7 +1558,7 @@ def test_the_setup_card_shows_until_every_essential_part_works() -> None:
     )
     service = setup_status._service(False, True, None)
     assert service.essential and service.state != "ok"
-    assert "cleanupPeriodDays" in service.detail and service.fix == "claude-token-lens install-service"
+    assert "cleanupPeriodDays" in service.detail and service.fix == "claudeglass install-service"
 
 
 def test_ignored_recommendations_leave_every_list_but_their_own() -> None:
@@ -1672,7 +1682,7 @@ def test_every_report_section_is_mapped_to_a_view() -> None:
     quality; every section report.py can emit must be placed on purpose,
     and on a view that exists. A table placed away from its section
     (TABLE_PAGE_MAP) names a real section and a real view too."""
-    from claude_token_lens.report import _SECTION_ORDER
+    from claudeglass.report import _SECTION_ORDER
 
     app_js = _app_js()
     views = set(_view_keys())
@@ -1784,7 +1794,7 @@ def test_page_token_pattern_is_the_servers() -> None:
     """The client renders the server's {{page:...}} tokens as links: its
     pattern accepts every page and segment pages.PAGES names, as the
     server's does, and rejects what the server's rejects."""
-    from claude_token_lens import pages
+    from claudeglass import pages
 
     match = re.search(r"var PAGE_TOKEN = /(.+)/g;", _app_js())
     assert match, "links.js no longer declares PAGE_TOKEN"
@@ -1937,7 +1947,7 @@ def test_sections_reference_lists_every_report_section_in_order() -> None:
     test: sections-reference.md's "Sections at a glance" table and its
     section-order sentence must both name every section build_report
     can emit, in its exact order."""
-    from claude_token_lens.report import _SECTION_ORDER
+    from claudeglass.report import _SECTION_ORDER
 
     expected = [*_SECTION_ORDER, "baseline_comparison"]
     assert _sections_table_keys() == expected
@@ -1950,7 +1960,7 @@ def test_sections_table_workstyle_row_names_every_archetype() -> None:
     fallback when none of the other six match, was missing. Regression
     test: the row's backtick archetype names must match workstyle.py's
     real set."""
-    from claude_token_lens.workstyle import _ARCHETYPE_DESCRIPTIONS
+    from claudeglass.workstyle import _ARCHETYPE_DESCRIPTIONS
 
     text = SECTIONS_REFERENCE_MD.read_text(encoding="utf-8")
     row = next(line for line in text.splitlines() if line.startswith("| `workstyle` |"))
@@ -1962,8 +1972,8 @@ def test_every_working_pattern_has_a_plain_label() -> None:
     """Phase 10: the working patterns grid showed workstyle.py's keys
     ("overseer-fanout", "plan-high-implement-low"). Each key now has a
     plain label in helptext's value_labels for the table."""
-    from claude_token_lens.helptext import TABLE_COPY
-    from claude_token_lens.workstyle import _ARCHETYPE_DESCRIPTIONS
+    from claudeglass.helptext import TABLE_COPY
+    from claudeglass.workstyle import _ARCHETYPE_DESCRIPTIONS
 
     labels = TABLE_COPY["workstyle_archetypes"].value_labels
     assert set(labels) == set(_ARCHETYPE_DESCRIPTIONS)
@@ -1974,8 +1984,8 @@ def test_every_task_word_has_a_plain_name_in_task_tables() -> None:
     """Phase 10: Kinds of task and the brief templates showed capture's
     task words ("bugfix", "plan"). Every word has a plain name, and every
     table with a task column carries them."""
-    from claude_token_lens.capture_catalogue import TAG_VOCAB
-    from claude_token_lens.helptext import TABLE_COPY, TASK_LABELS, TASK_TABLES
+    from claudeglass.capture_catalogue import TAG_VOCAB
+    from claudeglass.helptext import TABLE_COPY, TASK_LABELS, TASK_TABLES
 
     assert set(TASK_LABELS) == set(TAG_VOCAB["task"])
     with_task = {name for name, copy in TABLE_COPY.items() if "task" in copy.columns}
@@ -2380,8 +2390,8 @@ def test_every_chart_source_is_a_route_or_a_report_table() -> None:
     """A chart's figures come from a documented route or from a table the
     report really builds, so the catalogue can't name data that doesn't
     exist."""
-    api_py = (REPO_ROOT / "src" / "claude_token_lens" / "service" / "api.py").read_text(encoding="utf-8")
-    python = "\n".join(p.read_text(encoding="utf-8") for p in (REPO_ROOT / "src" / "claude_token_lens").rglob("*.py"))
+    api_py = (REPO_ROOT / "src" / "claudeglass" / "service" / "api.py").read_text(encoding="utf-8")
+    python = "\n".join(p.read_text(encoding="utf-8") for p in (REPO_ROOT / "src" / "claudeglass").rglob("*.py"))
     for key, spec in _chart_specs().items():
         sources = spec["source"] if isinstance(spec["source"], list) else [spec["source"]]
         for source in sources:
@@ -2458,7 +2468,7 @@ def test_a_replaced_chart_lets_go_and_a_fresh_one_starts_as_a_chart() -> None:
 def test_money_axis_mirrors_the_billing_units() -> None:
     """A money axis says what its numbers are in the same words units.py
     uses: a share of the usage limit, list-price dollars, or dollars."""
-    units_py = (REPO_ROOT / "src" / "claude_token_lens" / "units.py").read_text(encoding="utf-8")
+    units_py = (REPO_ROOT / "src" / "claudeglass" / "units.py").read_text(encoding="utf-8")
     assert "% of your weekly usage limit" in units_py and "list-price" in units_py
     axis = _function_source(_app_js(), "moneyAxis")
     assert '"% of your "' in axis and '"weekly usage limit"' in axis
@@ -2479,7 +2489,7 @@ def test_chart_colours_follow_the_entity_not_the_window() -> None:
 
 # -- Actions: areas, evidence links and deep links ---------------------------
 
-SRC_DIR = REPO_ROOT / "src" / "claude_token_lens"
+SRC_DIR = REPO_ROOT / "src" / "claudeglass"
 
 
 def _js_hyphen_map(app_js: str, var_name: str) -> dict[str, str]:
@@ -2546,7 +2556,7 @@ def test_every_evidence_source_resolves_to_a_page_or_the_table_drawer() -> None:
     that shows it (TABLE_PAGE_MAP, then SECTION_PAGE_MAP) or, for a
     section no page shows, the table drawer. None may point at a
     section that would fall through to Data quality by accident."""
-    from claude_token_lens.report import _SECTION_ORDER
+    from claudeglass.report import _SECTION_ORDER
 
     app_js = _app_js()
     sections = _js_string_map(app_js, "SECTION_PAGE_MAP")
@@ -2835,7 +2845,7 @@ def test_models_read_by_name_on_screen() -> None:
         ("claude-3-5-sonnet-20241022", ["claude-3-5-sonnet-20241022"]),
         ("claude-opus-5-5[1m]", ["claude-opus-5-5[1m]"]),
         ("claude-implementer", []),
-        ("C--Dev-claude-token-lens", []),
+        ("C--Dev-claudeglass", []),
     ):
         assert [m.group(0) for m in model_id.finditer(text)] == ids, text
     assert '" (1M context)"' in _function_source(fmt, "modelNames")

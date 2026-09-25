@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace as NS
 
-from claude_token_lens import model_gate
+from claudeglass import model_gate
 
 from test_whatif import _table
 
@@ -22,7 +22,7 @@ def _tables(quality_by_setup=(), quality_retried=(), habits_agents=()):
             _table("habits_agents", list(habits_agents)) if habits_agents else NS(name="habits_agents", columns=[], rows=[]),
         ]),
     ])
-    from claude_token_lens import whatif
+    from claudeglass import whatif
     return whatif._Tables(model)
 
 

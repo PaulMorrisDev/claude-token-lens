@@ -58,7 +58,7 @@ changes Claude Code itself.
   a share of the weekly usage limit when the service can work one out,
   else the list-price equivalent. See "One number format" and
   [`docs/writing-help.md`](writing-help.md), "Amounts".
-- **Commands in this install's form.** The short `claude-token-lens`
+- **Commands in this install's form.** The short `claudeglass`
   runs only when pip's Scripts folder is on `PATH`. The service writes
   the form that runs its own install into `index.html`'s
   `<meta name="tl-command">` and into the commands in every API
@@ -228,10 +228,10 @@ in a label reads "($)". Another currency reads the same both ways
 
 ### Readable names
 
-A project slug (`C--Dev-claude-token-lens`) reads as its folder
-(`projectName`: "claude-token-lens"). It drops the drive, a Windows home
+A project slug (`C--Dev-claudeglass`) reads as its folder
+(`projectName`: "claudeglass"). It drops the drive, a Windows home
 folder and the one parent your projects share, and a worktree reads
-after its project ("claude-token-lens / ui-redesign"). The full slug
+after its project ("claudeglass / ui-redesign"). The full slug
 stays in the tooltip. A slug can't tell a hyphen from a path separator,
 so the name is a best guess. Model ids read as names wherever they
 show: `modelName` for one id, and `modelNames` for any text (a grid
@@ -286,7 +286,7 @@ of 40 sessions". Under that: "Last scan", when the last scan finished;
 "Figures updated", the time of the oldest figures drawn
 (`X-Figures-As-Of`), both as "5 min ago" with the time on hover
 (`timeNode`), moved on at each health poll; the capture level as a link
-to Setup › Capture ("Capture: off" when off); and "claude-token-lens
+to Setup › Capture ("Capture: off" when off); and "claudeglass
 <version>. Your data stays on this machine." It is a group named
 "Service status", not a live region: the health banner says what
 changes.
@@ -449,7 +449,7 @@ Each view opens with its one-line intro from `PAGES` (`viewIntro`).
    from `/api/summary?since=&until=`, so a change compares a summary
    with a summary. "All time" and "Since my last change" have none.
    Other forms cover no sessions in the window or project, no change
-   recorded yet, and, before any session is read, **What Token Lens
+   recorded yet, and, before any session is read, **What ClaudeGlass
    does for you** (saying the first scan is running while
    `scan.scanning` is true).
 2. **Four tiles**, each linking to its page: Spend, every session with a
@@ -535,7 +535,7 @@ status (Worth a look, Nothing to do, Not enough data), filtered by
 status. The detail gives why it matters and the answer, then loads
 `/api/quick-actions/<id>`: **The numbers**, the fixes, **Habits that
 help**, and **The recommendation it leads to**. A check with not enough
-data says why. The same checks run as `claude-token-lens check`.
+data says why. The same checks run as `claudeglass check`.
 
 ### Spend › Usage
 
@@ -659,7 +659,7 @@ is shaded against its column's largest, with the value shown.
   skill's description, facts and fixes.
 - The `context_budget` section.
 
-The terminal equivalent is `claude-token-lens review claude-md|skills`.
+The terminal equivalent is `claudeglass review claude-md|skills`.
 
 ### Agents & context › Hooks
 
@@ -690,7 +690,7 @@ the notes. Nothing here changes a setting.
 1. **Your changes and what they did** (`/api/impact`): each `apply`,
    undo or settings change the hook saw, sessions before against after,
    and a folded quality table per agent it touched. An apply gives "To
-   undo it: `claude-token-lens apply --revert <backup_ts>`". A `?day=`
+   undo it: `claudeglass apply --revert <backup_ts>`". A `?day=`
    pulses that day's change.
 2. **Did your estimates come true?** (`/api/backtest`): each estimate
    Profiles showed, against what happened.
@@ -719,7 +719,7 @@ fills in a project folder.
 
 ### Setup › Capture
 
-**Answers:** "How much should Claude tell Token Lens, and what does that
+**Answers:** "How much should Claude tell ClaudeGlass, and what does that
 cost?" The same for every window.
 
 `/api/capture`: the cost warning; where capture stands (setting, cost so
@@ -745,11 +745,11 @@ CLI commands instead.
 
 ### Data quality
 
-**Answers:** "What did Token Lens install, and can I trust its figures?"
+**Answers:** "What did ClaudeGlass install, and can I trust its figures?"
 
 1. **Your setup** (`/api/setup/status`, `renderSetupList`): each part
    `Done`, `Waiting`, `Off` or `Needs attention`, with the command that
-   fixes it, as `claude-token-lens status` prints it.
+   fixes it, as `claudeglass status` prints it.
 2. **What this tool installed, and what to expect** (`/api/setup`): each
    thing installed, what it does, its token cost and how to undo it, and
    "Remove everything".
@@ -803,7 +803,7 @@ Every helper builds nodes with `textContent`; server text goes through
 | Delta chip | `deltaChip` | a change on the previous period, coloured by whether up is good, neutral within 1%. Three times or more reads "3.2 times"; an empty earlier period "None before" |
 | Tile | `tile`, `tileRow` | a label, the value at 28px with its unit quieter, then an optional basis chip, delta, hint and sparkline |
 | Panel | `panel` | a surface with a hairline border, a header and a body. Never nested |
-| Callout | `callout`, `errorNotice` | info, success, warning or critical: a tint, an icon and a label. An error says what happened and offers "Try again" when a retry can help; a `restart_needed` error is titled "Token Lens needs a restart." |
+| Callout | `callout`, `errorNotice` | info, success, warning or critical: a tint, an icon and a label. An error says what happened and offers "Try again" when a retry can help; a `restart_needed` error is titled "ClaudeGlass needs a restart." |
 | Empty state | `emptyState` | what happened, why, and what would fill it. Never "No data" |
 | Skeleton | `skeleton`, `loadingNode` | grey bars in the shape of what is loading, with a 1.4-second shimmer. `loadingNode` puts what is loading above them in words ("Loading the report…"), which stay when reduced motion stops the shimmer |
 | Command block | `commandBlock`, `renderFix` | the ways to make a change as a tab list (a prompt, a dry-run command, a one-session trial), each with Copy, then `fixes.build_fix`'s explainer and `fixes.RESTART_NOTE` |

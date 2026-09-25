@@ -10,16 +10,16 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from claude_token_lens import capture_catalogue, discovery, quality
-from claude_token_lens import quick_actions as qa
-from claude_token_lens.fixes import PROMPT_RESTART
-from claude_token_lens.model import Recommendation
-from claude_token_lens.units import Units
+from claudeglass import capture_catalogue, discovery, quality
+from claudeglass import quick_actions as qa
+from claudeglass.fixes import PROMPT_RESTART
+from claudeglass.model import Recommendation
+from claudeglass.units import Units
 
 from test_whatif import _model, _table
 
 API_MD = Path(__file__).resolve().parent.parent / "docs" / "api.md"
-SRC = Path(__file__).resolve().parent.parent / "src" / "claude_token_lens"
+SRC = Path(__file__).resolve().parent.parent / "src" / "claudeglass"
 #: Every module that can build a ``Recommendation`` -- see recommend.py's
 #: own ``recommend()`` entry point, which folds each of these in.
 _RULE_MODULES = ("recommend.py", "advice.py", "carry.py", "compaction_sim.py", "handoff.py", "hook_costs.py",
@@ -30,7 +30,7 @@ FIX_KEYS = {"key", "agent", "explainer", "command", "command_warning", "prompt",
 
 
 def _ctx(tmp_path, model=None, **kw):
-    config_dir = tmp_path / ".claude" / "token-lens"
+    config_dir = tmp_path / ".claude" / "claudeglass"
     config_dir.mkdir(parents=True, exist_ok=True)
     (tmp_path / ".claude" / "projects").mkdir(exist_ok=True)
     return qa.Context(
@@ -453,7 +453,7 @@ def test_quality_offers_metrics_capture_when_agents_ran_and_none_wrote_a_marker(
     [fix] = result["fixes"]
     assert set(fix) == FIX_KEYS and fix["key"] is None
     assert fix["title"] == "Turn on metrics capture"
-    assert fix["command"] == "claude-token-lens capture on --level essentials --dry-run"
+    assert fix["command"] == "claudeglass capture on --level essentials --dry-run"
     assert "--dry-run" in fix["prompt"] and "Don't run it without --dry-run" in fix["prompt"]
     explainer = dict(fix["explainer"])
     metrics = capture_catalogue.level_metrics("essentials")

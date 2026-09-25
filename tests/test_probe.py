@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from claude_token_lens import probe
+from claudeglass import probe
 
 from helpers import write_jsonl
 
@@ -129,7 +129,7 @@ def test_render_probe_contains_expected_headings():
     result = probe.ProbeResult()
     probe.probe_line({"type": "assistant"}, result)
     text = probe.render_probe(result)
-    assert "# claude-token-lens probe" in text
+    assert "# claudeglass probe" in text
     assert "## line types" in text
     assert "## keys by line type" in text
     assert "## attachment types" in text

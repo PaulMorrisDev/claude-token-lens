@@ -124,7 +124,7 @@ away from it — this is why the log always uses the uncalibrated figure.
 - **Dashboard:** Setup › Settings' "Did your estimates come true?"
   table (`GET /api/backtest`), right under "Your changes and what they
   did" — see `docs/profiles.md`.
-- **CLI:** `claude-token-lens backtest` reads the store read-only
+- **CLI:** `claudeglass backtest` reads the store read-only
   (`service.store.read_predictions`, the same read-only-connection
   posture `_merge_dashboard_marks` already gives session tags/ratings)
   and prints every judged prediction as a table, plus a count still

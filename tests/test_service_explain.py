@@ -3,9 +3,9 @@ expensive?" sentences."""
 
 from __future__ import annotations
 
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.service.explain import cost_split, explain_session
-from claude_token_lens.units import Units
+from claudeglass.pricing import load_pricing
+from claudeglass.service.explain import cost_split, explain_session
+from claudeglass.units import Units
 
 
 def _parts(**overrides):

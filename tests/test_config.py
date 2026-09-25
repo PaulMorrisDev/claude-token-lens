@@ -1,5 +1,5 @@
 """Tests for WP5: ``config.toml``/``sessions.toml`` loading and
-per-session override round-tripping (``src/claude_token_lens/config.py``).
+per-session override round-tripping (``src/claudeglass/config.py``).
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens.config import (
+from claudeglass.config import (
     Config,
     ConfigError,
     append_prediction_log,
@@ -48,9 +48,9 @@ def test_default_config_dir_honours_claude_config_dir_env_var(monkeypatch, tmp_p
     # at a throwaway home; point it somewhere else explicitly here to
     # prove load_config (with no config_dir argument) actually reads it.
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text('billing = "subscription"\n', encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text('billing = "subscription"\n', encoding="utf-8")
 
     config = load_config()
     assert config.billing == "subscription"
@@ -62,13 +62,13 @@ def test_default_config_dir_honours_claude_config_dir_env_var(monkeypatch, tmp_p
 
 
 def test_valid_config_parses_every_field(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text(
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text(
         (FIXTURES / "config_valid.toml").read_text(encoding="utf-8"), encoding="utf-8"
     )
 
-    config = load_config(config_dir=token_lens_dir)
+    config = load_config(config_dir=claudeglass_dir)
     assert config.billing == "subscription"
     assert config.tz == "Europe/London"
     assert config.min_sessions == 8
@@ -83,11 +83,11 @@ def test_valid_config_parses_every_field(tmp_path):
 
 
 def test_partial_config_falls_back_to_defaults_for_missing_fields(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text('min_sessions = 12\n', encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text('min_sessions = 12\n', encoding="utf-8")
 
-    config = load_config(config_dir=token_lens_dir)
+    config = load_config(config_dir=claudeglass_dir)
     assert config.min_sessions == 12
     # Every other field keeps its documented default.
     assert config.billing == "api"
@@ -109,29 +109,29 @@ def test_exclude_projects_defaults_to_empty_list():
 
 
 def test_exclude_projects_parses_list_of_regex_strings(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text(
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text(
         'exclude_projects = ["^scratch-", "throwaway$"]\n', encoding="utf-8"
     )
-    config = load_config(config_dir=token_lens_dir)
+    config = load_config(config_dir=claudeglass_dir)
     assert config.exclude_projects == ["^scratch-", "throwaway$"]
 
 
 def test_exclude_projects_wrong_type_raises_config_error(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text('exclude_projects = "not-a-list"\n', encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text('exclude_projects = "not-a-list"\n', encoding="utf-8")
     with pytest.raises(ConfigError, match="exclude_projects"):
-        load_config(config_dir=token_lens_dir)
+        load_config(config_dir=claudeglass_dir)
 
 
 def test_exclude_projects_non_string_item_raises_config_error(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text('exclude_projects = ["ok", 5]\n', encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text('exclude_projects = ["ok", 5]\n', encoding="utf-8")
     with pytest.raises(ConfigError, match="exclude_projects"):
-        load_config(config_dir=token_lens_dir)
+        load_config(config_dir=claudeglass_dir)
 
 
 def test_exclude_projects_bad_regex_raises_config_error_at_load(tmp_path):
@@ -139,11 +139,11 @@ def test_exclude_projects_bad_regex_raises_config_error_at_load(tmp_path):
     regex is a ConfigError the user sees right away, not something that
     silently degrades later, once per call, deep inside discovery/corpus.
     """
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text('exclude_projects = ["ok", "(unbalanced"]\n', encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text('exclude_projects = ["ok", "(unbalanced"]\n', encoding="utf-8")
     with pytest.raises(ConfigError, match="exclude_projects"):
-        load_config(config_dir=token_lens_dir)
+        load_config(config_dir=claudeglass_dir)
 
 
 # --------------------------------------------------------------------
@@ -156,37 +156,37 @@ def test_savers_defaults_to_empty_list():
 
 
 def test_savers_parses_names_list(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text(
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text(
         '[savers]\nnames = ["my-mcp-server", "acme-optimizer"]\n', encoding="utf-8"
     )
-    config = load_config(config_dir=token_lens_dir)
+    config = load_config(config_dir=claudeglass_dir)
     assert config.savers == ["my-mcp-server", "acme-optimizer"]
 
 
 def test_savers_missing_table_defaults_to_empty_list(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text('min_sessions = 12\n', encoding="utf-8")
-    config = load_config(config_dir=token_lens_dir)
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text('min_sessions = 12\n', encoding="utf-8")
+    config = load_config(config_dir=claudeglass_dir)
     assert config.savers == []
 
 
 def test_savers_wrong_type_raises_config_error(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text('savers = "not-a-table"\n', encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text('savers = "not-a-table"\n', encoding="utf-8")
     with pytest.raises(ConfigError, match="savers"):
-        load_config(config_dir=token_lens_dir)
+        load_config(config_dir=claudeglass_dir)
 
 
 def test_savers_names_non_string_item_raises_config_error(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text('[savers]\nnames = ["ok", 5]\n', encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text('[savers]\nnames = ["ok", 5]\n', encoding="utf-8")
     with pytest.raises(ConfigError, match="savers.names"):
-        load_config(config_dir=token_lens_dir)
+        load_config(config_dir=claudeglass_dir)
 
 
 def test_describe_shows_savers_when_set():
@@ -199,29 +199,29 @@ def test_retention_days_defaults_to_none():
 
 
 def test_retention_days_parses_integer(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text("retention_days = 30\n", encoding="utf-8")
-    config = load_config(config_dir=token_lens_dir)
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text("retention_days = 30\n", encoding="utf-8")
+    config = load_config(config_dir=claudeglass_dir)
     assert config.retention_days == 30
 
 
 def test_retention_days_wrong_type_raises_config_error(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text('retention_days = "thirty"\n', encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text('retention_days = "thirty"\n', encoding="utf-8")
     with pytest.raises(ConfigError, match="retention_days"):
-        load_config(config_dir=token_lens_dir)
+        load_config(config_dir=claudeglass_dir)
 
 
 def test_retention_days_bool_rejected_as_not_an_integer(tmp_path):
     # bool is a subclass of int in Python; the validator must special-case
     # it out so `retention_days = true` doesn't silently become 1.
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text("retention_days = true\n", encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text("retention_days = true\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="retention_days"):
-        load_config(config_dir=token_lens_dir)
+        load_config(config_dir=claudeglass_dir)
 
 
 @pytest.mark.parametrize("bad", [0, -1, 36501, -36500])
@@ -230,19 +230,19 @@ def test_retention_days_out_of_bounds_raises_config_error(tmp_path, bad):
     the session in progress) on the very next poll tick; an absurdly
     large value is almost certainly a typo (days entered as hours, an
     extra digit) rather than a real "keep forever" choice."""
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text(f"retention_days = {bad}\n", encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text(f"retention_days = {bad}\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="retention_days"):
-        load_config(config_dir=token_lens_dir)
+        load_config(config_dir=claudeglass_dir)
 
 
 @pytest.mark.parametrize("edge", [1, 36500])
 def test_retention_days_at_the_boundary_is_accepted(tmp_path, edge):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text(f"retention_days = {edge}\n", encoding="utf-8")
-    config = load_config(config_dir=token_lens_dir)
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text(f"retention_days = {edge}\n", encoding="utf-8")
+    config = load_config(config_dir=claudeglass_dir)
     assert config.retention_days == edge
 
 
@@ -252,19 +252,19 @@ def test_provider_defaults_to_none():
 
 def test_provider_accepts_each_allowed_value(tmp_path):
     for value in ("anthropic", "bedrock", "vertex"):
-        token_lens_dir = tmp_path / f"token-lens-{value}"
-        token_lens_dir.mkdir()
-        (token_lens_dir / "config.toml").write_text(f'provider = "{value}"\n', encoding="utf-8")
-        config = load_config(config_dir=token_lens_dir)
+        claudeglass_dir = tmp_path / f"claudeglass-{value}"
+        claudeglass_dir.mkdir()
+        (claudeglass_dir / "config.toml").write_text(f'provider = "{value}"\n', encoding="utf-8")
+        config = load_config(config_dir=claudeglass_dir)
         assert config.provider == value
 
 
 def test_provider_invalid_value_raises_config_error(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text('provider = "openai"\n', encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text('provider = "openai"\n', encoding="utf-8")
     with pytest.raises(ConfigError, match="provider"):
-        load_config(config_dir=token_lens_dir)
+        load_config(config_dir=claudeglass_dir)
 
 
 def test_describe_shows_exclude_projects_retention_and_provider_when_set():
@@ -288,37 +288,37 @@ def test_describe_omits_exclude_projects_retention_and_provider_when_unset():
 
 
 def test_malformed_toml_syntax_raises_config_error(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text(
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text(
         (FIXTURES / "config_bad.toml").read_text(encoding="utf-8"), encoding="utf-8"
     )
     with pytest.raises(ConfigError):
-        load_config(config_dir=token_lens_dir)
+        load_config(config_dir=claudeglass_dir)
 
 
 def test_invalid_billing_value_raises_config_error(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text('billing = "invoice"\n', encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text('billing = "invoice"\n', encoding="utf-8")
     with pytest.raises(ConfigError, match="billing"):
-        load_config(config_dir=token_lens_dir)
+        load_config(config_dir=claudeglass_dir)
 
 
 def test_wrong_type_field_raises_config_error(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text('min_sessions = "five"\n', encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text('min_sessions = "five"\n', encoding="utf-8")
     with pytest.raises(ConfigError, match="min_sessions"):
-        load_config(config_dir=token_lens_dir)
+        load_config(config_dir=claudeglass_dir)
 
 
 def test_thresholds_must_be_a_table(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text('thresholds = "nope"\n', encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text('thresholds = "nope"\n', encoding="utf-8")
     with pytest.raises(ConfigError, match="thresholds"):
-        load_config(config_dir=token_lens_dir)
+        load_config(config_dir=claudeglass_dir)
 
 
 def test_thresholds_classify_subdict_round_trips_as_a_nested_table(tmp_path):
@@ -329,9 +329,9 @@ def test_thresholds_classify_subdict_round_trips_as_a_nested_table(tmp_path):
     table under it just round-trips as a nested dict with no special
     parsing needed here.
     """
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "config.toml").write_text(
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "config.toml").write_text(
         "[thresholds.classify.mode]\n"
         "overnight_night_turn_share = 0.15\n"
         "\n"
@@ -340,7 +340,7 @@ def test_thresholds_classify_subdict_round_trips_as_a_nested_table(tmp_path):
         encoding="utf-8",
     )
 
-    config = load_config(config_dir=token_lens_dir)
+    config = load_config(config_dir=claudeglass_dir)
     assert config.thresholds == {
         "classify": {
             "mode": {"overnight_night_turn_share": 0.15},
@@ -348,7 +348,7 @@ def test_thresholds_classify_subdict_round_trips_as_a_nested_table(tmp_path):
         }
     }
 
-    from claude_token_lens.classify import mode_and_purpose_thresholds_from_config
+    from claudeglass.classify import mode_and_purpose_thresholds_from_config
 
     mode_t, purpose_t = mode_and_purpose_thresholds_from_config(config.thresholds)
     assert mode_t == {"overnight_night_turn_share": 0.15}
@@ -385,13 +385,13 @@ def test_missing_sessions_file_returns_empty_dict(tmp_path):
 
 
 def test_load_session_overrides_parses_mode_purpose_and_tags(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "sessions.toml").write_text(
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "sessions.toml").write_text(
         (FIXTURES / "sessions_seed.toml").read_text(encoding="utf-8"), encoding="utf-8"
     )
 
-    overrides = load_session_overrides(config_dir=token_lens_dir)
+    overrides = load_session_overrides(config_dir=claudeglass_dir)
     assert overrides["session-existing-1"] == {"mode": "interactive", "purpose": "general-dev"}
     assert overrides["session-existing-2"] == {
         "mode": "overnight",
@@ -401,11 +401,11 @@ def test_load_session_overrides_parses_mode_purpose_and_tags(tmp_path):
 
 
 def test_malformed_sessions_toml_raises_config_error(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "sessions.toml").write_text('[sessions."x"\nmode = "interactive"\n', encoding="utf-8")
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "sessions.toml").write_text('[sessions."x"\nmode = "interactive"\n', encoding="utf-8")
     with pytest.raises(ConfigError):
-        load_session_overrides(config_dir=token_lens_dir)
+        load_session_overrides(config_dir=claudeglass_dir)
 
 
 # --------------------------------------------------------------------
@@ -414,23 +414,23 @@ def test_malformed_sessions_toml_raises_config_error(tmp_path):
 
 
 def test_save_session_override_creates_file_when_absent(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    save_session_override(token_lens_dir, "session-new", mode="interactive", purpose="review")
+    claudeglass_dir = tmp_path / "claudeglass"
+    save_session_override(claudeglass_dir, "session-new", mode="interactive", purpose="review")
 
-    overrides = load_session_overrides(config_dir=token_lens_dir)
+    overrides = load_session_overrides(config_dir=claudeglass_dir)
     assert overrides == {"session-new": {"mode": "interactive", "purpose": "review"}}
 
 
 def test_save_session_override_preserves_other_entries(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    token_lens_dir.mkdir()
-    (token_lens_dir / "sessions.toml").write_text(
+    claudeglass_dir = tmp_path / "claudeglass"
+    claudeglass_dir.mkdir()
+    (claudeglass_dir / "sessions.toml").write_text(
         (FIXTURES / "sessions_seed.toml").read_text(encoding="utf-8"), encoding="utf-8"
     )
 
-    save_session_override(token_lens_dir, "session-existing-1", mode="overnight")
+    save_session_override(claudeglass_dir, "session-existing-1", mode="overnight")
 
-    overrides = load_session_overrides(config_dir=token_lens_dir)
+    overrides = load_session_overrides(config_dir=claudeglass_dir)
     # The touched entry only has "mode" overwritten; "purpose" stays.
     assert overrides["session-existing-1"] == {"mode": "overnight", "purpose": "general-dev"}
     # The untouched entry is byte-for-byte preserved, including "tags".
@@ -442,21 +442,21 @@ def test_save_session_override_preserves_other_entries(tmp_path):
 
 
 def test_save_session_override_updates_only_the_given_fields(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
-    save_session_override(token_lens_dir, "session-x", mode="interactive", purpose="planning")
-    save_session_override(token_lens_dir, "session-x", purpose="test-triage")
+    claudeglass_dir = tmp_path / "claudeglass"
+    save_session_override(claudeglass_dir, "session-x", mode="interactive", purpose="planning")
+    save_session_override(claudeglass_dir, "session-x", purpose="test-triage")
 
-    overrides = load_session_overrides(config_dir=token_lens_dir)
+    overrides = load_session_overrides(config_dir=claudeglass_dir)
     # mode was left as None on the second call, so it must be untouched.
     assert overrides["session-x"] == {"mode": "interactive", "purpose": "test-triage"}
 
 
 def test_save_session_override_round_trips_special_characters(tmp_path):
-    token_lens_dir = tmp_path / "token-lens"
+    claudeglass_dir = tmp_path / "claudeglass"
     session_id = 'weird "id" with\\backslash'
-    save_session_override(token_lens_dir, session_id, mode="mixed")
+    save_session_override(claudeglass_dir, session_id, mode="mixed")
 
-    overrides = load_session_overrides(config_dir=token_lens_dir)
+    overrides = load_session_overrides(config_dir=claudeglass_dir)
     assert overrides[session_id] == {"mode": "mixed"}
 
 

@@ -10,9 +10,9 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timezone
 
-from claude_token_lens import cli
-from claude_token_lens.service.contracts import ServeOptions
-from claude_token_lens.service.monthly_job import MonthlyReportJob
+from claudeglass import cli
+from claudeglass.service.contracts import ServeOptions
+from claudeglass.service.monthly_job import MonthlyReportJob
 
 from helpers import turn_line, write_jsonl
 
@@ -33,7 +33,7 @@ def _setup(tmp_path):
     write_jsonl(project / "sep.jsonl", [turn_line(timestamp="2026-09-14T12:00:00.000Z")])
     options = ServeOptions(
         projects_root=projects_root,
-        config_dir=tmp_path / "token-lens",
+        config_dir=tmp_path / "claudeglass",
         monthly_report_dir=tmp_path / "reports",
     )
     return options
@@ -50,7 +50,7 @@ def test_writes_last_months_report_once_when_missing(tmp_path):
     job = _job(options, clock, logs)
 
     paths = job.run_once()
-    assert [p.name for p in paths] == ["claude-token-lens-2026-08.md", "claude-token-lens-2026-08.html"]
+    assert [p.name for p in paths] == ["claudeglass-2026-08.md", "claudeglass-2026-08.html"]
     assert all(p.is_file() for p in paths)
     assert "2026-08" in paths[0].read_text(encoding="utf-8")
     assert any("for 2026-08 written to" in line for line in logs)
@@ -67,13 +67,13 @@ def test_next_month_is_written_when_the_clock_moves_on(tmp_path):
     job = _job(options, clock, [])
     job.run_once()
     clock.now = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
-    assert [p.name for p in job.run_once()] == ["claude-token-lens-2026-09.md", "claude-token-lens-2026-09.html"]
+    assert [p.name for p in job.run_once()] == ["claudeglass-2026-09.md", "claudeglass-2026-09.html"]
     names = sorted(p.name for p in options.monthly_report_dir.iterdir())
     assert names == [
-        "claude-token-lens-2026-08.html",
-        "claude-token-lens-2026-08.md",
-        "claude-token-lens-2026-09.html",
-        "claude-token-lens-2026-09.md",
+        "claudeglass-2026-08.html",
+        "claudeglass-2026-08.md",
+        "claudeglass-2026-09.html",
+        "claudeglass-2026-09.md",
     ]
 
 
@@ -83,7 +83,7 @@ def test_a_deleted_report_is_written_again(tmp_path):
     job = _job(options, clock, [])
     md, _html = job.run_once()
     md.unlink()
-    assert [p.name for p in job.run_once()] == ["claude-token-lens-2026-08.md", "claude-token-lens-2026-08.html"]
+    assert [p.name for p in job.run_once()] == ["claudeglass-2026-08.md", "claudeglass-2026-08.html"]
 
 
 def test_an_empty_month_is_written_with_a_note(tmp_path):
@@ -91,14 +91,14 @@ def test_an_empty_month_is_written_with_a_note(tmp_path):
     clock = _Clock(datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc))
     logs: list[str] = []
     paths = _job(options, clock, logs).run_once()
-    assert [p.name for p in paths] == ["claude-token-lens-2026-06.md", "claude-token-lens-2026-06.html"]
+    assert [p.name for p in paths] == ["claudeglass-2026-06.md", "claudeglass-2026-06.html"]
     assert any("no sessions found for 2026-06" in line for line in logs)
 
 
 def test_failure_is_logged_not_raised(tmp_path):
     options = ServeOptions(
         projects_root=tmp_path / "no-projects-here",
-        config_dir=tmp_path / "token-lens",
+        config_dir=tmp_path / "claudeglass",
         monthly_report_dir=tmp_path / "reports",
     )
     logs: list[str] = []
@@ -133,7 +133,7 @@ def test_start_checks_at_once_in_the_background_and_stop_ends_it(tmp_path):
     finally:
         job.stop()
     assert job._thread is None
-    assert (options.monthly_report_dir / "claude-token-lens-2026-08.md").is_file()
+    assert (options.monthly_report_dir / "claudeglass-2026-08.md").is_file()
 
 
 def test_serve_once_runs_the_monthly_job(tmp_path, monkeypatch):

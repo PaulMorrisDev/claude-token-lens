@@ -11,8 +11,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from claude_token_lens import capture_catalogue
-from claude_token_lens.config import (
+from claudeglass import capture_catalogue
+from claudeglass.config import (
     CAPTURE_LOG_NAME,
     SIGNAL_RETENTION_DEFAULT_DAYS,
     CaptureConfig,
@@ -45,7 +45,7 @@ level = "custom"
 metrics = ["task", "fit"]
 sample = 25
 until = "2026-10-01"
-projects = ["claude-token-lens", "!secret"]
+projects = ["claudeglass", "!secret"]
 feedback = ["feedback_skill", "feedback_note"]
 coaching = ["coaching_line"]
 enabled_at = "2026-09-24T06:00:00+00:00"
@@ -53,7 +53,7 @@ enabled_at = "2026-09-24T06:00:00+00:00"
     capture = load_config(config_dir=tmp_path).capture
     assert capture.level == "custom" and capture.sample == 25
     assert capture.active_metrics() == ("task", "result", "fit", "feedback_skill", "feedback_note")
-    assert capture.projects == ["claude-token-lens", "!secret"]
+    assert capture.projects == ["claudeglass", "!secret"]
     assert not capture.expired(NOW)
     assert capture.expired(datetime(2026, 10, 1, tzinfo=timezone.utc))
 

@@ -8,13 +8,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from claude_token_lens.config import Config
-from claude_token_lens.corpus import SessionBundle, load_corpus
-from claude_token_lens.model import TranscriptMeta
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.report import build_report
-from claude_token_lens.usage import build_section
+from claudeglass.config import Config
+from claudeglass.corpus import SessionBundle, load_corpus
+from claudeglass.model import TranscriptMeta
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing
+from claudeglass.report import build_report
+from claudeglass.usage import build_section
 
 from helpers import assert_privacy, turn_line, write_jsonl
 

@@ -1,6 +1,6 @@
 # Coaching notes
 
-Token Lens's tips are worked out after the fact, from sessions that have
+ClaudeGlass's tips are worked out after the fact, from sessions that have
 already ended. Coaching notes bring the ones that can be acted on in the
 moment into the session itself. When a hint applies, the capture hook
 (`capture-hook.py`) adds a short note to Claude's context, and Claude
@@ -13,7 +13,7 @@ the same kind of hint in the status line instead, at no token cost.
 Coaching notes are off by default. Turn them on with:
 
 ```
-claude-token-lens capture enable coaching_notes
+claudeglass capture enable coaching_notes
 ```
 
 or on the dashboard's Setup › Capture page. They run at any capture
@@ -26,7 +26,7 @@ out.
 
 ## The hints
 
-Each note starts `tl-coach v1 <hint>`, so Token Lens can find it in your
+Each note starts `tl-coach v1 <hint>`, so ClaudeGlass can find it in your
 transcripts again and measure what it cost. A note never carries a path,
 a command or your words: only token counts, an idle time and an agent
 type's name.
@@ -53,7 +53,7 @@ from 100,000 to 150,000 tokens, say). `split_run` rests per run.
 
 Two hints depend on how you work. The dashboard's service works them out
 once a day, from a report of your last 30 days across every project, and
-writes them to `coaching.json` in Token Lens's data folder for the hook
+writes them to `coaching.json` in ClaudeGlass's data folder for the hook
 to read:
 
 - **Split points.** An agent type gets the `split_run` hint only when the
@@ -65,7 +65,7 @@ to read:
   answers say your builds relied on the discussion before the plan. Its
   threshold is the tip's own, `plan_handoff_min_dropped_tokens`.
 
-Without the service, `claude-token-lens capture refresh` works the file
+Without the service, `claudeglass capture refresh` works the file
 out now. Until there is one, no agent type gets the split hint and the
 plan hint is on. `capture status` says what the file holds.
 

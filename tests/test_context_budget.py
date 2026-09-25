@@ -1,5 +1,5 @@
 """Tests for S1-context-budget's context-budget analytics
-(src/claude_token_lens/context_budget.py).
+(src/claudeglass/context_budget.py).
 
 Fixtures are synthetic, built at test time via ``tests/helpers`` (matching
 this codebase's established convention -- see e.g. ``test_compaction.py``'s
@@ -13,11 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import context_budget, statusline
-from claude_token_lens.model import TranscriptMeta
-from claude_token_lens.parse import parse_transcript
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.snapshots import Snapshot
+from claudeglass import context_budget, statusline
+from claudeglass.model import TranscriptMeta
+from claudeglass.parse import parse_transcript
+from claudeglass.pricing import load_pricing
+from claudeglass.snapshots import Snapshot
 
 PRICING = load_pricing()
 
@@ -481,7 +481,7 @@ def test_load_context_window_rows_tolerates_old_format_rows(tmp_path):
     ``log_usage.append_rows`` (6 columns, no trailing context_window
     fields) must be tolerated, not raise -- it simply carries no
     context-window rows."""
-    from claude_token_lens.tools import log_usage
+    from claudeglass.tools import log_usage
 
     csv_path = tmp_path / "usage-log.csv"
     log_usage.append_rows(
@@ -533,7 +533,7 @@ def test_real_fixture_renders_without_error():
 
 
 def test_baseline_table_finds_the_snapshot_by_its_hashed_project_key(tmp_path):
-    from claude_token_lens import snapshots as snap_mod
+    from claudeglass import snapshots as snap_mod
 
     top = _build_session(tmp_path, "s1", session_id="sess_1", baseline_cache_creation=50_000)
     stats = context_budget.ContextBudgetStats()

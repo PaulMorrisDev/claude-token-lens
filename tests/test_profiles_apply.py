@@ -22,10 +22,10 @@ import pytest
 
 from helpers import assert_privacy
 
-from claude_token_lens.profiles import apply as apply_mod
-from claude_token_lens.profiles.frontmatter import parse_frontmatter
-from claude_token_lens.profiles.schema import load_dict
-from claude_token_lens.snapshots import Snapshot
+from claudeglass.profiles import apply as apply_mod
+from claudeglass.profiles.frontmatter import parse_frontmatter
+from claudeglass.profiles.schema import load_dict
+from claudeglass.snapshots import Snapshot
 
 
 def _profile(**overrides):
@@ -62,7 +62,7 @@ def _init_git_repo_with_file(project: Path, rel_path: str, content: str) -> None
 def test_plan_apply_user_scope_targets_home_settings(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     plan = apply_mod.plan_apply(_profile(), scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root)
     settings_action = next(a for a in plan.actions if a.kind == "settings")
     assert settings_action.path == claude_root / "settings.json"
@@ -72,7 +72,7 @@ def test_plan_apply_project_local_scope_targets_settings_local(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
     project = tmp_path / "proj"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     plan = apply_mod.plan_apply(
         _profile(), scope="project-local", project_path=project, config_dir=config_dir, claude_root=claude_root
     )
@@ -84,7 +84,7 @@ def test_plan_apply_repo_scope_targets_shared_settings(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
     project = tmp_path / "proj"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     plan = apply_mod.plan_apply(_profile(), scope="repo", project_path=project, config_dir=config_dir, claude_root=claude_root)
     settings_action = next(a for a in plan.actions if a.kind == "settings")
     assert settings_action.path == project / ".claude" / "settings.json"
@@ -93,7 +93,7 @@ def test_plan_apply_repo_scope_targets_shared_settings(tmp_path):
 def test_plan_apply_rejects_unknown_scope(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     with pytest.raises(ValueError):
         apply_mod.plan_apply(_profile(), scope="not-a-scope", project_path=None, config_dir=config_dir, claude_root=claude_root)
 
@@ -101,7 +101,7 @@ def test_plan_apply_rejects_unknown_scope(tmp_path):
 def test_plan_apply_project_scope_without_project_path_raises(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     with pytest.raises(ValueError):
         apply_mod.plan_apply(_profile(), scope="repo", project_path=None, config_dir=config_dir, claude_root=claude_root)
 
@@ -123,7 +123,7 @@ def test_plan_apply_diff_text_reflects_the_real_file_not_a_stale_snapshot(tmp_pa
     diff must show the real current value, never "(unset)"."""
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     agents_dir = claude_root / "agents"
     agents_dir.mkdir(parents=True)
     (agents_dir / "reviewer.md").write_text(
@@ -149,7 +149,7 @@ def test_plan_apply_diff_text_equals_the_diff_of_a_real_apply(tmp_path):
     exact same starting state."""
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     claude_root.mkdir(parents=True)
     settings_path = claude_root / "settings.json"
     settings_path.write_text('{\n  "effortLevel": "medium"\n}\n', encoding="utf-8")
@@ -180,7 +180,7 @@ def test_plan_apply_diff_text_equals_the_diff_of_a_real_apply(tmp_path):
 def test_plan_apply_diff_text_is_privacy_clean_without_project_path(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     profile = _profile(settings={"effortLevel": "high"}, agents={"reviewer": {"effort": "high"}})
     for scope in ("user", "project-local", "repo"):
         project_path = tmp_path / "proj" if scope != "user" else None
@@ -199,7 +199,7 @@ def test_apply_then_revert_restores_byte_identical_content(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
     project = tmp_path / "proj"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     agents_dir = project / ".claude" / "agents"
     agents_dir.mkdir(parents=True)
 
@@ -248,7 +248,7 @@ def test_apply_then_revert_restores_byte_identical_content(tmp_path):
 def test_apply_then_revert_deletes_files_that_did_not_exist_before(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
 
     profile = _profile(settings={"effortLevel": "high"})
     plan = apply_mod.plan_apply(profile, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root)
@@ -267,7 +267,7 @@ def test_apply_then_revert_deletes_files_that_did_not_exist_before(tmp_path):
 
 
 def test_revert_raises_for_unknown_timestamp(tmp_path):
-    config_dir = tmp_path / "home" / ".claude" / "token-lens"
+    config_dir = tmp_path / "home" / ".claude" / "claudeglass"
     with pytest.raises(apply_mod.ApplyError):
         apply_mod.revert("20200101T000000Z", config_dir=config_dir)
 
@@ -276,7 +276,7 @@ def test_execute_raises_and_writes_nothing_when_plan_is_blocked(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
     project = tmp_path / "proj"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     _init_git_repo_with_file(project, ".claude/settings.json", "{}\n")
 
     profile = _profile(settings={"effortLevel": "high"})
@@ -297,7 +297,7 @@ def test_plan_apply_blocks_tracked_settings_file(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
     project = tmp_path / "proj"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     _init_git_repo_with_file(project, ".claude/settings.json", "{}\n")
 
     profile = _profile(settings={"effortLevel": "high"})
@@ -309,7 +309,7 @@ def test_allow_tracked_permits_writing_a_tracked_settings_file(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
     project = tmp_path / "proj"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     _init_git_repo_with_file(project, ".claude/settings.json", "{}\n")
 
     profile = _profile(settings={"effortLevel": "high"})
@@ -331,7 +331,7 @@ def test_plan_apply_blocks_tracked_settings_file_at_user_scope(tmp_path):
     directly under the tracked Claude root, no project involved)."""
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     _init_git_repo_with_file(claude_root, "settings.json", "{}\n")
 
     profile = _profile(settings={"effortLevel": "high"})
@@ -357,7 +357,7 @@ def test_plan_apply_blocks_tracked_agent_file(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
     project = tmp_path / "proj"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     _init_git_repo_with_file(
         project, ".claude/agents/reviewer.md", "---\neffort: low\n---\n\nBody.\n"
     )
@@ -390,7 +390,7 @@ def test_plan_apply_blocks_missing_agent_file(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
     project = tmp_path / "proj"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     (project / ".claude" / "agents").mkdir(parents=True)
 
     profile = _profile(settings={}, agents={"ghost": {"model": "opus"}})
@@ -405,7 +405,7 @@ def test_force_creates_missing_agent_file_from_scratch(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
     project = tmp_path / "proj"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     (project / ".claude" / "agents").mkdir(parents=True)
 
     profile = _profile(settings={}, agents={"ghost": {"model": "opus"}})
@@ -426,7 +426,7 @@ def test_force_does_not_affect_allow_tracked(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
     project = tmp_path / "proj"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     _init_git_repo_with_file(project, ".claude/settings.json", "{}\n")
 
     profile = _profile(settings={"effortLevel": "high"})
@@ -444,7 +444,7 @@ def test_force_does_not_affect_allow_tracked(tmp_path):
 def test_managed_settings_key_is_excluded_and_reported(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     profile = _profile(settings={"effortLevel": "high", "outputStyle": "concise"})
     snapshot = _snapshot(managed_keys=["effortLevel"])
 
@@ -462,7 +462,7 @@ def test_managed_agent_key_is_excluded_via_agents_wildcard(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
     project = tmp_path / "proj"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     agents_dir = project / ".claude" / "agents"
     agents_dir.mkdir(parents=True)
     (agents_dir / "reviewer.md").write_text("---\nmodel: opus\n---\n", encoding="utf-8")
@@ -488,7 +488,7 @@ def test_managed_env_block_excludes_all_env_changes(tmp_path):
     # settings key, e.g. "model", is all-or-nothing too).
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     profile = _profile(
         settings={}, env={"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m", "MAX_THINKING_TOKENS": "1024"}
     )
@@ -513,7 +513,7 @@ def test_env_entries_are_merged_into_the_settings_files_env_object(tmp_path):
     (claude_root / "settings.json").write_text(
         json.dumps({"model": "opus", "env": {"SOME_OTHER_VAR": "keep-me"}}), encoding="utf-8"
     )
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     profile = _profile(
         settings={},
         env={"MAX_THINKING_TOKENS": "1024", "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"},
@@ -544,7 +544,7 @@ def test_env_entries_are_merged_into_the_settings_files_env_object(tmp_path):
 def test_overridden_warns_when_a_higher_layer_already_supplies_a_settings_key(tmp_path):
     home = tmp_path / "home"
     project = tmp_path / "proj"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     claude_root = home / ".claude"
     (project / ".claude").mkdir(parents=True)
     profile = _profile(settings={"model": "haiku"})
@@ -570,7 +570,7 @@ def test_overridden_warns_when_a_higher_layer_already_supplies_a_settings_key(tm
 
 def test_overridden_warns_for_an_env_key_via_its_own_provenance_field(tmp_path):
     home = tmp_path / "home"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     claude_root = home / ".claude"
     profile = _profile(settings={}, env={"ENABLE_TOOL_SEARCH": "true"})
     # env provenance lives in a different snapshot field than settings
@@ -585,7 +585,7 @@ def test_overridden_warns_for_an_env_key_via_its_own_provenance_field(tmp_path):
 
 def test_overridden_is_empty_without_a_snapshot(tmp_path):
     home = tmp_path / "home"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     claude_root = home / ".claude"
     profile = _profile(settings={"model": "haiku"}, env={"ENABLE_TOOL_SEARCH": "true"})
     plan = apply_mod.plan_apply(
@@ -602,7 +602,7 @@ def test_overridden_is_empty_without_a_snapshot(tmp_path):
 def test_plan_apply_raises_on_unparseable_existing_settings_json(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     settings_path = claude_root / "settings.json"
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text("not json at all", encoding="utf-8")
@@ -620,7 +620,7 @@ def test_plan_apply_raises_on_unparseable_existing_settings_json(tmp_path):
 def test_write_launch_overlay_writes_only_the_overlay_file(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     profile = _profile(settings={"effortLevel": "high", "outputStyle": "concise"})
 
     path = apply_mod.write_launch_overlay(profile, config_dir=config_dir)
@@ -637,7 +637,7 @@ def test_write_launch_overlay_writes_only_the_overlay_file(tmp_path):
 def test_write_launch_overlay_excludes_managed_keys(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     profile = _profile(settings={"effortLevel": "high", "outputStyle": "concise"})
     path = apply_mod.write_launch_overlay(profile, config_dir=config_dir, managed_keys={"effortLevel"})
     written = json.loads(path.read_text(encoding="utf-8"))
@@ -649,7 +649,7 @@ def test_write_launch_overlay_includes_env_entries(tmp_path):
     # file, so a profile's env entries fold into its own "env" object the
     # same way plan_apply folds them into a real settings.json.
     home = tmp_path / "home"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     profile = _profile(settings={"effortLevel": "high"}, env={"ENABLE_TOOL_SEARCH": "true"})
     path = apply_mod.write_launch_overlay(profile, config_dir=config_dir)
     written = json.loads(path.read_text(encoding="utf-8"))
@@ -658,7 +658,7 @@ def test_write_launch_overlay_includes_env_entries(tmp_path):
 
 def test_write_launch_overlay_excludes_env_when_env_block_is_managed(tmp_path):
     home = tmp_path / "home"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     profile = _profile(settings={"effortLevel": "high"}, env={"ENABLE_TOOL_SEARCH": "true"})
     path = apply_mod.write_launch_overlay(profile, config_dir=config_dir, managed_keys={"env"})
     written = json.loads(path.read_text(encoding="utf-8"))
@@ -671,14 +671,14 @@ def test_write_launch_overlay_excludes_env_when_env_block_is_managed(tmp_path):
 
 
 def test_list_backups_empty_when_no_backups_dir(tmp_path):
-    config_dir = tmp_path / "home" / ".claude" / "token-lens"
+    config_dir = tmp_path / "home" / ".claude" / "claudeglass"
     assert apply_mod.list_backups(config_dir) == []
 
 
 def test_list_backups_reports_ts_profile_scope_and_file_count(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
 
     profile_a = _profile(settings={"effortLevel": "high"})
     plan_a = apply_mod.plan_apply(profile_a, scope="user", project_path=None, config_dir=config_dir, claude_root=claude_root)
@@ -713,9 +713,9 @@ def test_execute_avoids_backup_collision_within_the_same_second(tmp_path, monkey
     module's ``execute()`` disambiguates against."""
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
 
-    import claude_token_lens.profiles.apply as apply_module
+    import claudeglass.profiles.apply as apply_module
 
     class _FrozenDatetime(apply_module.datetime):
         @classmethod
@@ -750,7 +750,7 @@ def test_execute_avoids_backup_collision_within_the_same_second(tmp_path, monkey
 
 def test_manifest_records_changes_and_revert_refuses_edited_file(tmp_path):
     claude_root = tmp_path / "home" / ".claude"
-    config_dir = claude_root / "token-lens"
+    config_dir = claude_root / "claudeglass"
     claude_root.mkdir(parents=True)
     settings = claude_root / "settings.json"
     settings.write_text('{"effortLevel": "low", "theme": "dark"}', encoding="utf-8")
@@ -792,7 +792,7 @@ def test_revert_of_an_old_manifest_without_hashes_still_works(tmp_path):
 
 
 def test_list_backups_skips_unparseable_manifest(tmp_path):
-    config_dir = tmp_path / "home" / ".claude" / "token-lens"
+    config_dir = tmp_path / "home" / ".claude" / "claudeglass"
     bad_dir = config_dir / "backups" / "20260101T000000Z"
     bad_dir.mkdir(parents=True)
     (bad_dir / "manifest.json").write_text("not json", encoding="utf-8")
@@ -809,7 +809,7 @@ def test_apply_result_paths_are_all_under_caller_supplied_roots(tmp_path):
     home = tmp_path / "home"
     claude_root = home / ".claude"
     project = tmp_path / "proj"
-    config_dir = home / ".claude" / "token-lens"
+    config_dir = home / ".claude" / "claudeglass"
     (project / ".claude" / "agents").mkdir(parents=True)
 
     profile = _profile(settings={"effortLevel": "high"})
@@ -829,7 +829,7 @@ def test_map_settings_merge_by_name_and_revert_cleanly(tmp_path):
     # profile naming one entry changes that entry and keeps the rest.
     home = tmp_path / "home"
     claude_root = home / ".claude"
-    config_dir = claude_root / "token-lens"
+    config_dir = claude_root / "claudeglass"
     claude_root.mkdir(parents=True)
     settings_path = claude_root / "settings.json"
     settings_path.write_text(

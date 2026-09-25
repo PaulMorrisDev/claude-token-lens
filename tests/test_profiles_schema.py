@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import ttl
-from claude_token_lens.profiles.schema import (
+from claudeglass import ttl
+from claudeglass.profiles.schema import (
     AGENT_ALLOWLIST,
     ARCHETYPES,
     ENV_ALLOWLIST,
@@ -28,7 +28,7 @@ from claude_token_lens.profiles.schema import (
     validate,
 )
 
-RECOMMEND_PY = Path(__file__).resolve().parent.parent / "src" / "claude_token_lens" / "recommend.py"
+RECOMMEND_PY = Path(__file__).resolve().parent.parent / "src" / "claudeglass" / "recommend.py"
 
 
 def _valid_doc(**overrides) -> dict:

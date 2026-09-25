@@ -10,9 +10,11 @@ Writes two folders under ``OUT_DIR``, neither of which touches your real
 
 - ``projects/``: three made-up projects (``C--work-acme-shop``,
   ``C--work-orbit-api`` and ``C--work-lumen-docs``) with a month of
-  sessions. The sessions mix Opus, Sonnet and Haiku, launch Explore and
-  general-purpose subagents, rebuild their cache after long breaks, and
-  one of them has a conversation summary.
+  sessions. Each project keeps to one main model, except that
+  ``orbit-api`` moves from Opus to Sonnet halfway through (the one model
+  change the dashboard marks). The sessions launch Explore (Haiku) and
+  general-purpose (Sonnet) subagents, rebuild their cache after long
+  breaks, and one of them has a conversation summary.
 - ``config/``: a ``config.toml`` with ``billing = "subscription"`` and a
   ``usage-log.csv`` whose weekly and 5-hour readings rise with the list
   price of the turns in between, so the dashboard can show amounts as a
@@ -21,11 +23,11 @@ Writes two folders under ``OUT_DIR``, neither of which touches your real
 Every prompt, file name and number is made up; the output is the same
 for the same ``--seed`` and ``--now``. Point a scratch dashboard at it::
 
-    python -m claude_token_lens serve --port 8792 \\
+    python -m claudeglass serve --port 8792 \\
         --projects-root OUT_DIR/projects --config-dir OUT_DIR/config \\
         --store OUT_DIR/service.db
 
-Set ``CLAUDE_TOKEN_LENS_COMMAND=python -m claude_token_lens`` where it
+Set ``CLAUDEGLASS_COMMAND=python -m claudeglass`` where it
 runs, so the commands on the page don't show your Python's full path.
 The README's images are ``#/overview?w=30`` at 1280x800, and the top
 card on ``#/actions/recommendations?w=30`` cropped from its title to
@@ -74,6 +76,9 @@ class Project:
     weight: float
     prompts: tuple[str, ...]
     files: tuple[str, ...]
+    #: The main model, and the one it moves to halfway through, if any.
+    model: str = OPUS
+    later_model: str | None = None
 
 
 PROJECTS = (
@@ -103,6 +108,7 @@ PROJECTS = (
             "Upgrade the HTTP client and fix what breaks",
         ),
         files=("api/routes/public.py", "jobs/nightly_import.py", "db/migrations/0042_bookings.py", "api/auth.py"),
+        later_model=SONNET,
     ),
     Project(
         slug="C--work-lumen-docs",
@@ -114,6 +120,7 @@ PROJECTS = (
             "Write a page on configuring webhooks",
         ),
         files=("guides/getting-started.md", "guides/webhooks.md", "guides/index.md"),
+        model=SONNET,
     ),
 )
 
@@ -299,8 +306,7 @@ def _compact(rng: random.Random, s: Session) -> None:
     s.context = 0
 
 
-def _session(rng: random.Random, project: Project, start: datetime, *, long: bool) -> Session:
-    model = OPUS if rng.random() < 0.75 else SONNET
+def _session(rng: random.Random, project: Project, start: datetime, *, long: bool, model: str) -> Session:
     s = Session(session_id=_uuid(rng), project=project, model=model, clock=Clock(start))
     prompts = rng.sample(project.prompts, k=min(len(project.prompts), rng.randint(2, 4)))
     for prompt in prompts:
@@ -368,7 +374,8 @@ def build_projects(root: Path, *, days: int, now: datetime, rng: random.Random) 
             project = rng.choices(PROJECTS, weights=[p.weight for p in PROJECTS])[0]
             long = not long_done and d > days // 2 and project is PROJECTS[0]
             long_done = long_done or long
-            s = _session(rng, project, start, long=long)
+            later = project.later_model is not None and d >= days // 2
+            s = _session(rng, project, start, long=long, model=project.later_model if later else project.model)
             if s.clock.now > now:
                 break
             sessions.append(s)
@@ -386,9 +393,9 @@ def build_usage_log(config_dir: Path, projects_root: Path, *, now: datetime, rng
     Prices come from the dashboard's own parser and rate card, so the
     readings line up with what it will fit against. Returns the number
     of rows written."""
-    from claude_token_lens import elasticity, pricing
-    from claude_token_lens.corpus import load_corpus
-    from claude_token_lens.tools.log_usage import CSV_FIELDS
+    from claudeglass import elasticity, pricing
+    from claudeglass.corpus import load_corpus
+    from claudeglass.tools.log_usage import CSV_FIELDS
 
     rates = pricing.load_pricing(config_dir=config_dir)
     loaded = load_corpus(sorted(p for p in projects_root.iterdir() if p.is_dir()))

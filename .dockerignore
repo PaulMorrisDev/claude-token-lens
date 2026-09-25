@@ -19,7 +19,7 @@ build/
 dist/
 *.pyz
 
-.token-lens-cache/
+.claudeglass-cache/
 
 Dockerfile
 docker-compose.yml

@@ -1,6 +1,6 @@
 """Tests for WP3's notification-vs-attachment precedence, the
 co-occurrence table, and the over-representation arithmetic in the
-primary-cause table (``src/claude_token_lens/recache.py``).
+primary-cause table (``src/claudeglass/recache.py``).
 
 Complements ``test_recache.py``'s single regression test (notification
 beats a trailing attachment through the real parser) with direct
@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-from claude_token_lens import events, recache
-from claude_token_lens.model import EventKind, Table, TranscriptMeta, TranscriptResult, Turn
-from claude_token_lens.pricing import load_pricing
+from claudeglass import events, recache
+from claudeglass.model import EventKind, Table, TranscriptMeta, TranscriptResult, Turn
+from claudeglass.pricing import load_pricing
 
 from helpers import attachment_line, system_line, user_str_line
 

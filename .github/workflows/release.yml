@@ -22,10 +22,33 @@ jobs:
         run: python scripts/build-pyz.py
 
       - name: Smoke-test the .pyz
-        run: python dist/claude-token-lens.pyz --version
+        run: python dist/claudeglass.pyz --version
 
       - name: Attach to the GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          files: dist/claude-token-lens.pyz
+          files: dist/claudeglass.pyz
           generate_release_notes: true
+
+  pypi:
+    runs-on: ubuntu-latest
+    # PyPI's trusted publisher for claudeglass names this workflow and
+    # environment: no token is stored anywhere.
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the sdist and wheel
+        run: |
+          python -m pip install build
+          python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

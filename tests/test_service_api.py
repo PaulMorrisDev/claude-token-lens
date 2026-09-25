@@ -2,7 +2,7 @@
 spin up a real ``ThreadingHTTPServer`` against a temp SQLite ``Store``
 seeded via ``Store``'s own writers (mirroring
 ``tests/test_service_store.py``'s ``_seed`` convention) and a real
-:class:`~claude_token_lens.corpus.Corpus` built the same way
+:class:`~claudeglass.corpus.Corpus` built the same way
 ``tests/test_cli.py``'s ``_write_project``/``corpus.load_corpus`` do,
 then exercise every ``/api/*`` route ``docs/api.md`` documents.
 
@@ -11,8 +11,8 @@ exist in every checkout this suite runs from -- ``service/api.py``'s
 own module docstring documents importing it lazily, inside the
 function that needs it, for exactly this reason. This file never
 imports the real thing: :func:`_install_fake_rebuild` installs a
-minimal stand-in ``claude_token_lens.service.rebuild`` module (both in
-``sys.modules`` and as a ``claude_token_lens.service`` package
+minimal stand-in ``claudeglass.service.rebuild`` module (both in
+``sys.modules`` and as a ``claudeglass.service`` package
 attribute, so ``api.py``'s ``from . import rebuild`` resolves it either
 way) whose ``corpus_from_store`` simply returns the pre-built
 ``Corpus`` regardless of its ``days``/``since``/``until``/``window_by``
@@ -34,18 +34,18 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import corpus as corpus_mod
-from claude_token_lens.config import ConfigError, load_config, load_session_overrides
-from claude_token_lens.fixes import PROMPT_RESTART
-from claude_token_lens.pricing import load_pricing
-from claude_token_lens.profiles import catalogue as profile_catalogue
-from claude_token_lens.profiles import schema as profile_schema
-from claude_token_lens.render.json_out import render_json
-from claude_token_lens.report import build_report
-from claude_token_lens.service import api as service_api
-from claude_token_lens.service.contracts import CodeState, ServeOptions, WatcherState, WatcherStats
-from claude_token_lens.service.store import Store
-from claude_token_lens.snapshots import Snapshot
+from claudeglass import corpus as corpus_mod
+from claudeglass.config import ConfigError, load_config, load_session_overrides
+from claudeglass.fixes import PROMPT_RESTART
+from claudeglass.pricing import load_pricing
+from claudeglass.profiles import catalogue as profile_catalogue
+from claudeglass.profiles import schema as profile_schema
+from claudeglass.render.json_out import render_json
+from claudeglass.report import build_report
+from claudeglass.service import api as service_api
+from claudeglass.service.contracts import CodeState, ServeOptions, WatcherState, WatcherStats
+from claudeglass.service.store import Store
+from claudeglass.snapshots import Snapshot
 
 from helpers import assert_privacy, turn_line, write_jsonl
 
@@ -58,7 +58,7 @@ from helpers import assert_privacy, turn_line, write_jsonl
 _FAKE_PATH = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a\session-a.jsonl"
 _FAKE_SUB_PATH = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a\session-a-agent-1.jsonl"
 _FAKE_ROOT = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a"
-_FAKE_PROFILE_PATH = r"C:\Users\definitely-not-a-real-person\.claude\token-lens\profiles\p1.toml"
+_FAKE_PROFILE_PATH = r"C:\Users\definitely-not-a-real-person\.claude\claudeglass\profiles\p1.toml"
 _LEAK_NEEDLES = (_FAKE_PATH, _FAKE_ROOT, _FAKE_PROFILE_PATH, "definitely-not-a-real-person")
 
 
@@ -165,9 +165,9 @@ def _seed_store(store: Store, corpus: corpus_mod.Corpus) -> str:
 
 
 def _install_fake_rebuild(monkeypatch, corpus: corpus_mod.Corpus) -> None:
-    import claude_token_lens.service as service_pkg
+    import claudeglass.service as service_pkg
 
-    fake = types.ModuleType("claude_token_lens.service.rebuild")
+    fake = types.ModuleType("claudeglass.service.rebuild")
 
     def corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         # project_slugs (additive, project-filter work): the one argument
@@ -192,7 +192,7 @@ def _install_fake_rebuild(monkeypatch, corpus: corpus_mod.Corpus) -> None:
     # Both forms so `from . import rebuild` resolves it regardless of
     # whether Python's import machinery checks the package attribute or
     # sys.modules first -- see this module's own docstring.
-    monkeypatch.setitem(sys.modules, "claude_token_lens.service.rebuild", fake)
+    monkeypatch.setitem(sys.modules, "claudeglass.service.rebuild", fake)
     monkeypatch.setattr(service_pkg, "rebuild", fake, raising=False)
 
 
@@ -473,7 +473,7 @@ def test_health_outdated_comes_before_every_other_status(state):
     assert status == "outdated"
     assert "changed on disk at 11:58 UTC" in message
     assert f"({service_api._TOOL_VERSION} is running, 9.9.9 is on disk)" in message
-    assert "claude-token-lens install-service" in message
+    assert "claudeglass install-service" in message
 
 
 def test_health_outdated_says_it_restarts_by_itself_with_exit_on_code_change():
@@ -482,7 +482,7 @@ def test_health_outdated_says_it_restarts_by_itself_with_exit_on_code_change():
         None, None, poll_interval_s=30.0, now=_NOW, code=same_version, restarts_itself=True
     )
     assert "restarts by itself" in message
-    assert "claude-token-lens install-service" in message
+    assert "claudeglass install-service" in message
     assert "is on disk" not in message  # no version to tell apart
 
 
@@ -682,8 +682,8 @@ def test_session_detail_has_no_turn_series_without_a_stored_digest(server):
 def test_session_detail_turn_series_and_markers(tmp_path, monkeypatch):
     # Deliverable 1.g: GET /api/session/<id> exposes turn_series/markers
     # sourced from the top-level transcript's stored digest.
-    from claude_token_lens.cache import encode_result
-    from claude_token_lens.model import EventKind, Turn, TranscriptMeta, TranscriptResult
+    from claudeglass.cache import encode_result
+    from claudeglass.model import EventKind, Turn, TranscriptMeta, TranscriptResult
 
     corpus = _build_corpus(tmp_path)
     _install_fake_rebuild(monkeypatch, corpus)
@@ -737,8 +737,8 @@ def test_session_detail_limit_markers(tmp_path, monkeypatch):
     # v3-limits wiring: GET /api/session/<id> exposes limit_markers
     # (limits.limit_markers) alongside turn_series/markers, sourced from
     # the same stored top-level transcript digest.
-    from claude_token_lens.cache import encode_result
-    from claude_token_lens.model import Event, EventKind, Turn, TranscriptMeta, TranscriptResult
+    from claudeglass.cache import encode_result
+    from claudeglass.model import Event, EventKind, Turn, TranscriptMeta, TranscriptResult
 
     corpus = _build_corpus(tmp_path)
     _install_fake_rebuild(monkeypatch, corpus)
@@ -1012,8 +1012,8 @@ def test_profile_diff_for_catalogue_profile_against_latest_snapshot(server):
     assert data["scope"] == "user"
     assert data["notes"] == []
     assert isinstance(data["settings"], list) and data["settings"]
-    assert "claude-token-lens apply interactive-chat" in data["apply_command"]
-    assert data["launch_command"] == "claude-token-lens apply interactive-chat --launch"
+    assert "claudeglass apply interactive-chat" in data["apply_command"]
+    assert data["launch_command"] == "claudeglass apply interactive-chat --launch"
     assert data["prompt"].endswith(PROMPT_RESTART)
     assert_privacy(body)
     _assert_no_leak(json.dumps(body).encode("utf-8"))
@@ -1315,7 +1315,7 @@ def test_report_backed_routes_carry_lead_columns(server):
     """``Table.lead_columns`` (display only) reaches the dashboard the
     same way ``value_labels`` does: in each section route's tables and in
     ``/api/report.json``."""
-    from claude_token_lens.helptext import TABLE_COPY
+    from claudeglass.helptext import TABLE_COPY
 
     resp, body = server.get_json("/api/waste")
     assert resp.status == 200
@@ -1335,7 +1335,7 @@ def test_report_keeps_each_snapshots_own_project(server):
     a schema-2 snapshot names its own project, and the report groups by
     that, as the CLI's does. Overwriting it put every project under
     "(unknown project)"."""
-    from claude_token_lens.service.store import GLOBAL_PROJECT_SLUG
+    from claudeglass.service.store import GLOBAL_PROJECT_SLUG
 
     for ts, slug in (("2026-09-19T12:00:00Z", "slug:aaaaaaaaaaaa"), ("2026-09-19T13:00:00Z", "slug:bbbbbbbbbbbb")):
         server.store.upsert_snapshot(
@@ -1662,11 +1662,11 @@ def test_report_json_forwards_since_until_to_rebuild_and_ignores_default_window(
         calls.append({"days": days, "since": since, "until": until, "window_by": window_by})
         return real_corpus
 
-    import claude_token_lens.service as service_pkg
+    import claudeglass.service as service_pkg
 
-    fake = types.ModuleType("claude_token_lens.service.rebuild")
+    fake = types.ModuleType("claudeglass.service.rebuild")
     fake.corpus_from_store = recording_corpus_from_store
-    monkeypatch.setitem(sys.modules, "claude_token_lens.service.rebuild", fake)
+    monkeypatch.setitem(sys.modules, "claudeglass.service.rebuild", fake)
     monkeypatch.setattr(service_pkg, "rebuild", fake, raising=False)
 
     resp, raw = server.request(
@@ -1693,11 +1693,11 @@ def test_report_json_since_until_is_a_separate_cache_key_from_window_days(server
         calls["n"] += 1
         return real_corpus
 
-    import claude_token_lens.service as service_pkg
+    import claudeglass.service as service_pkg
 
-    fake = types.ModuleType("claude_token_lens.service.rebuild")
+    fake = types.ModuleType("claudeglass.service.rebuild")
     fake.corpus_from_store = counting_corpus_from_store
-    monkeypatch.setitem(sys.modules, "claude_token_lens.service.rebuild", fake)
+    monkeypatch.setitem(sys.modules, "claudeglass.service.rebuild", fake)
     monkeypatch.setattr(service_pkg, "rebuild", fake, raising=False)
 
     resp1, _ = server.request("GET", "/api/report.json")  # default window_days=30
@@ -1715,11 +1715,11 @@ def test_report_json_is_memoized_per_window(server, monkeypatch):
         calls["n"] += 1
         return real_corpus
 
-    import claude_token_lens.service as service_pkg
+    import claudeglass.service as service_pkg
 
-    fake = types.ModuleType("claude_token_lens.service.rebuild")
+    fake = types.ModuleType("claudeglass.service.rebuild")
     fake.corpus_from_store = counting_corpus_from_store
-    monkeypatch.setitem(sys.modules, "claude_token_lens.service.rebuild", fake)
+    monkeypatch.setitem(sys.modules, "claudeglass.service.rebuild", fake)
     monkeypatch.setattr(service_pkg, "rebuild", fake, raising=False)
 
     resp1, _ = server.request("GET", "/api/report.json")
@@ -1747,11 +1747,11 @@ def test_requests_for_a_window_already_being_built_share_that_build(server, monk
         release.wait(10)
         return real_corpus
 
-    import claude_token_lens.service as service_pkg
+    import claudeglass.service as service_pkg
 
-    fake = types.ModuleType("claude_token_lens.service.rebuild")
+    fake = types.ModuleType("claudeglass.service.rebuild")
     fake.corpus_from_store = slow_corpus_from_store
-    monkeypatch.setitem(sys.modules, "claude_token_lens.service.rebuild", fake)
+    monkeypatch.setitem(sys.modules, "claudeglass.service.rebuild", fake)
     monkeypatch.setattr(service_pkg, "rebuild", fake, raising=False)
 
     statuses = []
@@ -1785,11 +1785,11 @@ def test_report_json_cache_invalidates_when_store_change_token_changes(server, m
         calls["n"] += 1
         return real_corpus
 
-    import claude_token_lens.service as service_pkg
+    import claudeglass.service as service_pkg
 
-    fake = types.ModuleType("claude_token_lens.service.rebuild")
+    fake = types.ModuleType("claudeglass.service.rebuild")
     fake.corpus_from_store = counting_corpus_from_store
-    monkeypatch.setitem(sys.modules, "claude_token_lens.service.rebuild", fake)
+    monkeypatch.setitem(sys.modules, "claudeglass.service.rebuild", fake)
     monkeypatch.setattr(service_pkg, "rebuild", fake, raising=False)
 
     resp1, _ = server.request("GET", "/api/report.json")
@@ -1825,11 +1825,11 @@ def _count_builds(server, monkeypatch) -> dict:
         calls["n"] += 1
         return real_corpus
 
-    import claude_token_lens.service as service_pkg
+    import claudeglass.service as service_pkg
 
-    fake = types.ModuleType("claude_token_lens.service.rebuild")
+    fake = types.ModuleType("claudeglass.service.rebuild")
     fake.corpus_from_store = counting_corpus_from_store
-    monkeypatch.setitem(sys.modules, "claude_token_lens.service.rebuild", fake)
+    monkeypatch.setitem(sys.modules, "claudeglass.service.rebuild", fake)
     monkeypatch.setattr(service_pkg, "rebuild", fake, raising=False)
     return calls
 
@@ -2056,8 +2056,8 @@ def _raise_import_error(*args, **kwargs):
     # As a lazy import of a module changed on disk would: the message
     # names a local path, which must never reach the response.
     raise ImportError(
-        "cannot import name 'build_actions' from 'claude_token_lens.quick_actions' "
-        "(C:\\Users\\someone\\claude_token_lens\\quick_actions.py)"
+        "cannot import name 'build_actions' from 'claudeglass.quick_actions' "
+        "(C:\\Users\\someone\\claudeglass\\quick_actions.py)"
     )
 
 
@@ -2070,7 +2070,7 @@ def test_import_error_becomes_503_restart_needed(tmp_path, monkeypatch, error):
     def _raise(*_args, **_kwargs):
         if error is ImportError:
             _raise_import_error()
-        raise ModuleNotFoundError("No module named 'claude_token_lens.report_v2' (C:\\Users\\someone)")
+        raise ModuleNotFoundError("No module named 'claudeglass.report_v2' (C:\\Users\\someone)")
 
     watch = _FakeCodeWatch(_CHANGED)
     handle = _start_server(tmp_path, monkeypatch, code_watch=watch)
@@ -2083,7 +2083,7 @@ def test_import_error_becomes_503_restart_needed(tmp_path, monkeypatch, error):
         message = body["error"]["message"]
         assert "changed on disk since the dashboard started" in message
         assert f"({error.__name__})" in message
-        assert "claude-token-lens install-service" in message
+        assert "claudeglass install-service" in message
         assert "someone" not in message and "\\" not in message
         # The route asks the watch to look now, not at the next scan.
         assert watch.checks == 1
@@ -2100,8 +2100,8 @@ def test_import_error_without_a_seen_change_still_says_restart(server, monkeypat
     assert body["error"]["code"] == "restart_needed"
     message = body["error"]["message"]
     assert "couldn't be loaded (ImportError)" in message
-    assert "claude-token-lens install-service" in message
-    assert "reinstall Token Lens" in message
+    assert "claudeglass install-service" in message
+    assert "reinstall ClaudeGlass" in message
     assert "someone" not in message
 
 
@@ -2143,7 +2143,7 @@ def test_loopback_hosts_are_allowed(server, host):
 
 
 def test_allowed_host_names_add_specific_binds_and_extra_names():
-    from claude_token_lens.service.api import allowed_host_names
+    from claudeglass.service.api import allowed_host_names
 
     base = ServeOptions(projects_root=Path("p"), config_dir=Path("c"))
     assert "0.0.0.0" not in allowed_host_names(ServeOptions(projects_root=Path("p"), config_dir=Path("c"), bind="0.0.0.0"))
@@ -2344,8 +2344,8 @@ def test_impact_is_empty_without_changes_and_lists_an_apply(server):
     assert payload["data"]["changes"] == []
     assert payload["data"]["min_sessions"] >= 1
 
-    from claude_token_lens.profiles import apply as apply_mod
-    from claude_token_lens.profiles.schema import load_dict
+    from claudeglass.profiles import apply as apply_mod
+    from claudeglass.profiles.schema import load_dict
 
     config_dir = server.options.config_dir
     claude_root = config_dir.parent / "fake-claude"
@@ -2361,7 +2361,7 @@ def test_impact_is_empty_without_changes_and_lists_an_apply(server):
     assert change["enough"] is False and "so far" in change["verdict"]
     # P4 leftover: a structured gate alongside the prose verdict, for
     # the dashboard's emptyState() helper.
-    from claude_token_lens import impact as impact_mod
+    from claudeglass import impact as impact_mod
 
     assert change["gate"] == {"reason": "min_sessions", "have": 0, "need": impact_mod.MIN_SESSIONS}
     # Too few sessions since the change to say what it would have cost without it.
@@ -2375,7 +2375,7 @@ def test_impact_and_the_last_change_window_see_a_change_only_sessions_show(tmp_p
     impact card and starts the "since my last change" window."""
     from datetime import datetime, timedelta, timezone
 
-    from claude_token_lens.snapshots import snapshot_project_key
+    from claudeglass.snapshots import snapshot_project_key
 
     project_dir = tmp_path / "projects" / "proj-a"
     project_dir.mkdir(parents=True)
@@ -2409,8 +2409,8 @@ def test_impact_gate_is_null_once_both_sides_have_enough_sessions(server):
     ``min_sessions`` real sessions on each side, ``enough`` is true and
     ``gate`` -- unlike ``verdict``, which always has *some* text -- goes
     back to ``None`` rather than a stale or misleading reason."""
-    from claude_token_lens import impact as impact_mod
-    from claude_token_lens.service import api as service_api
+    from claudeglass import impact as impact_mod
+    from claudeglass.service import api as service_api
 
     before = impact_mod.MIN_SESSIONS
     after = impact_mod.MIN_SESSIONS
@@ -2433,9 +2433,9 @@ def test_backtest_is_empty_without_predictions(server):
 
 
 def test_backtest_lists_a_logged_prediction_after_a_matching_apply(server):
-    from claude_token_lens.profiles import apply as apply_mod
-    from claude_token_lens.profiles.schema import load_dict
-    from claude_token_lens.service.watcher import FileWatcher
+    from claudeglass.profiles import apply as apply_mod
+    from claudeglass.profiles.schema import load_dict
+    from claudeglass.service.watcher import FileWatcher
 
     resp, payload = server.post_json("/api/whatif", {"settings": {"model": "sonnet"}, "agents": {}, "log": True})
     assert resp.status == 200
@@ -2542,7 +2542,7 @@ def test_whatif_rejects_cross_site_posts(server):
 
 
 def test_whatif_without_log_flag_writes_no_prediction(server):
-    from claude_token_lens import config as config_mod
+    from claudeglass import config as config_mod
 
     resp, payload = server.post_json("/api/whatif", {"settings": {"model": "sonnet"}, "agents": {}})
     assert resp.status == 200
@@ -2550,7 +2550,7 @@ def test_whatif_without_log_flag_writes_no_prediction(server):
 
 
 def test_whatif_log_flag_appends_a_prediction_per_estimated_row(server):
-    from claude_token_lens import config as config_mod
+    from claudeglass import config as config_mod
 
     resp, payload = server.post_json(
         "/api/whatif", {"settings": {"model": "sonnet"}, "agents": {}, "log": True}
@@ -2567,7 +2567,7 @@ def test_whatif_log_flag_appends_a_prediction_per_estimated_row(server):
 
 
 def test_whatif_log_flag_skips_rows_that_could_not_be_estimated(server):
-    from claude_token_lens import config as config_mod
+    from claudeglass import config as config_mod
 
     resp, payload = server.post_json(
         "/api/whatif", {"settings": {"effortLevel": "medium"}, "agents": {}, "log": True}
@@ -2578,7 +2578,7 @@ def test_whatif_log_flag_skips_rows_that_could_not_be_estimated(server):
 
 
 def test_whatif_calibrates_once_three_predictions_for_the_key_are_judged(server):
-    from claude_token_lens import config as config_mod
+    from claudeglass import config as config_mod
 
     for i in range(3):
         pid = f"pred-{i}"
@@ -2605,7 +2605,7 @@ def test_whatif_calibrates_once_three_predictions_for_the_key_are_judged(server)
 
 
 def test_predictions_seen_marks_a_logged_prediction(server):
-    from claude_token_lens import config as config_mod
+    from claudeglass import config as config_mod
 
     prediction_id = config_mod.append_prediction_log(
         server.options.config_dir,
@@ -2689,7 +2689,7 @@ def test_setup_status_says_what_works_and_names_no_path(tmp_path, monkeypatch, r
         assert "http://" not in service["detail"]
         if registered is False:
             assert "cleanupPeriodDays" in service["detail"]
-            assert service["fix"] == "claude-token-lens install-service"
+            assert service["fix"] == "claudeglass install-service"
     finally:
         handle.close()
         handle.store.close()
@@ -2712,7 +2712,7 @@ def test_health_carries_capture_as_set(server):
 
 
 def test_capture_lists_every_metric_with_what_why_and_cost(server):
-    from claude_token_lens import capture_catalogue
+    from claudeglass import capture_catalogue
 
     resp, raw = server.request("GET", "/api/capture")
     assert resp.status == 200
@@ -2744,7 +2744,7 @@ def test_post_capture_saves_the_level_and_names_the_hooks_it_needs(server):
     assert (server.options.config_dir / "capture-log.jsonl").is_file()
     # settings.json runs no capture hook yet: the page says how to add them.
     assert data["hooks"]["ok"] is False
-    assert data["hooks"]["connect_command"] == "claude-token-lens capture connect"
+    assert data["hooks"]["connect_command"] == "claudeglass capture connect"
     task = next(row for s in data["sections"] for row in s["metrics"] if row["id"] == "task")
     assert task["on"] is True and task["needs_hook"] is True
     assert data["measured"]["sessions"] == 0
@@ -2767,7 +2767,7 @@ def test_post_capture_turning_on_with_no_until_gets_the_default_time_box(server)
     # must reach, via config.set_capture's own centralized logic.
     from datetime import datetime, timedelta, timezone
 
-    from claude_token_lens import capture_catalogue
+    from claudeglass import capture_catalogue
 
     resp, payload = server.post_json("/api/capture", {"level": "essentials"})
     assert resp.status == 200
@@ -2856,7 +2856,7 @@ def test_post_capture_that_cannot_be_saved_is_a_conflict_with_the_command(server
     resp, payload = server.post_json("/api/capture", {"level": "standard"})
     assert resp.status == 409
     assert payload["error"]["code"] == "conflict"
-    assert payload["error"]["commands"] == ["claude-token-lens capture level standard"]
+    assert payload["error"]["commands"] == ["claudeglass capture level standard"]
 
 
 def test_capture_routes_with_a_broken_config_are_conflicts(server):
@@ -2864,7 +2864,7 @@ def test_capture_routes_with_a_broken_config_are_conflicts(server):
     resp, raw = server.request("GET", "/api/capture")
     assert resp.status == 409
     _assert_no_leak(raw)
-    assert json.loads(raw)["error"]["commands"] == ["claude-token-lens capture status"]
+    assert json.loads(raw)["error"]["commands"] == ["claudeglass capture status"]
     resp, payload = server.post_json("/api/capture", {"level": "essentials"})
     assert resp.status == 409
     _resp, health = server.get_json("/api/health")
@@ -2900,7 +2900,7 @@ def test_report_meta_says_what_amounts_mean(server):
 def test_capture_replays_history_again_once_the_first_scan_finishes(tmp_path, monkeypatch):
     """A replay taken mid-scan is short of sessions, so it isn't kept for
     the usual 30 minutes: the first request after the scan replays again."""
-    from claude_token_lens import capture as capture_mod
+    from claudeglass import capture as capture_mod
 
     calls = []
     real_history = capture_mod.history
@@ -3000,15 +3000,15 @@ def test_capture_shows_feedback_counts_and_the_skill_install_note(server):
     assert data["feedback"]["skill"] == "missing" and data["feedback"]["ratings"] == 1
     assert [q["key"] for q in data["feedback"]["questions"]] == ["outcome", "slow", "worth", "helped"]
     skill = rows["feedback_skill"]
-    assert skill["needs_install"] is True and skill["install_command"] == "claude-token-lens capture feedback on"
+    assert skill["needs_install"] is True and skill["install_command"] == "claudeglass capture feedback on"
     assert skill["actual_label"] == "Over the last 14 days"
     assert rows["dashboard_rating"]["answers"] == 1 and rows["dashboard_rating"]["target"] == 10
     assert skill["install_note"] == "The /tl-feedback skill isn't installed"
-    assert "The /tl-feedback skill isn't installed: claude-token-lens capture feedback on" in data["banner"]["notes"]
+    assert "The /tl-feedback skill isn't installed: claudeglass capture feedback on" in data["banner"]["notes"]
     # No status line of this tool's in the (fake) settings.json.
-    assert rows["feedback_note"]["statusline_note"].startswith("Your status line isn't Token Lens's")
+    assert rows["feedback_note"]["statusline_note"].startswith("Your status line isn't ClaudeGlass's")
 
-    from claude_token_lens import footprint
+    from claudeglass import footprint
 
     root = os.environ["CLAUDE_CONFIG_DIR"]
     footprint.write_feedback_skill(root)

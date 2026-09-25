@@ -14,10 +14,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from claude_token_lens import capture_catalogue as cat
-from claude_token_lens import cli, discovery, hook_health, installer, setup_flow
-from claude_token_lens.config import ConfigError, check_config_values, feedback_ids, load_config, saved_billing, set_capture
-from claude_token_lens.fixes import RESTART_NOTE
+from claudeglass import capture_catalogue as cat
+from claudeglass import cli, discovery, hook_health, installer, setup_flow
+from claudeglass.config import ConfigError, check_config_values, feedback_ids, load_config, saved_billing, set_capture
+from claudeglass.fixes import RESTART_NOTE
 
 from helpers import assert_privacy_deep
 
@@ -36,7 +36,7 @@ def _claude_folder(tmp_path, monkeypatch):
 
 def _claude(tmp_path, settings=None):
     claude = tmp_path / "claude"
-    config_dir = claude / "token-lens"
+    config_dir = claude / "claudeglass"
     config_dir.mkdir(parents=True)
     if settings is not None:
         (claude / "settings.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
@@ -83,7 +83,7 @@ def test_the_default_path_asks_four_questions_then_sets_everything_up(tmp_path):
         "Go ahead? (d shows the exact changes) [Y/n/d]:",
         "Wrote config.toml",
         "Your setup",
-        "Check your setup any time: claude-token-lens status",
+        "Check your setup any time: claudeglass status",
     )
     # Nothing --advanced asks.
     assert "Time zone" not in out and "Metrics capture level:" not in out
@@ -139,7 +139,7 @@ def test_d_shows_the_exact_changes_and_n_writes_nothing(tmp_path):
     assert rc == 0
     assert "+++" in out and "SessionStart" in out
     assert out.count("Go ahead?") == 2
-    assert "Nothing was changed. Run 'claude-token-lens init' again when you're ready." in out
+    assert "Nothing was changed. Run 'claudeglass init' again when you're ready." in out
     assert (config_dir.parent / "settings.json").read_text(encoding="utf-8") == before
     assert list(config_dir.iterdir()) == []
 
@@ -168,7 +168,7 @@ def test_declining_to_connect_leaves_the_tips_question_out(tmp_path):
     assert rc == 0
     assert "Turn on sharper tips?" not in out
     assert "Sharper tips need the Claude Code connection, so they stay off." in out
-    assert "Connect to Claude Code: not now. Run 'claude-token-lens init --connect' to connect later." in out
+    assert "Connect to Claude Code: not now. Run 'claudeglass init --connect' to connect later." in out
     assert _settings(config_dir) == {}
 
 
@@ -222,7 +222,7 @@ def test_a_bad_capture_for_stops_init_before_anything_is_written(tmp_path):
         config_dir, "--non-interactive", "--no-install", "--capture-level", "essentials", "--capture-for", "soon"
     )
     assert rc == 2
-    assert "claude-token-lens init: --capture-for 'soon'" in out
+    assert "claudeglass init: --capture-for 'soon'" in out
     assert list(config_dir.iterdir()) == []
 
 
@@ -280,7 +280,7 @@ def test_a_dashboard_that_never_answers_is_waited_for_then_reported(tmp_path, mo
     assert rc == 0
     assert "Starting the dashboard... not answering yet: it can take a few seconds to start." in out
     assert sum(clock.slept) == pytest.approx(setup_flow.HEALTH_WAIT_S)
-    assert "Next: run 'claude-token-lens serve'" in out
+    assert "Next: run 'claudeglass serve'" in out
 
 
 def test_a_failed_install_is_reported_and_exits_2(tmp_path, monkeypatch):

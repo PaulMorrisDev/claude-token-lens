@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import cli
+from claudeglass import cli
 
 from helpers import turn_line, write_jsonl
 
@@ -37,10 +37,10 @@ def _capture_options(monkeypatch):
         captured["allow_remote"] = allow_remote
         return 0
 
-    fake_module = types.ModuleType("claude_token_lens.service.serve")
+    fake_module = types.ModuleType("claudeglass.service.serve")
     fake_module.run = fake_run
     fake_module.STORE_FILENAME = "service.db"
-    monkeypatch.setitem(sys.modules, "claude_token_lens.service.serve", fake_module)
+    monkeypatch.setitem(sys.modules, "claudeglass.service.serve", fake_module)
     return captured
 
 
@@ -327,7 +327,7 @@ def test_purge_deletes_the_store_flag_file_not_the_default(tmp_path: Path):
 
 
 def test_purge_refuses_while_a_serve_holds_the_store(tmp_path: Path, capsys):
-    from claude_token_lens.service.storelock import StoreLock
+    from claudeglass.service.storelock import StoreLock
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()

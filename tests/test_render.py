@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-from claude_token_lens.model import (
+from claudeglass.model import (
     Column,
     Diagnostics,
     PricingMeta,
@@ -22,10 +22,10 @@ from claude_token_lens.model import (
     Section,
     Table,
 )
-from claude_token_lens.render.csv_out import write_csv_dir
-from claude_token_lens.render.html import render_html
-from claude_token_lens.render.json_out import render_json
-from claude_token_lens.render.markdown import render_markdown
+from claudeglass.render.csv_out import write_csv_dir
+from claudeglass.render.html import render_html
+from claudeglass.render.json_out import render_json
+from claudeglass.render.markdown import render_markdown
 
 # A cell that must survive every renderer's escaping unscathed: markdown's
 # pipe/newline escaping and HTML's tag/ampersand escaping.
@@ -187,7 +187,7 @@ def _find_value(obj, target) -> bool:
 
 def test_markdown_has_title_and_section_headings(report_model):
     md = render_markdown(report_model)
-    assert md.startswith("# Claude token lens report")
+    assert md.startswith("# ClaudeGlass report")
     assert "## Usage" in md
     assert "## Agents" in md
     assert "### Overview" in md
@@ -429,7 +429,7 @@ def test_html_is_well_formed_top_level_structure(report_model):
     out = render_html(report_model)
     assert out.startswith("<!doctype html>")
     assert "<meta charset=\"utf-8\">" in out
-    assert "<title>Claude token lens report</title>" in out
+    assert "<title>ClaudeGlass report</title>" in out
     assert out.rstrip().endswith("</html>")
 
 
@@ -454,8 +454,8 @@ def test_same_numeric_cell_agrees_across_formats(report_model, tmp_path):
 
 
 def test_markdown_metric_table_groups_rows_and_formats_each_by_its_kind():
-    from claude_token_lens.model import Column, Table
-    from claude_token_lens.render.markdown import _render_table
+    from claudeglass.model import Column, Table
+    from claudeglass.render.markdown import _render_table
 
     table = Table(
         name="totals",

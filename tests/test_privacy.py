@@ -33,8 +33,8 @@ import dataclasses
 import re
 from pathlib import Path
 
-from claude_token_lens.model import Column, EventKind, Recommendation, Section, Table, TranscriptMeta
-from claude_token_lens.parse import parse_transcript
+from claudeglass.model import Column, EventKind, Recommendation, Section, Table, TranscriptMeta
+from claudeglass.parse import parse_transcript
 
 from helpers import (
     assert_privacy,
@@ -610,14 +610,14 @@ def test_assert_privacy_accepts_a_plain_dict():
 
 
 def test_redacted_commands_never_leak_through_any_renderer(tmp_path: Path):
-    from claude_token_lens.config import Config
-    from claude_token_lens.corpus import load_corpus
-    from claude_token_lens.pricing import load_pricing
-    from claude_token_lens.render.csv_out import write_csv_dir
-    from claude_token_lens.render.html import render_html
-    from claude_token_lens.render.json_out import render_json
-    from claude_token_lens.render.markdown import render_markdown
-    from claude_token_lens.report import build_report
+    from claudeglass.config import Config
+    from claudeglass.corpus import load_corpus
+    from claudeglass.pricing import load_pricing
+    from claudeglass.render.csv_out import write_csv_dir
+    from claudeglass.render.html import render_html
+    from claudeglass.render.json_out import render_json
+    from claudeglass.render.markdown import render_markdown
+    from claudeglass.report import build_report
 
     cmd1 = "cd Users\\paulm\\secret-repo && ssh deploy@internal-build-01.acme.local make"
     cmd2 = "git commit -m 'fix login for jane.doe@acme.com'"

@@ -116,7 +116,7 @@ parameter, `parse.load_or_create_salt(config_dir)` called directly)
 rather than `parse.py`'s process-wide `set_salt` convention, which
 exists for the parsing layer's own multiprocessing workers. Omitting it
 uses `load_or_create_salt`'s own default resolution
-(`$CLAUDE_CONFIG_DIR/token-lens`, else `~/.claude/token-lens`); a
+(`$CLAUDE_CONFIG_DIR/claudeglass`, else `~/.claude/claudeglass`); a
 caller that must keep this module from touching the real config
 directory — such as a read-only verification run — should pass its own
 scratch directory explicitly.

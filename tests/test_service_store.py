@@ -20,7 +20,7 @@ import sqlite3
 
 import pytest
 
-from claude_token_lens.service.store import Store
+from claudeglass.service.store import Store
 from helpers import assert_privacy
 
 #: A deliberately distinctive fake local path -- if this string (or the
@@ -29,7 +29,7 @@ from helpers import assert_privacy
 _FAKE_PATH = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a\session-a.jsonl"
 _FAKE_SUB_PATH = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a\session-a\subagents\agent-1.jsonl"
 _FAKE_ROOT = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a"
-_FAKE_PROFILE_PATH = r"C:\Users\definitely-not-a-real-person\.claude\token-lens\profiles\p1.toml"
+_FAKE_PROFILE_PATH = r"C:\Users\definitely-not-a-real-person\.claude\claudeglass\profiles\p1.toml"
 
 
 @pytest.fixture
@@ -204,7 +204,7 @@ def _seed_second_project(store: Store) -> None:
 # -- migrate / schema --------------------------------------------------
 
 #: The exact v0.2.0 (schema version 4) DDL, taken verbatim from
-#: ``git show v0.2.0:src/claude_token_lens/service/schema.py`` --
+#: ``git show v0.2.0:src/claudeglass/service/schema.py`` --
 #: ``profiles``/``baselines`` are one version *before* v5's
 #: ``content_hash``/``record_id`` columns. Used only by
 #: :func:`test_migrate_upgrades_a_v4_store_without_losing_rows` (review
@@ -451,7 +451,7 @@ def test_migrate_upgrades_a_v4_store_without_losing_rows(tmp_path) -> None:
     current code must migrate additively, not drop every table. Every
     row inserted under the old schema must still be there afterwards,
     and the two new v5 columns must exist."""
-    from claude_token_lens.service import schema
+    from claudeglass.service import schema
 
     db_path = tmp_path / "v4.db"
     _build_v4_store(str(db_path))
@@ -522,10 +522,10 @@ def test_migrate_then_watcher_upgrades_a_stale_parser_version(tmp_path) -> None:
     ``parser_version``."""
     import time
 
-    from claude_token_lens import PARSER_VERSION
-    from claude_token_lens.service import schema
-    from claude_token_lens.service.contracts import ServeOptions
-    from claude_token_lens.service.watcher import FileWatcher
+    from claudeglass import PARSER_VERSION
+    from claudeglass.service import schema
+    from claudeglass.service.contracts import ServeOptions
+    from claudeglass.service.watcher import FileWatcher
     from helpers import turn_line, write_jsonl
 
     # A real, on-disk transcript the watcher can actually discover --
@@ -583,7 +583,7 @@ def test_migrate_backs_up_and_rebuilds_a_newer_than_code_store(tmp_path) -> None
     first, never just silently dropped. ROB-P6: a rating and a tag
     aren't re-derivable from transcripts the way the rest of the store
     is, so they must survive the rebuild itself, not just the backup."""
-    from claude_token_lens.service import schema
+    from claudeglass.service import schema
 
     db_path = tmp_path / "newer.db"
     store = Store(str(db_path))
@@ -631,7 +631,7 @@ def test_a_second_rebuild_of_the_same_version_gets_its_own_backup(tmp_path) -> N
     rebuilds of a store recorded at the same unmigratable version (e.g.
     two 'serve' starts against a downgraded install) each get their own
     file, not one silently clobbering the other's data."""
-    from claude_token_lens.service import schema
+    from claudeglass.service import schema
 
     db_path = tmp_path / "store.db"
     Store(str(db_path)).open()
@@ -664,7 +664,7 @@ def test_a_v7_to_v6_to_v7_round_trip_keeps_the_ratings(tmp_path, monkeypatch) ->
     ratings and tags along the way, even though the rest of the store
     (freely re-derivable from transcripts, or -- for a prediction, EST-P5
     -- from prediction-log.jsonl) is dropped and starts empty."""
-    from claude_token_lens.service import schema
+    from claudeglass.service import schema
 
     db_path = tmp_path / "roundtrip.db"
     store = Store(str(db_path))
@@ -712,7 +712,7 @@ def test_a_v7_to_v6_to_v7_round_trip_keeps_the_ratings(tmp_path, monkeypatch) ->
 
 
 def test_migrate_is_idempotent(store: Store) -> None:
-    from claude_token_lens.service import schema
+    from claudeglass.service import schema
 
     assert store.schema_version() == schema.SCHEMA_VERSION
     store.migrate()
@@ -725,7 +725,7 @@ def test_migrate_drops_and_rebuilds_a_stale_store(store: Store) -> None:
     code's is dropped and recreated from scratch on the next open() --
     the store is a derived cache, so this is safe, and the next watcher
     tick repopulates it (S1-integration fix 1.b)."""
-    from claude_token_lens.service import schema
+    from claudeglass.service import schema
 
     _seed(store)
     assert store.summary()["sessions"] == 1
@@ -1091,7 +1091,7 @@ def test_snapshots_reports_global_attribution_as_null_project_slug(store: Store)
     synthetic attribution for a machine-wide capture with no real
     per-project identity) is exposed honestly as project_slug=None, never
     as the internal sentinel string (S1-integration fix 1.c)."""
-    from claude_token_lens.service.store import GLOBAL_PROJECT_SLUG
+    from claudeglass.service.store import GLOBAL_PROJECT_SLUG
 
     assert GLOBAL_PROJECT_SLUG == "__global__"
     store.upsert_snapshot(
@@ -1184,7 +1184,7 @@ def test_rewriting_an_unchanged_workflow_run_keeps_the_change_token(store: Store
     """The watcher re-reads every workflow file each tick. Writing the
     same values again must not touch the row, or the token would move
     every tick and every kept report would be rebuilt for nothing."""
-    from claude_token_lens.service import store as store_mod
+    from claudeglass.service import store as store_mod
 
     _seed(store)
     run = dict(session_id="session-a", run_id="wf_1", agent_count=2, phase_titles=["Build"], cost=1.5, status="done")
@@ -1212,8 +1212,8 @@ def test_turns_for_session_returns_none_without_a_top_level_transcript(store: St
 
 
 def test_turns_for_session_builds_series_and_markers(store: Store) -> None:
-    from claude_token_lens.cache import encode_result
-    from claude_token_lens.model import EventKind, Turn, TranscriptMeta, TranscriptResult
+    from claudeglass.cache import encode_result
+    from claudeglass.model import EventKind, Turn, TranscriptMeta, TranscriptResult
 
     result = TranscriptResult(
         meta=TranscriptMeta(path=_FAKE_PATH, kind="top-level", session_id="session-b"),
@@ -1255,8 +1255,8 @@ def test_turns_for_session_downsamples_above_the_point_cap(store: Store) -> None
     app.js's ``Math.max.apply`` -- finding 10). Every marker turn must
     still survive the downsampling.
     """
-    from claude_token_lens.cache import encode_result
-    from claude_token_lens.model import EventKind, Turn, TranscriptMeta, TranscriptResult
+    from claudeglass.cache import encode_result
+    from claudeglass.model import EventKind, Turn, TranscriptMeta, TranscriptResult
 
     total_turns = Store.MAX_TURN_SERIES_POINTS + 500
     marker_turn_index = total_turns - 1  # deliberately outside any stride sample
@@ -1491,8 +1491,8 @@ def test_prune_predictions_drops_stale_unjudged_and_old_judged_rows(store: Store
 
 
 def test_migrate_upgrades_a_v5_store_with_the_feedback_table(tmp_path) -> None:
-    from claude_token_lens.service import schema
-    from claude_token_lens.service import store as store_mod
+    from claudeglass.service import schema
+    from claudeglass.service import store as store_mod
 
     db_path = tmp_path / "v5.db"
     store = Store(str(db_path))
@@ -1518,7 +1518,7 @@ def test_migrate_upgrades_a_v5_store_with_the_feedback_table(tmp_path) -> None:
 
 
 def test_read_session_marks_reads_tags_and_ratings_without_writing(tmp_path) -> None:
-    from claude_token_lens.service.store import read_session_marks
+    from claudeglass.service.store import read_session_marks
 
     db_path = tmp_path / "service.db"
     assert read_session_marks(db_path) == ({}, {})
@@ -1536,7 +1536,7 @@ def test_read_session_marks_reads_tags_and_ratings_without_writing(tmp_path) -> 
 
 
 def test_read_session_marks_of_a_store_without_the_ratings_table_reads_the_tags(tmp_path) -> None:
-    from claude_token_lens.service.store import read_session_marks
+    from claudeglass.service.store import read_session_marks
 
     db_path = tmp_path / "service.db"
     store = Store(str(db_path))

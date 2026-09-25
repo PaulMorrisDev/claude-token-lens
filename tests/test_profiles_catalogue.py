@@ -9,14 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens.profiles.catalogue import (
+from claudeglass.profiles.catalogue import (
     CATALOGUE_IDS,
     UNREACHABLE_BY_SUGGEST,
     get,
     list_profiles,
     suggest,
 )
-from claude_token_lens.profiles.schema import ARCHETYPES, dump_profile, loads_profile, validate
+from claudeglass.profiles.schema import ARCHETYPES, dump_profile, loads_profile, validate
 
 EXPECTED_IDS = (
     "interactive-chat",
@@ -140,8 +140,8 @@ def test_suggest_is_deterministic():
 
 # -- reported kinds of task (metrics capture) ------------------------------------------
 
-from claude_token_lens import capture_catalogue  # noqa: E402
-from claude_token_lens.profiles import catalogue as catalogue_mod  # noqa: E402
+from claudeglass import capture_catalogue  # noqa: E402
+from claudeglass.profiles import catalogue as catalogue_mod  # noqa: E402
 
 
 def test_for_words_normalise_to_the_task_vocabulary():

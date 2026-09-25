@@ -1,4 +1,4 @@
-"""Tests for S1-exports' ``monthly.py`` (``claude-token-lens
+"""Tests for S1-exports' ``monthly.py`` (``claudeglass
 monthly-report``): ``resolve_month`` default/validation, calendar-month
 session attribution (including the documented first-turn-decides
 approximation for a session straddling a month boundary), the finance
@@ -17,11 +17,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytest
 
-from claude_token_lens import monthly
-from claude_token_lens import statusline
-from claude_token_lens.config import Config
-from claude_token_lens.corpus import load_corpus
-from claude_token_lens.pricing import load_pricing
+from claudeglass import monthly
+from claudeglass import statusline
+from claudeglass.config import Config
+from claudeglass.corpus import load_corpus
+from claudeglass.pricing import load_pricing
 
 from helpers import turn_line, write_jsonl
 
@@ -150,8 +150,8 @@ def test_write_monthly_report_writes_md_and_html(tmp_path):
     paths = monthly.write_monthly_report(corpus, PRICING, Config(), "2026-09", out_dir)
     assert len(paths) == 2
     md_path, html_path = paths
-    assert md_path.name == "claude-token-lens-2026-09.md"
-    assert html_path.name == "claude-token-lens-2026-09.html"
+    assert md_path.name == "claudeglass-2026-09.md"
+    assert html_path.name == "claudeglass-2026-09.html"
     assert md_path.exists()
     assert html_path.exists()
 
@@ -391,7 +391,7 @@ def test_write_monthly_report_generated_at_makes_output_genuinely_byte_identical
 
 
 def test_cli_monthly_report_happy_path_writes_files(tmp_path):
-    from claude_token_lens import cli as cli_mod
+    from claudeglass import cli as cli_mod
 
     projects_root = tmp_path / "projects"
     project_dir = projects_root / "proj-a"
@@ -400,7 +400,7 @@ def test_cli_monthly_report_happy_path_writes_files(tmp_path):
         project_dir / "s1.jsonl",
         [turn_line(timestamp="2026-09-05T10:00:00.000Z", input_tokens=100, output_tokens=20)],
     )
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     out_dir = tmp_path / "out"
 
     rc = cli_mod.main(
@@ -418,12 +418,12 @@ def test_cli_monthly_report_happy_path_writes_files(tmp_path):
         ]
     )
     assert rc == 0
-    assert (out_dir / "claude-token-lens-2026-09.md").exists()
-    assert (out_dir / "claude-token-lens-2026-09.html").exists()
+    assert (out_dir / "claudeglass-2026-09.md").exists()
+    assert (out_dir / "claudeglass-2026-09.html").exists()
 
 
 def test_cli_monthly_report_bad_month_exits_2(tmp_path):
-    from claude_token_lens import cli as cli_mod
+    from claudeglass import cli as cli_mod
 
     projects_root = tmp_path / "projects"
     project_dir = projects_root / "proj-a"
@@ -432,7 +432,7 @@ def test_cli_monthly_report_bad_month_exits_2(tmp_path):
         project_dir / "s1.jsonl",
         [turn_line(timestamp="2026-09-05T10:00:00.000Z", input_tokens=100)],
     )
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     out_dir = tmp_path / "out"
 
     rc = cli_mod.main(
@@ -453,12 +453,12 @@ def test_cli_monthly_report_bad_month_exits_2(tmp_path):
 
 
 def test_cli_monthly_report_no_sessions_in_corpus_exits_1(tmp_path):
-    from claude_token_lens import cli as cli_mod
+    from claudeglass import cli as cli_mod
 
     projects_root = tmp_path / "projects"
     project_dir = projects_root / "empty-proj"
     project_dir.mkdir(parents=True)
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     out_dir = tmp_path / "out"
 
     rc = cli_mod.main(
@@ -481,7 +481,7 @@ def test_cli_monthly_report_empty_target_month_exits_0_with_stderr_note(tmp_path
     tables, but must now say so on stderr rather than failing silently
     -- verified here at the CLI level since tests/test_cli.py is not
     writable for this work package."""
-    from claude_token_lens import cli as cli_mod
+    from claudeglass import cli as cli_mod
 
     projects_root = tmp_path / "projects"
     project_dir = projects_root / "proj-a"
@@ -490,7 +490,7 @@ def test_cli_monthly_report_empty_target_month_exits_0_with_stderr_note(tmp_path
         project_dir / "s1.jsonl",
         [turn_line(timestamp="2026-08-01T09:00:00.000Z", input_tokens=100)],
     )
-    config_dir = tmp_path / "token-lens"
+    config_dir = tmp_path / "claudeglass"
     out_dir = tmp_path / "out"
 
     rc = cli_mod.main(
@@ -508,7 +508,7 @@ def test_cli_monthly_report_empty_target_month_exits_0_with_stderr_note(tmp_path
         ]
     )
     assert rc == 0
-    assert (out_dir / "claude-token-lens-2020-01.md").exists()
+    assert (out_dir / "claudeglass-2020-01.md").exists()
     err = capsys.readouterr().err
     assert "2020-01" in err
     assert "zeroed tables" in err

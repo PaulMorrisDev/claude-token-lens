@@ -6,9 +6,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from claude_token_lens import claude_md_review as cmr
-from claude_token_lens import parse
-from claude_token_lens.units import Units
+from claudeglass import claude_md_review as cmr
+from claudeglass import parse
+from claudeglass.units import Units
 
 from helpers import elasticity_with_slope
 
@@ -24,7 +24,7 @@ SHARED = (
 
 def _setup(tmp_path: Path) -> tuple[Path, Path]:
     claude_root = tmp_path / ".claude"
-    config_dir = claude_root / "token-lens"
+    config_dir = claude_root / "claudeglass"
     config_dir.mkdir(parents=True)
     (claude_root / "CLAUDE.md").write_text(f"# Global\n\n{SHARED}\n", encoding="utf-8")
     project = tmp_path / "repo"

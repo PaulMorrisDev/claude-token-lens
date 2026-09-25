@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from claude_token_lens.model import TranscriptMeta
-from claude_token_lens.parse import parse_transcript
+from claudeglass.model import TranscriptMeta
+from claudeglass.parse import parse_transcript
 
 from helpers import turn_line, write_jsonl
 

@@ -1,7 +1,9 @@
 """Links between the Markdown docs resolve: every relative link in the
 README, ``docs/``, ``SECURITY.md`` and ``CHANGELOG.md`` names a file that
 exists, and every ``#anchor`` names a heading (or an ``<a id>``) in its
-target file, using GitHub's own heading-to-anchor rules.
+target file, using GitHub's own heading-to-anchor rules. A link to one of
+this repository's own files on GitHub counts as a local one: the README
+links in full so that its copy on PyPI works too.
 
 The README once carried eleven numbered reference sections that the docs
 linked into by anchor; moving them out would otherwise break those links
@@ -28,6 +30,11 @@ HTML_ANCHOR = re.compile(r"<a\s+(?:id|name)=\"([^\"]+)\"")
 LINK = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HTML_LINK = re.compile(r"(?:href|src|srcset)=\"([^\"]+)\"")
 CODE_SPAN = re.compile(r"`[^`]*`")
+#: This repository's own files on GitHub, checked as the local file.
+REPO_URL = re.compile(
+    r"https://(?:github\.com/PaulMorrisDev/claudeglass/(?:blob|tree)/main"
+    r"|raw\.githubusercontent\.com/PaulMorrisDev/claudeglass/main)/"
+)
 
 
 def _prose_lines(text: str) -> list[str]:
@@ -73,13 +80,28 @@ def anchors(path: Path) -> set[str]:
 
 
 def relative_links(path: Path) -> list[str]:
-    """Relative link targets in the file's prose (not in code)."""
+    """Relative link targets in the file's prose (not in code). A link to
+    this repository on GitHub comes back as its path from the repository
+    root, with a leading ``/``."""
     targets: list[str] = []
     for line in _prose_lines(path.read_text(encoding="utf-8")):
         line = CODE_SPAN.sub("", line)
         targets += LINK.findall(line)
         targets += HTML_LINK.findall(line)
-    return [t for t in targets if not re.match(r"[a-z][a-z0-9+.-]*:", t, re.I)]
+    local: list[str] = []
+    for target in targets:
+        repo = REPO_URL.match(target)
+        if repo:
+            local.append("/" + target[repo.end() :])
+        elif not re.match(r"[a-z][a-z0-9+.-]*:", target, re.I):
+            local.append(target)
+    return local
+
+
+def _destination(path: Path, file_part: str) -> Path:
+    if file_part.startswith("/"):
+        return (REPO_ROOT / file_part[1:]).resolve()
+    return (path.parent / file_part).resolve() if file_part else path
 
 
 def test_github_slug_matches_githubs_rules() -> None:
@@ -101,10 +123,19 @@ def test_relative_links_resolve(path: Path) -> None:
     broken: list[str] = []
     for target in relative_links(path):
         file_part, _, anchor = target.partition("#")
-        dest = (path.parent / file_part).resolve() if file_part else path
+        dest = _destination(path, file_part)
         if not dest.exists():
             broken.append(f"{target} (no such file)")
             continue
         if anchor and dest.suffix == ".md" and anchor not in anchors(dest):
             broken.append(f"{target} (no such heading)")
     assert broken == [], broken
+
+
+def test_the_cli_troubleshooting_link_resolves() -> None:
+    from claudeglass.cli import OLD_DASHBOARD_HELP
+
+    repo = REPO_URL.match(OLD_DASHBOARD_HELP)
+    assert repo, OLD_DASHBOARD_HELP
+    file_part, _, anchor = OLD_DASHBOARD_HELP[repo.end() :].partition("#")
+    assert anchor in anchors(REPO_ROOT / file_part)
