@@ -48,6 +48,11 @@ def _isolated_claude_config_dir(tmp_path_factory, monkeypatch):
     managed = fake_home / "managed-settings"
     monkeypatch.setattr(hook_health, "_real_managed_settings_dir", hook_health.managed_settings_dir, raising=False)
     monkeypatch.setattr(hook_health, "managed_settings_dir", lambda: managed)
+    # The service writes each command in the form that runs on this
+    # install (invocation.py), which depends on this machine's PATH; the
+    # short form keeps every other test's expected text the same here and
+    # on CI. tests/test_invocation.py checks the detection itself.
+    monkeypatch.setenv("CLAUDE_TOKEN_LENS_COMMAND", "claude-token-lens")
 
 
 @pytest.fixture(autouse=True)

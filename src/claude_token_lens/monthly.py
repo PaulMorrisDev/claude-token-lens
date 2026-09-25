@@ -63,7 +63,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import pages
+from . import invocation, pages
 from .config import Config
 from .corpus import Corpus, SessionBundle
 from .model import ReportModel, Table
@@ -475,8 +475,11 @@ def write_monthly_report(
         generated_at = datetime.now().astimezone().isoformat()
 
     md_path, html_path = report_paths(out_path, month)
-    md_path.write_text(_render_month_markdown(month, all_tables, currency, generated_at, units), encoding="utf-8")
-    html_path.write_text(_render_month_html(month, all_tables, currency, generated_at, units), encoding="utf-8")
+    # Commands in the notes, in the form that runs on this install.
+    markdown = invocation.rewrite_rendered(_render_month_markdown(month, all_tables, currency, generated_at, units), "markdown")
+    page = invocation.rewrite_rendered(_render_month_html(month, all_tables, currency, generated_at, units), "html")
+    md_path.write_text(markdown, encoding="utf-8")
+    html_path.write_text(page, encoding="utf-8")
     return [md_path, html_path]
 
 

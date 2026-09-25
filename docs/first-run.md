@@ -373,7 +373,7 @@ making it:
 Nothing removes the `settings.json.bak-*` copies; delete them yourself
 once you're happy.
 
-Finally, if installed via `pip`: `pip uninstall claude-token-lens`. Via
+Finally, if installed via `pip`: `python -m pip uninstall claude-token-lens`. Via
 `.pyz`: delete the one file.
 
 ## 8. Update to a newer version
@@ -385,11 +385,24 @@ py -3 -m claude_token_lens update
 ```
 
 It installs the newest version from GitHub (`--from <path-to-the-cloned-repo>`
-for Route B, after a `git pull`), then runs the new copy's
-`install-service`, which restarts the dashboard on it and checks the
-version that answers on port 8765. `--dry-run` prints both commands
-without running them. A `.pyz` can't update itself: `update` says so and
-links the download.
+for Route B, after a `git pull`), then hands over to the new copy
+(`update --finish`), which:
+
+- runs `install-service`, restarting the dashboard on it, and checks the
+  version that answers on port 8765. On Windows, an older copy started by
+  hand that still holds the port is named, and stopped after a yes;
+- brings this tool's SessionStart hook, capture hooks and statusline in
+  `settings.json` up to date, showing each change and asking first;
+- finds copies installed for other Pythons and, once nothing uses them,
+  offers to remove them.
+
+`--dry-run` shows what it would do without changing anything; `--yes`
+answers yes to every question. A `.pyz` can't update itself: `update`
+says so and links the download.
+
+Updating from 0.6.0 or older, `update` stops after `install-service`.
+Run `py -3 -m claude_token_lens update --finish` once afterwards for the
+rest.
 
 On 0.4 or older, or to do it by hand, install the new version the same
 way you installed the first one:
@@ -401,15 +414,15 @@ way you installed the first one:
 | C (GitHub) | `py -3 -m pip install --force-reinstall git+https://github.com/PaulMorrisDev/claude-token-lens` |
 
 `--force-reinstall` is needed because pip skips a copy whose version
-number hasn't changed. Then point the logon task at the new version and
-restart it, with the same Python you just updated:
+number hasn't changed. Then finish with the same Python you just
+updated:
 
 ```powershell
-py -3 -m claude_token_lens install-service
+py -3 -m claude_token_lens update --finish
 ```
 
 (Route A: `py -3 claude-token-lens.pyz install-service`; Route B:
-`.venv\Scripts\python.exe -m claude_token_lens install-service`.) It stops the
+`.venv\Scripts\python.exe -m claude_token_lens update --finish`.) It stops the
 running dashboard, re-registers the task for this install and starts it
 again. On Linux it restarts the service too; on macOS run
 `launchctl kickstart -k gui/$(id -u)/com.claude-token-lens` instead.
@@ -423,7 +436,7 @@ after the restart, so the first page load can be slow.
 | Symptom | Fix |
 |---|---|
 | WSL sessions missing from the dashboard | Run `init` again and say yes to the WSL folder, or add it to `extra_projects_roots` in `config.toml` and run `install-service` to restart the dashboard. See the README's [Using Claude Code in WSL too](../README.md#using-claude-code-in-wsl-too) |
-| Dashboard still shows the old version after an update (see the foot of its sidebar) | Something else still holds port 8765: an older copy started by hand, from another Python install, or from Docker. The README's [An old dashboard won't go away](../README.md#an-old-dashboard-wont-go-away) shows how to find and stop it; then run `install-service` with the Python you updated (section 8) |
+| Dashboard still shows the old version after an update (see the foot of its sidebar) | Something else still holds port 8765: an older copy started by hand, from another Python install, or from Docker. The README's [An old dashboard won't go away](../README.md#an-old-dashboard-wont-go-away) shows how to find and stop it; then run `update --finish` with the Python you updated (section 8), which on Windows offers to stop an older copy itself |
 | `claude-token-lens` not found | Use the full path to the venv's `Scripts\claude-token-lens.exe`, or `python -m claude_token_lens` (works regardless of `PATH`) |
 | The Data quality page says the SessionStart hook isn't running | The hook command names a Python that isn't installed (`py` with no launcher), uses `%USERPROFILE%` (Claude Code runs hooks through Git Bash, which doesn't expand it), or has a path broken by single backslashes in JSON. Run `claude-token-lens init --repair-hook`: it shows the fixed command and changes it without asking, after copying `settings.json` to `settings.json.bak-<UTC time>`. It keeps your own Python when it's found and writes any `%VARIABLE%` out in full; otherwise it names your main Python install by full path. It can only fix a command whose script exists: if the script is missing, run `claude-token-lens init --connect` first, which copies it back into `<config-dir>\hooks\` |
 | No usage-limit readings | The statusline runs only in Claude Code in a terminal, not in the desktop app or an IDE. Amounts stay list-price equivalents until readings arrive |

@@ -37,6 +37,16 @@ want to parse the body: `200` for `ok: true` on every route except
 "Managed-settings routes" below. This is exactly
 `service.contracts.ApiError.to_envelope()`'s shape.
 
+Commands inside a response (a `connect_command`, a fix's `command`, help
+text that says "run `claude-token-lens baseline`") come in the form that
+runs this install, since the short `claude-token-lens` needs pip's
+Scripts folder on `PATH`: `python -m claude_token_lens ...`, the `.pyz`
+path, or the interpreter's full path when the `python` on `PATH` is
+another one (`invocation.py`). `CLAUDE_TOKEN_LENS_COMMAND`, set where
+`serve` runs, overrides it word for word. `/api/report.json` gets the
+same swap; the Markdown and HTML reports keep the short form, like the
+CLI's own output.
+
 ## Security headers
 
 Every response from every route carries the same three headers
@@ -289,7 +299,9 @@ messages can carry a path.
 poll (`config.toml` and `settings.json` only): `level`, `title`,
 `describe` (such as `"Essentials (since 2026-09-20, 25% of sessions)"`),
 `on`, `expired` (its end time has passed), `effective` (on and not
-expired), `enabled_at`, `until`, `sample`, `metrics`, `feedback`,
+expired), `enabled_at`, `until`, `timebox_days` (how many days a
+switch from off to on runs before it ends, when no end is given),
+`sample`, `metrics`, `feedback`,
 `coaching`, `projects_limited` (only whether `[capture] projects` is
 set, never the patterns) and `hooks_ok` (whether `settings.json` runs
 every hook the chosen metrics need; `true` when they need none). The

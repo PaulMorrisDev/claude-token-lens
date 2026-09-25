@@ -129,6 +129,7 @@ def config_block(capture: CaptureConfig, now: datetime | None = None) -> dict:
         "effective": capture.is_on and not expired,
         "enabled_at": capture.enabled_at,
         "until": capture.until,
+        "timebox_days": catalogue.DEFAULT_CAPTURE_TIMEBOX_DAYS,
         "sample": capture.sample,
         "metrics": list(capture.active_metrics()),
         "feedback": list(capture.feedback),

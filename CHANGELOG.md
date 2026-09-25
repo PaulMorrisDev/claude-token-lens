@@ -19,6 +19,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fingerprint, so the first dashboard start after updating re-reads
   every transcript once.
 
+### Changed
+
+- `update` does the whole upgrade in one command. After pip installs the
+  new version it hands over to it (`update --finish`, run by the new
+  code, so each later update runs the newest steps), which restarts the
+  dashboard on it, then:
+  - on Windows, names an older dashboard started by hand that still
+    holds the port and, after a yes, stops it and starts the new one
+    (never a program that isn't a Python, such as Docker);
+  - brings Claude Code's settings.json up to date: a SessionStart hook
+    command that can't run, the entries capture needs, and this tool's
+    statusline when it runs another Python's copy, each shown and made
+    after a yes, with settings.json backed up first;
+  - finds copies of this tool installed for other Pythons (the one the
+    dashboard ran until now, the `py` launcher's, and each `python` on
+    `PATH`) and, once the dashboard runs the new version and the
+    statusline no longer uses them, offers to remove them.
+
+  `--yes` answers yes throughout. Updating from 0.6.0 or older, whose
+  `update` doesn't hand over, run `update --finish` once afterwards.
+
+### Fixed
+
+- The dashboard's commands now run on the machine that shows them. They
+  said `claude-token-lens ...`, which works only when pip's Scripts
+  folder is on `PATH`; a default Windows Python install leaves it off,
+  so a copied `claude-token-lens capture connect` was "not recognized".
+  The service now writes each command in the form that runs its own
+  install: `claude-token-lens` when that launcher belongs to its Python,
+  `python <archive>` for the `.pyz`, else `python -m claude_token_lens`,
+  with the interpreter's full path when the `python` on `PATH` is a
+  different one. Set `CLAUDE_TOKEN_LENS_COMMAND` to choose the form
+  yourself (for example an alias).
+- The same goes for every command the CLI prints (help, next steps,
+  fixes, undo lines), the `report --html`/`--json` and `monthly-report`
+  files, and the dashboard's Markdown and HTML reports. A message's own
+  label ("claude-token-lens update: ...") stays as it is, and data other
+  programs read (the statusline, `export`, `--json` output) is printed
+  as written. Commands that named only the subcommand ('capture status',
+  `apply --revert`) now name the whole command, `update` prints its two
+  steps quoted so they paste, and `uninstall` ends with the pip command
+  for this Python (or the file to delete for the `.pyz`).
+- A profile's apply command for a project (`--scope project-local` or
+  `repo`) was refused with exit status 2: the dashboard left out
+  `--project-dir`. It now passes `--project-dir .` and says to run it in
+  the project's folder (the dashboard still never shows a path).
+- Setup › Capture says how its end time works: a choice saves as soon
+  as you pick it, the days count from that moment, and the menu's first
+  entry shows when capture ends now ("In 12 days: 2026-10-07 09:00
+  UTC"). While capture is off, it says the first switch on ends by
+  itself after 14 days. `/api/capture`'s `config` gains `timebox_days`.
+
 ## [0.6.0] - 2026-09-25
 
 After updating, the first dashboard start re-reads every transcript (a

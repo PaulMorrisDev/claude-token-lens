@@ -736,6 +736,43 @@ def plan_connect(
     return _finish_plan(path, before, settings, changes)
 
 
+#: This tool's statusline run as a module by a named Python:
+#: ``"<python>" -m claude_token_lens.statusline ...`` (the ``.pyz`` form
+#: carries its own code and needs no installed copy).
+_STATUSLINE_PYTHON = re.compile(r'^"([^"]+)"(?= -m claude_token_lens\.statusline\b)')
+
+
+def statusline_python(claude_root: str | Path | None = None) -> str | None:
+    """The Python this tool's statusline runs its module with, or ``None``
+    when there is no such statusline (or settings.json can't be read)."""
+    _path, _before, settings, refusal = _read_settings(claude_root)
+    status_line = settings.get("statusLine") if refusal is None else None
+    command = status_line.get("command") if isinstance(status_line, dict) else None
+    match = _STATUSLINE_PYTHON.match(command) if isinstance(command, str) else None
+    return match.group(1) if match else None
+
+
+def plan_statusline_python(python: str, *, claude_root: str | Path | None = None) -> ConnectPlan:
+    """Point this tool's statusline at ``python`` when it runs the module
+    with another one: that Python's copy is the one an update leaves
+    behind, still on the old version (or gone). Only the interpreter
+    changes; the rest of the command stays as written."""
+    path, before, settings, refusal = _read_settings(claude_root)
+    if refusal is not None:
+        return refusal
+    status_line = settings.get("statusLine")
+    command = status_line.get("command") if isinstance(status_line, dict) else None
+    match = _STATUSLINE_PYTHON.match(command) if isinstance(command, str) else None
+    changes = []
+    if match and os.path.normcase(os.path.abspath(match.group(1))) != os.path.normcase(os.path.abspath(python)):
+        status_line["command"] = f'"{python}"' + command[match.end():]
+        changes.append(
+            f"Run the statusline with {python}, the Python this version is installed for, instead of "
+            f"{match.group(1)}."
+        )
+    return _finish_plan(path, before, settings, changes)
+
+
 def _read_settings(claude_root: str | Path | None) -> tuple[Path, str, dict, ConnectPlan | None]:
     """settings.json's path, text and parsed object, or a plan that
     refuses to change a file it can't read."""

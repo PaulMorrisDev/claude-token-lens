@@ -80,6 +80,33 @@ export function storageRemove(key) {
   }
 }
 
+// -- the command that runs claude-token-lens here ---------------------
+
+// The short claude-token-lens works only when pip's Scripts folder is on
+// PATH, so the service writes the form that runs on this install into
+// index.html (invocation.py). Server text arrives with it already in
+// place; commands this code writes go through cli().
+export var CLI_COMMAND = readCliCommand();
+
+function readCliCommand() {
+  var meta = typeof document !== "undefined" ? document.querySelector('meta[name="tl-command"]') : null;
+  return (meta && meta.getAttribute("content")) || "claude-token-lens";
+}
+
+export function cli(rest) {
+  return CLI_COMMAND + " " + rest;
+}
+
+// Fixed text that names a command (the glossary), in this install's form.
+export function withCli(text) {
+  if (CLI_COMMAND === "claude-token-lens") return text;
+  // Not part of a longer name (my-claude-token-lens, .claude-token-lens),
+  // as invocation.py's pattern.
+  return text.replace(/(^|[^\w.\/\\-])claude-token-lens (?=[a-z])/g, function (_match, lead) {
+    return lead + CLI_COMMAND + " ";
+  });
+}
+
 // -- report.json cache (shared by every view that reads the report) ---
 
 export var state = {
