@@ -353,7 +353,9 @@ def compute_run_split(
     top, subs = _parents(results)
     views: dict[int, _Parent | None] = {}
     for tr in results:
-        if tr.meta.kind != "subagent":
+        # A workflow agent is a subagent under a workflow run's folder;
+        # its script, not the agent, decides how the work is split.
+        if tr.meta.kind != "subagent" or tr.meta.workflow_run_id:
             continue
         parent_tr = subs.get(agent_key(tr.meta.parent_agent_id)) if tr.meta.parent_agent_id else None
         if parent_tr is None:

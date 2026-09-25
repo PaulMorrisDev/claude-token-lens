@@ -38,6 +38,7 @@ def _run(
     tool_use_id=None,
     compaction_at=None,
     kind="subagent",
+    workflow_run_id=None,
 ) -> TranscriptResult:
     """A subagent run that starts at 10,000 tokens, then reads ``ctx``
     tokens from the cache on its second reply, ``growth`` more on each
@@ -48,7 +49,12 @@ def _run(
         read = ctx + growth * (i - 2)
         turns.append(_turn(i, ctx=read, cache_read_tokens=read, preceding_event_kinds=kinds))
     meta = TranscriptMeta(
-        session_id=session_id, kind=kind, agent_type=agent_type, agent_id=agent_id, tool_use_id=tool_use_id
+        session_id=session_id,
+        kind=kind,
+        agent_type=agent_type,
+        agent_id=agent_id,
+        tool_use_id=tool_use_id,
+        workflow_run_id=workflow_run_id,
     )
     return TranscriptResult(meta=meta, turns=turns)
 
@@ -114,7 +120,10 @@ def test_a_split_that_drops_little_does_not_count():
 
 
 def test_workflow_agents_and_main_sessions_are_not_split():
-    stats = compute_run_split([_run(kind="workflow-agent"), _parent()], PRICING, TEN)
+    # Discovery marks a workflow agent by its run folder, not its kind, and
+    # keeps the agent type it was started as.
+    workflow = _run(workflow_run_id="wf-1")
+    stats = compute_run_split([workflow, _run(kind="workflow-agent"), _parent()], PRICING, TEN)
     assert stats.agents == {}
 
 

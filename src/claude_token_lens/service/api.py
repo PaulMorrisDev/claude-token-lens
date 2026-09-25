@@ -858,17 +858,17 @@ def make_handler(
                 data = {}
             if not isinstance(data, dict):
                 data = {}
-            # S1-integration fix 1.c: Store.snapshots() now reports the
-            # snapshot's real project attribution (None for a machine-
-            # wide capture, never a project-specific one). Injecting it
-            # here lets snapshots.py's own _project_label() (which reads
-            # data["project_slug"]) tell a genuinely project-scoped
-            # snapshot apart from one that only ever applies at the
-            # user/global layer, without this work package touching that
-            # frozen module.
+            # A schema-2 snapshot names its own project (the hook's
+            # "slug:<hash>" of its cwd), the key snapshots.snapshot_for
+            # joins sessions on, as the CLI reads it from disk. The
+            # store's attribution (None for the watcher's machine-wide
+            # row) only fills in for a schema-1 snapshot without one;
+            # overwriting a real one put every project under
+            # "(unknown project)" and left their settings unmatched.
             if not snapshots_mod.records_config(data):
                 continue  # apply's active-profile stamp: no config in it
-            data["project_slug"] = row.get("project_slug")
+            if not data.get("project_slug"):
+                data["project_slug"] = row.get("project_slug")
             out.append(Snapshot(path=Path(""), ts=row["ts"], data=data))
         out.sort(key=lambda s: s.ts)
         return out

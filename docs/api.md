@@ -670,13 +670,14 @@ dashboard's Setup › Settings uses this); with `key`, that key's
 `config-diff-<key>` `Table`, or `[]` when it didn't change in the
 window.
 
-A snapshot taken outside any recognised project (no project slug on
-disk to attribute it to) is still captured — never dropped — under the
-store's internal global/machine-wide bucket, but `Store.snapshots()`
-reports its `project_slug` as `null` rather than a synthetic project
-name (S1-integration fix 1.c). This route treats a `null`-slug snapshot
-as a user-level configuration layer, not a project's, matching
-`snapshots.py`'s own "(unknown project)" label for it.
+The watcher files every snapshot under the store's internal
+machine-wide bucket, and `Store.snapshots()` reports that bucket's
+`project_slug` as `null` rather than a synthetic project name
+(S1-integration fix 1.c). A schema-2 snapshot still names its own
+project (the hook's `slug:<hash>` of its working directory), and the
+report groups by that, as the CLI does. Only a snapshot without one
+(schema 1) falls under `snapshots.py`'s "(unknown project)" label, as a
+user-level configuration layer, not a project's.
 
 ### `GET /api/recommendations`
 

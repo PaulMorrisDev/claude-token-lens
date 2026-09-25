@@ -1330,6 +1330,28 @@ def test_report_backed_routes_carry_lead_columns(server):
     assert tables["ttl_by_agent_type"]["lead_columns"] == TABLE_COPY["ttl_by_agent_type"].lead_columns
 
 
+def test_report_keeps_each_snapshots_own_project(server):
+    """The watcher files every snapshot under the machine-wide project, but
+    a schema-2 snapshot names its own project, and the report groups by
+    that, as the CLI's does. Overwriting it put every project under
+    "(unknown project)"."""
+    from claude_token_lens.service.store import GLOBAL_PROJECT_SLUG
+
+    for ts, slug in (("2026-09-19T12:00:00Z", "slug:aaaaaaaaaaaa"), ("2026-09-19T13:00:00Z", "slug:bbbbbbbbbbbb")):
+        server.store.upsert_snapshot(
+            project_slug=GLOBAL_PROJECT_SLUG,
+            ts=ts,
+            schema_version=2,
+            digest_json=json.dumps({"schema": 2, "project_slug": slug, "effective": {"model": "opus"}}),
+        )
+    resp, raw = server.request("GET", "/api/report.json")
+    assert resp.status == 200
+    tables = {t["name"]: t for s in json.loads(raw)["report"]["sections"] for t in s["tables"]}
+    projects = ", ".join(row[2] for row in tables["config-groups"]["rows"])
+    assert "slug:aaaaaaaaaaaa" in projects and "slug:bbbbbbbbbbbb" in projects
+    assert "(unknown project)" not in projects
+
+
 def test_v4_report_backed_routes_accept_since_until(server):
     for route in ("/api/carry", "/api/compaction-sim", "/api/plan-handoff", "/api/model-swap", "/api/waste"):
         resp, body = server.get_json(f"{route}?since=2026-08-01T00:00:00%2B00:00&until=2026-08-31T00:00:00%2B00:00")
@@ -1525,12 +1547,10 @@ def _reconstruct_snapshots(store: Store) -> list[Snapshot] | None:
             data = {}
         if not isinstance(data, dict):
             data = {}
-        # Mirror the real closure's S1-integration fix 1.c: it injects
-        # the store's own project attribution over whatever (if
-        # anything) the digest blob itself carries under this key, so
-        # snapshots.py's _project_label() sees an honest per-project
-        # slug rather than the "(unknown project)" fallback.
-        data["project_slug"] = row.get("project_slug")
+        # Mirror the real closure: a snapshot's own project_slug wins;
+        # the store's attribution only fills in when it has none.
+        if not data.get("project_slug"):
+            data["project_slug"] = row.get("project_slug")
         snaps.append(Snapshot(path=Path(""), ts=row["ts"], data=data))
     snaps.sort(key=lambda s: s.ts)
     return snaps or None

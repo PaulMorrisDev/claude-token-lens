@@ -49,15 +49,14 @@ de-duplication, ``WorkflowRun`` persistence) — see ``service/contracts.py``,
 ``service/schema.py`` and ``service/store.py`` for the resulting shapes.
 One attribution choice remains, carried over unchanged:
 
-- The snapshot-config hook (``hooks/snapshot-config.py``) writes one
-  global ``<config_dir>/snapshots/<ts>.json`` per machine, never one per
-  project (only a redacted ``cwd_hash`` survives on the snapshot itself,
-  never a usable project slug) — but ``Store.upsert_snapshot`` requires a
-  ``project_slug``. Every snapshot is attributed to the synthetic project
-  slug ``store.GLOBAL_PROJECT_SLUG`` rather than fabricating a false
-  per-project association; ``Store.snapshots()`` maps that sentinel back
-  to a ``None`` ``project_slug`` for any reader, so the attribution is
-  never mistaken for a real project.
+- The snapshot-config hook (``hooks/snapshot-config.py``) writes every
+  snapshot to one ``<config_dir>/snapshots/`` folder, whichever project
+  it ran in — but ``Store.upsert_snapshot`` requires a store project.
+  Every snapshot row is filed under the synthetic project slug
+  ``store.GLOBAL_PROJECT_SLUG``; ``Store.snapshots()`` maps that sentinel
+  back to a ``None`` ``project_slug`` for any reader. The project a
+  schema-2 snapshot was taken in stays in its own ``project_slug`` field
+  (the hook's redacted ``slug:<hash>``), which ``api.py`` reads.
 """
 
 from __future__ import annotations
