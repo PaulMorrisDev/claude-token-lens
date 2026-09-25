@@ -65,7 +65,7 @@ STATIC_FILES = ("index.html", "app.js", "app.css")
 #: A floor on how many first-party ES modules the glob below must find, so
 #: a glob that silently matches nothing (or only app.js) fails loudly
 #: instead of turning every scan in this file into a no-op.
-_MIN_JS_MODULES = 21
+_MIN_JS_MODULES = 26
 
 
 def _first_party_files() -> list[Path]:
@@ -2360,3 +2360,86 @@ def test_links_inside_a_drawer_work_and_close_it() -> None:
     drawer = _function_source(app_js, "drawer")
     assert "a[href^='#/']" in drawer and "close(true)" in drawer
     assert "leaving !== true" in drawer
+
+
+# -- Phase 11: search (Ctrl+K) and the keyboard shortcuts ----------------------
+
+
+def test_search_lists_every_page_and_segment() -> None:
+    """Search offers every view the sidebar has, named as the sidebar
+    names it: pageEntries walks links.js VIEW_KEYS, so a page added
+    there is found with nothing more to do. app.js lends it the window
+    and theme controls."""
+    source = _static_text("palette.js")
+    pages = _function_source(source, "pageEntries")
+    assert "VIEW_KEYS.map(" in pages
+    assert "viewLabel(key)," in pages
+    assert "goTo(key, { focus: true });" in pages
+    app = _static_text("app.js")
+    assert 'import { initPalette } from "./palette.js";' in app
+    assert "initPalette({ setWindow: setWindow, setTheme: setTheme });" in _function_source(app, "init")
+    # Recent sessions open their drawer from any page.
+    assert "export function openSessionDrawer(" in _static_text("page-spend.js")
+
+
+def test_go_keys_cover_every_main_page() -> None:
+    """G then a letter opens each of the sidebar's main pages (Data
+    quality and the Glossary, in its foot, are a search away), and the
+    shortcut sheet lists the same letters."""
+    source = _static_text("palette.js")
+    match = re.search(r"export var GO_KEYS = \{([^}]*)\};", source)
+    assert match, "palette.js declares GO_KEYS"
+    keys = dict(re.findall(r'(\w): "([a-z-]+)"', match.group(1)))
+    links = _static_text("links.js")
+    block = links[links.index("export var PAGES = ["):links.index("export function findPage")]
+    main = []
+    for chunk in re.split(r"\n  \{\n", block)[1:]:
+        page_id = re.match(r'\s*id: "([a-z-]+)"', chunk).group(1)
+        if "\n    foot: true" not in chunk:
+            main.append(page_id)
+    assert sorted(keys.values()) == sorted(main)
+    assert "Object.keys(GO_KEYS).map(" in source[source.index("var SHORTCUTS = ["):]
+
+
+def test_search_is_a_combobox_in_a_modal_dialog() -> None:
+    """Focus stays in the search box while the arrow keys move
+    aria-activedescendant through a listbox, in a modal <dialog>: Esc
+    closes it and focus goes back to what opened it. The list says it is
+    busy until the window's actions, tables and sessions arrive."""
+    palette = _function_source(_static_text("palette.js"), "openPalette")
+    assert 'role: "combobox",' in palette
+    assert 'role: "listbox",' in palette
+    assert 'role: "option",' in palette
+    assert 'input.setAttribute("aria-activedescendant", options[index].id);' in palette
+    assert '"aria-busy": "true"' in palette
+    assert 'list.removeAttribute("aria-busy");' in palette
+    assert "dialog.showModal();" in palette
+    assert 'dialog.addEventListener("cancel",' in palette
+    assert "opener.focus()" in palette
+
+
+def test_shortcuts_leave_typing_and_open_panels_alone() -> None:
+    """A key typed in a text box, pressed while a panel, menu or popover
+    is open, or pressed with Ctrl, Alt or the Windows/Command key is not
+    a shortcut (Ctrl+K, which opens search, apart)."""
+    source = _static_text("palette.js")
+    keydown = _function_source(source, "onKeydown")
+    assert "if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;" in keydown
+    assert "if (typing(event.target) || overlayOpen()) {" in keydown
+    assert keydown.index("(event.ctrlKey || event.metaKey)") < keydown.index("event.defaultPrevented")
+    assert 'target.closest("input, textarea, select, [contenteditable]' in _function_source(source, "typing")
+    overlay = _function_source(source, "overlayOpen")
+    assert 'document.querySelector("dialog[open]")' in overlay
+    assert '":popover-open"' in overlay
+
+
+def test_search_only_moves_around_and_copies() -> None:
+    """Like every other part of the dashboard, search never changes
+    Claude Code: it reads, opens pages and copies prompts. No write
+    route, and nothing named Apply."""
+    source = _static_text("palette.js")
+    assert "postJson" not in source
+    assert "method:" not in source
+    assert not re.search(r"apply", source, re.IGNORECASE)
+    assert "copyToClipboard(prompt)" in _function_source(source, "recommendationEntries")
+

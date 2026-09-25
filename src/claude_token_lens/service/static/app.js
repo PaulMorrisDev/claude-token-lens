@@ -46,6 +46,7 @@ import { renderConfig, renderProfiles } from "./page-setup.js";
 import { renderCapture } from "./page-capture.js";
 import { renderDataQuality } from "./page-data.js";
 import { renderCostCards, renderGlossary } from "./page-glossary.js";
+import { initPalette } from "./palette.js";
 
 // One renderer per view key (links.js's VIEW_KEYS, in sidebar order).
 var VIEW_RENDERERS = {
@@ -477,28 +478,34 @@ var THEMES = [
   { value: "dark", label: "Theme: dark", icon: "moon" },
 ];
 
-function initThemeToggle() {
+function themeIndex() {
+  var value = document.documentElement.getAttribute("data-theme");
+  return value === "light" ? 1 : value === "dark" ? 2 : 0;
+}
+
+function drawThemeToggle() {
   var button = document.getElementById("theme-toggle");
-  function currentIndex() {
-    var value = document.documentElement.getAttribute("data-theme");
-    return value === "light" ? 1 : value === "dark" ? 2 : 0;
-  }
-  function draw() {
-    var theme = THEMES[currentIndex()];
-    var next = THEMES[(currentIndex() + 1) % THEMES.length];
-    button.textContent = "";
-    button.appendChild(icon(theme.icon));
-    button.setAttribute("aria-label", theme.label + ". Switch to " + next.value);
-    button.setAttribute("data-tip", theme.label);
-  }
-  button.addEventListener("click", function () {
-    var next = THEMES[(currentIndex() + 1) % THEMES.length].value;
-    document.documentElement.setAttribute("data-theme", next);
-    if (next === "system") storageRemove("tls:theme");
-    else storageSet("tls:theme", next);
-    draw();
+  var theme = THEMES[themeIndex()];
+  var next = THEMES[(themeIndex() + 1) % THEMES.length];
+  button.textContent = "";
+  button.appendChild(icon(theme.icon));
+  button.setAttribute("aria-label", theme.label + ". Switch to " + next.value);
+  button.setAttribute("data-tip", theme.label);
+}
+
+// The toggle and search's theme commands both come here.
+function setTheme(value) {
+  document.documentElement.setAttribute("data-theme", value);
+  if (value === "system") storageRemove("tls:theme");
+  else storageSet("tls:theme", value);
+  drawThemeToggle();
+}
+
+function initThemeToggle() {
+  document.getElementById("theme-toggle").addEventListener("click", function () {
+    setTheme(THEMES[(themeIndex() + 1) % THEMES.length].value);
   });
-  draw();
+  drawThemeToggle();
 }
 
 // A hairline under the page header once content scrolls beneath it.
@@ -518,6 +525,7 @@ function init() {
   buildSidebar();
   initWindowPicker();
   initThemeToggle();
+  initPalette({ setWindow: setWindow, setTheme: setTheme });
   initStickyHeader();
   document.getElementById("skip-link").addEventListener("click", focusTitle);
   pollHealth();

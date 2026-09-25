@@ -177,6 +177,58 @@ data grid. Each has a loading, an empty, an error and a stale state.
 - **Confirm dialog** (`confirmDialog`): a native `<dialog>`, used before
   a change with a warning, such as a Capture level that costs more.
 
+### Search and keyboard shortcuts
+
+`palette.js`. **Search** (Ctrl+K, or the Search button at the right of
+the page header) is a modal `<dialog>` near the top of the window. It
+finds:
+
+- every page and segment, named as the sidebar names them (from
+  `VIEW_KEYS`, so a new page is found without more work);
+- the report's sections and tables: a section opens its page at its
+  first table, and a table opens where it is shown or, for a table no
+  page shows, in the table drawer (as an evidence link does);
+- the window's recommendations and checks, each opening selected in its
+  inbox (`?id=`);
+- glossary terms and the How costs work cards (`?term=`, `?card=`);
+- the window's 20 most recent sessions, each opening its drawer.
+
+And it runs commands: **Set window: …**, the three themes, **Show
+keyboard shortcuts**, and **Copy prompt: …** for each recommendation
+with a prompt (if the browser refuses the clipboard, the recommendation
+opens so the prompt can be copied from there). Search never changes
+Claude Code: it reads, opens pages and copies.
+
+With nothing typed it lists the pages, then the commands. Typing narrows
+every group at once: each typed word must match a result's name or its
+other words, at the start of the name first, then at the start of a
+word, inside a word, and finally as letters in order with at most two
+gaps ("rbld" finds "rebuild"). Each group shows its 8 best, the group
+with the best match first, with the typed words in bold.
+
+The box is an ARIA combobox: focus stays in it while Up, Down, Page Up
+and Page Down move `aria-activedescendant` through a `listbox` of
+`group`s; Enter opens the one picked, Esc or a click outside closes it
+and focus returns to what opened it. The list is `aria-busy` until the
+window's actions, tables and sessions arrive (fetched once per window);
+the pages and commands are there at once. A polite status line gives
+the count.
+
+**Shortcuts** (`?` shows them all in a sheet):
+
+| Keys | What they do |
+|---|---|
+| Ctrl+K | Search |
+| G, then O, A, S, C, E, H or U | Overview, Actions, Spend, Cache, Agents & context, Work habits, Setup (E and U because A and S are taken) |
+| `[` and `]` | The page's previous or next segment |
+| J and K | The next or previous item in the page's list: the Actions inbox, or the first grid whose rows open something (Sessions, CLAUDE.md files); Enter opens it |
+| `?` | The shortcut sheet |
+| Esc | Closes a drawer, menu, popover, search or the sheet |
+
+A key typed in a text box, pressed while a dialog, menu or popover is
+open, or pressed with Ctrl, Alt or the Windows key is left alone (Ctrl+K
+apart), so shortcuts never take a letter meant for a field.
+
 ### Data grid
 
 Every table on every page is `dataGrid`:
@@ -955,6 +1007,7 @@ stdlib-only test suite.
 | `costs.js` | the pricing helpers Actions and Glossary both need, from `report.meta.rates`: `pricingFacts`, `priced`, `modelSentence`, and `cardRuleText` (the rule sentence for each `COST_CARDS` concept — the one source Glossary's two segments both read) |
 | `shell.js` | what is on every view: the health banner, the sidebar's status line, the capture banner; the health detail (`renderHealth`) and logon warning (`renderLogonNotice`) the Overview and Data quality show |
 | `icons.js` | the icon set: `icon(name, opts)` returns an inline 16px SVG |
+| `palette.js` | search (Ctrl+K: `openPalette`, `matchScore`) and the keyboard shortcuts (`GO_KEYS`, `showShortcuts`) |
 | `d3.js` | the one door to the vendored d3 (`import d3 from "./d3.js"`) |
 | `theme-boot.js` | a classic script, not a module: sets `data-theme` before the first paint |
 | `page-overview.js` | Overview |

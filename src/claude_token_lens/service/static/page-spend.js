@@ -247,8 +247,9 @@ function renderSessionsTable(rows, container, capped) {
   }
 }
 
-// A session's detail slides in from the right, over the list.
-function openSessionDrawer(sessionId) {
+// A session's detail slides in from the right, over the list (or over
+// any page: search opens recent sessions from anywhere).
+export function openSessionDrawer(sessionId) {
   drawer({
     title: "Session " + String(sessionId).slice(0, 8),
     wide: true,

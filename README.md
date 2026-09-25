@@ -249,7 +249,9 @@ completely, see [Uninstalling](#uninstalling).
 
 The sidebar lists the pages; a page with more than one part shows them as
 a row of buttons under its title. Each page has its own address (such as
-`#/spend/usage`), so Back, Forward and bookmarks work.
+`#/spend/usage`), so Back, Forward and bookmarks work. Ctrl+K searches
+the pages, tables, recommendations, checks, glossary terms and recent
+sessions; press `?` for the keyboard shortcuts.
 
 | Page | The question it answers |
 |---|---|
