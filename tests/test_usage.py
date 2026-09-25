@@ -131,7 +131,7 @@ def test_subscription_billing_populates_five_hour_blocks_and_relabels_cost(tmp_p
     for table in section.tables:
         for column in table.columns:
             if column.key == "cost":
-                assert column.label == "Cost (list-price equivalent USD)"
+                assert column.label == "Cost (list-price equivalent)"
     assert any("subscription" in note for note in section.notes)
     assert_privacy(section)
 

@@ -579,10 +579,10 @@ def _build_baseline_by_mode_table(
             f"Minimum sample: {_BASELINE_MIN_SESSIONS} session(s) required in both the baseline "
             "and the current window for a mode to show real numbers; below that only session "
             "counts are shown (see the Note column).",
-            "Only cost per session, re-cache share and compactions per session are stratified by "
-            "mode here -- TTL mix, session baseline size, mean spawn write and scorecard levels "
-            "stay corpus-wide only (see the overview table), because the accumulators they come "
-            "from (topology.TopologyStats/ttl.TtlStats) do not retain a per-session mode linkage.",
+            "Only cost per session, cache rebuild share and summaries per session are split by "
+            "mode here. Cache lifetime mix, startup size, average startup write and scorecard "
+            "levels stay across all sessions (see the overview table), because the figures they "
+            "come from aren't kept per session.",
         ],
     )
 

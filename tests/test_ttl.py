@@ -1295,7 +1295,8 @@ def test_ttl_thresholds_from_config_none_gives_defaults():
 
 def test_ttl_thresholds_describe_mentions_every_field():
     lines = " ".join(TtlThresholds().describe())
-    for needle in ("dominance", "fidelity_warn_pct", "switch_pct", "switch_usd", "near_miss_window_s", "ctx_floor"):
+    # One value per threshold, in plain words rather than its config key.
+    for needle in ("90%", "10.0%", "95%", "$1.00", "5.0%", "60 seconds", "20,000", "20%", "2,000"):
         assert needle in lines
 
 
@@ -1828,7 +1829,7 @@ def test_build_section_window_start_caveat_note_only_when_subagent_predates_wind
         SONNET_RATES,
     )
     section = build_section(stats, billing_mode="api")
-    assert not any("find_subagents" in note for note in section.notes)
+    assert not any("started before the window did" in note for note in section.notes)
 
     # No caveat: window_start given, but the subagent's mtime is inside it.
     recent_ns = int(dt.datetime(2026, 9, 15, tzinfo=dt.timezone.utc).timestamp() * 1_000_000_000)
@@ -1841,7 +1842,7 @@ def test_build_section_window_start_caveat_note_only_when_subagent_predates_wind
         SONNET_RATES,
     )
     section2 = build_section(stats2, billing_mode="api", window_start=dt.datetime(2026, 9, 1, tzinfo=dt.timezone.utc))
-    assert not any("find_subagents" in note for note in section2.notes)
+    assert not any("started before the window did" in note for note in section2.notes)
 
     # Caveat present: window_start given, subagent mtime predates it.
     old_ns = int(dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc).timestamp() * 1_000_000_000)
@@ -1853,4 +1854,4 @@ def test_build_section_window_start_caveat_note_only_when_subagent_predates_wind
         SONNET_RATES,
     )
     section3 = build_section(stats3, billing_mode="api", window_start=dt.datetime(2026, 9, 1, tzinfo=dt.timezone.utc))
-    assert any("find_subagents" in note for note in section3.notes)
+    assert any("started before the window did" in note for note in section3.notes)

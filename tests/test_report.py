@@ -373,7 +373,7 @@ def test_usage_section_cost_label_reflects_billing_mode(tmp_path):
     api_project_table = next(t for t in api_usage.tables if t.name == "by_project")
     sub_project_table = next(t for t in sub_usage.tables if t.name == "by_project")
     assert api_project_table.columns[-1].label == "Cost"
-    assert sub_project_table.columns[-1].label == "Cost (list-price equivalent USD)"
+    assert sub_project_table.columns[-1].label == "Cost (list-price equivalent)"
 
 
 # -- phases / snapshots / include -------------------------------------------

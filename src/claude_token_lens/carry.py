@@ -112,24 +112,21 @@ _CHARS_PER_TOKEN_APPROX = 4
 #: ``ttl.ASSUMPTIONS``/``recache.ASSUMPTIONS``/``limits.ASSUMPTIONS`` --
 #: same convention, see those modules' own ``ASSUMPTIONS`` constants.
 ASSUMPTIONS: tuple[str, ...] = (
-    "turns carried is observed directly from Turn.turn_index (how many "
-    "later priced turns actually exist), never estimated",
-    "a COMPACT_BOUNDARY event preceding a later turn ends every "
-    "in-flight result's carry at that point -- nothing at or past the "
-    "boundary turn is priced as still-cached",
-    "each later turn's carry cost is split between the model's flat "
-    "cache_read rate and its blended cache_write (5m/1h) rate in "
-    "proportion to that turn's own observed cache_read_tokens/"
-    "cache_creation_tokens split -- an approximation, since no field "
-    "attributes a turn's aggregate cache volume back to which earlier "
-    "write produced which slice of it",
-    "tokens are chars / 4 (this project's standing chars-to-tokens "
-    "approximation, see topology._CHARS_PER_TOKEN_APPROX), not a real "
-    "tokenizer",
-    "one 'result' is one (turn, tool name) entry in "
-    "Turn.tool_result_chars_by_tool -- multiple calls to the same tool "
-    "within one turn are already summed together, the finest per-call "
-    "grain the privacy-safe Turn contract exposes",
+    "how many replies an output is kept for is counted from the replies "
+    "that really follow it, never estimated",
+    "a conversation summary (compaction) before a later reply ends every "
+    "earlier output's carry at that point -- nothing at or past the "
+    "summary is priced as still cached",
+    "each later reply's carry cost is split between the model's cache "
+    "read price and its blended cache write price (5-minute and 1-hour) "
+    "in proportion to that reply's own split of cache reads and cache "
+    "writes -- an approximation, since nothing records which earlier "
+    "write produced which slice of a reply's cache",
+    "tokens are characters divided by 4 (the approximation used "
+    "throughout this report), not a real tokenizer",
+    "one output is everything one tool returned in one reply -- several "
+    "calls to the same tool in one reply are already summed together, "
+    "the finest grain the privacy-safe transcript summary keeps",
 )
 
 #: What ``price_turn``/rate resolution accepts: an already-resolved rate
@@ -231,21 +228,15 @@ class CarryThresholds:
         """One sentence per threshold, for the report's thresholds block
         and this module's own table notes -- same convention as
         ``ttl.TtlThresholds.describe``/``limits.LimitThresholds.describe``."""
+        caps = " and ".join(f"{cap:,}" for cap in self.truncation_tokens)
         return [
-            f"big_result_tokens = {self.big_result_tokens:,.0f} tokens: the "
-            "size a carried result is called 'big' at, for this module's own "
-            "reporting.",
-            f"carry_share_pct = {self.carry_share_pct:.1f}%: the "
-            "tool-output-carry rule fires for a tool whose carry cost exceeds "
-            "this share of the corpus's total cache volume.",
-            f"top_n = {self.top_n}: how many of the single largest carried "
-            "results carry_top_results lists.",
-            f"truncation_tokens = {list(self.truncation_tokens)}: the token "
-            "caps the avoidable-if-truncated savings table is computed "
-            "against.",
-            f"min_sample_results = {self.min_sample_results}: the "
-            "tool-output-carry rule never fires for a tool with fewer "
-            "carried results than this.",
+            f"A tool output counts as big at {self.big_result_tokens:,.0f} tokens.",
+            f"The tool-output advice fires for a tool whose kept output is more than "
+            f"{self.carry_share_pct:.1f}% of the cache.",
+            f"The most expensive outputs table lists the top {self.top_n}.",
+            f"The capped-outputs saving is worked out at caps of {caps} tokens.",
+            f"The tool-output advice never fires for a tool with fewer than "
+            f"{self.min_sample_results} kept outputs.",
         ]
 
 
@@ -630,7 +621,9 @@ def compute_carry(
 # -- report section -----------------------------------------------------------
 
 
-def _by_key_table(name: str, title: str, key_label: str, rows: list[CarryByKeyStats]) -> Table:
+def _by_key_table(
+    name: str, title: str, key_label: str, rows: list[CarryByKeyStats], th: CarryThresholds
+) -> Table:
     columns = [
         Column(key="key", label=key_label, kind="str"),
         Column(key="result_count", label="Carried results", kind="int"),
@@ -660,13 +653,12 @@ def _by_key_table(name: str, title: str, key_label: str, rows: list[CarryByKeySt
         columns=columns,
         rows=table_rows,
         notes=[
-            "share_of_cache_volume_pct is an attribution share, not a "
-            "partition: carry_tokens double-counts by construction (the "
-            "same physical cache read on a given turn also carries every "
-            "other still-live result), so rows do not sum to 100%.",
-            "saving_if_capped_usd: what capping this row's own results at "
-            "big_result_tokens would have saved, worked out the same way as "
-            "carry_truncation_savings.",
+            "Share of cache is each row's own share, not a slice of one "
+            "whole: a reply's cache read counts once for every output "
+            "still in context, so the rows don't add up to 100%.",
+            "Saving if capped is what capping this row's own outputs at "
+            f"{th.big_result_tokens:,.0f} tokens would have saved, worked "
+            "out the same way as the capped-outputs saving table.",
         ],
     )
 
@@ -719,10 +711,8 @@ def _build_truncation_table(stats: CarryStats, th: CarryThresholds) -> Table:
             "on the result's size), so the saving from capping every "
             "result above the threshold at that limit is computed "
             "directly rather than re-run through a hypothetical.",
-            f"big_result_tokens (this module's own 'big' threshold) = "
-            f"{th.big_result_tokens:,.0f} tokens -- see the by-tool/"
-            "by-agent-type tables' own result counts for how many results "
-            "clear it.",
+            f"An output counts as big at {th.big_result_tokens:,.0f} tokens; "
+            "the by-tool and by-agent-type tables count how many clear it.",
         ],
     )
 
@@ -751,7 +741,7 @@ def _build_cap_table(stats: CarryStats) -> Table:
         notes=[
             "One row per setting the tool-output check suggests, at the "
             "value it suggests, over the results that setting caps: "
-            "worked out the same way as carry_truncation_savings. Results "
+            "worked out the same way as the capped-outputs saving table. Results "
             "from one reply are counted together, so a reply's several "
             "short outputs can count as one long one: an upper bound.",
         ],
@@ -765,9 +755,9 @@ def build_section(stats: CarryStats, thresholds: CarryThresholds | None = None) 
     """
     th = thresholds or _DEFAULT_THRESHOLDS
     tables = [
-        _by_key_table("carry_by_tool", "Context carry cost by tool", "Tool", stats.by_tool),
+        _by_key_table("carry_by_tool", "Context carry cost by tool", "Tool", stats.by_tool, th),
         _by_key_table(
-            "carry_by_agent_type", "Context carry cost by agent type", "Agent type", stats.by_agent_type
+            "carry_by_agent_type", "Context carry cost by agent type", "Agent type", stats.by_agent_type, th
         ),
         _build_top_results_table(stats),
         _build_truncation_table(stats, th),

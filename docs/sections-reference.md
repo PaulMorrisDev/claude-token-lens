@@ -127,9 +127,9 @@ respects.
   fall back to counting `last_miss_cause` only on a row where
   `misses` genuinely increased over the previous row for that session.
 
-Every money column's label switches to "Cost (list-price equivalent
-USD)" under subscription billing, and a section note repeats that these
-are not real invoice lines.
+Every money column's label switches to "Cost (list-price equivalent)"
+under subscription billing, and a section note repeats that these are
+not real invoice lines.
 
 ## `sessions` (`classify.py`)
 

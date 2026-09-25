@@ -170,7 +170,7 @@ def test_thresholds_describe_mentions_every_value():
     assert len(lines) == 4
     joined = " ".join(lines)
     assert "20,000" in joined
-    assert "0.20" in joined
+    assert "20%" in joined
     assert "2,000" in joined
     assert "200,000" in joined
 

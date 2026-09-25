@@ -146,10 +146,9 @@ class LimitThresholds:
 
     def describe(self) -> list[str]:
         return [
-            f"csv_exhaustion_pct = {self.csv_exhaustion_pct:.1f}%: a "
-            "usage-log.csv five_hour/seven_day row counts as an "
-            "exhaustion signal when its used_percentage is at or above "
-            "this.",
+            f"A usage log row counts as at the limit when it shows "
+            f"{self.csv_exhaustion_pct:.1f}% or more of the 5-hour or weekly "
+            "limit used.",
         ]
 
 
@@ -437,9 +436,7 @@ def build_section(stats: LimitStats, pricing: Pricing | None = None, th: LimitTh
 
     notes = [f"Thresholds: {' '.join(th.describe())}"]
     if pricing is not None:
-        notes.append(
-            f"Limit-turn cost priced against {pricing.version} ({pricing.currency}, sha8={pricing.sha8})."
-        )
+        notes.append(f"The cost of cache writes after a pause uses prices from pricing.toml, version {pricing.version}.")
 
     return Section(key="limits", title="Usage limits", tables=tables, notes=notes)
 
@@ -491,15 +488,15 @@ def _summary_table(stats: LimitStats, rows: list[LimitTypeStats]) -> Table:
             ]
         ],
         notes=[
-            "A 'post-pause turn' is the first priced turn whose Turn.gap_cause "
-            "== \"limit\" -- it always did a full prefix rewrite (see the "
-            "module docstring), so its cache-creation tokens/write cost are "
-            "unavoidable, not an ordinary re-cache finding.",
-            "limit_turn_write_cost_usd counts every post-pause turn; the "
-            "recache section's unavoidable_limit_expiry_cost_usd counts only "
-            "the subset that also clears recache.detect's ctx_floor/cr_ratio "
-            "thresholds, so the two figures are related but not equal -- see "
-            "docs/limits.md's reconciliation note (N2).",
+            "A reply after a pause is the first reply after a usage-limit "
+            "pause. It always rewrites the whole cache, so its cache writes "
+            "and their cost can't be avoided, and aren't an ordinary cache "
+            "rebuild.",
+            "\"Cost of cache writes after a pause\" counts every reply after "
+            "a pause. The cache rebuild section's cost of rebuilds after a "
+            "usage-limit pause counts only the ones that also pass its "
+            "rebuild check, so the two are related but not equal "
+            "(docs/limits.md explains the difference).",
         ],
     )
 
@@ -521,8 +518,8 @@ def _hit_kind_table(rows: list[LimitTypeStats]) -> Table:
         ],
         rows=table_rows,
         notes=[
-            "session_limit: \"You've hit your session limit\" (the "
-            "rolling 5-hour window). weekly_limit: \"You've hit your "
+            "5-hour session limit: \"You've hit your session limit\" (the "
+            "rolling 5-hour window). Weekly limit: \"You've hit your "
             "weekly limit\".",
         ],
     )
@@ -545,11 +542,10 @@ def _terminated_table(rows: list[LimitTypeStats]) -> Table:
         ],
         rows=table_rows,
         notes=[
-            "A subagent the harness killed mid-task, from a "
-            "task-notification's own \"Agent terminated early due to "
-            "...\" text. rate_limit: the notification's structured "
-            "\"error type\" clause named rate_limit. other: any other "
-            "reason (or none stated).",
+            "A subagent Claude Code stopped mid-task, from its task "
+            "notification's own \"Agent terminated early due to ...\" "
+            "text. Usage limit: the notification named a rate limit as "
+            "the error type. Other: any other reason, or none stated.",
         ],
     )
 
@@ -572,11 +568,11 @@ def _pause_table(rows: list[LimitTypeStats]) -> Table:
         ],
         rows=[["all", total_count, round(total_s, 3), round(mean_s, 3) if mean_s is not None else None]],
         notes=[
-            "One pause per turn whose gap to the previous turn spanned a "
-            "usage-cap pause (Turn.gap_cause == \"limit\"); duration is "
-            "that turn's own gap_s. Per-agent-type median/max are on the "
-            "by-agent-type table instead, since a corpus-wide median "
-            "cannot be derived from already-aggregated per-type medians.",
+            "One pause per reply whose wait since the previous reply "
+            "spanned a usage-limit pause; its length is that wait. The "
+            "typical and longest pause per agent type are on the "
+            "by-agent-type table, since an overall typical pause can't be "
+            "worked out from the per-type ones.",
         ],
     )
 
@@ -594,11 +590,10 @@ def _reset_hour_table(counts: dict[int, int]) -> Table:
         ],
         rows=rows,
         notes=[
-            "Local hour is read from the synthetic text's own \"resets "
-            "H:MMam/pm\" clause when present, else the machine's local "
-            "zone applied to reset_ts (see the module docstring). A hit "
-            "with neither is excluded from this histogram (but still "
-            "counted in limits_summary).",
+            "The local hour comes from the limit message's own \"resets "
+            "H:MMam/pm\" text when present, else from its reset time in "
+            "this machine's time zone. A stop with neither is left out of "
+            "this chart but still counted in the summary.",
         ],
     )
 
@@ -640,8 +635,8 @@ def _by_agent_type_table(rows: list[LimitTypeStats]) -> Table:
         ],
         rows=table_rows,
         notes=[
-            "agent_type is the transcript's TranscriptMeta.agent_type, or "
-            "'top-level' for the main conversation.",
+            "Each subagent type as Claude Code recorded it, plus one row "
+            "for the main session.",
         ],
     )
 
@@ -729,11 +724,11 @@ def csv_cross_check(rows: Sequence[dict], stats: LimitStats, th: LimitThresholds
         ],
         rows=table_rows,
         notes=[
-            f"A csv row counts as an exhaustion signal at used_percentage "
-            f">= {th.csv_exhaustion_pct:.1f}%. five_hour rows compare "
-            "against session_limit hits, seven_day against weekly_limit "
-            "hits. Independent samples, not the same detector -- see the "
-            "function docstring.",
+            f"A usage log row counts as at the limit at "
+            f"{th.csv_exhaustion_pct:.1f}% used or more. 5-hour rows are "
+            "compared with 5-hour session limit stops, weekly rows with "
+            "weekly limit stops. The two sides are counted separately, so "
+            "they needn't match exactly.",
         ],
     )
 
@@ -776,9 +771,8 @@ def signals_cross_check(session_signals, stats: LimitStats) -> Table:
         ],
         rows=rows,
         notes=[
-            "Neither free signal names a five_hour/seven_day window, so both rows compare against the combined "
-            "session_limit + weekly_limit transcript count. Independent samples, not the same detector -- see "
-            "the function docstring.",
+            "Neither signal names its window, so both rows compare with the 5-hour and weekly limit stops "
+            "together. The two sides are counted separately, so they needn't match exactly.",
         ],
     )
 

@@ -1391,6 +1391,22 @@ identical renderer. `report --json`/`/api/report.json` are the one pair
 that stay byte-equivalent *with* the token still in place, for the same
 reason: both call the same `render_json`.
 
+**Tables carry display-only fields.** Every `Table` in a report-backed
+response (`/api/report.json`, each section route, `/api/config-diff`,
+`/api/diagnostics`) carries, beside `name`, `title`, `columns`, `rows`
+and `notes`, the fields `helptext.annotate` fills in for the dashboard:
+`help` (`{shows, read, act}`), `value_labels` (raw cell value -> display
+label), `row_groups` and `row_kinds` (for a long "metric / value"
+table), `dashboard` (`keep`, `advanced` or `report`) and, additive,
+`lead_columns`. `lead_columns` lists column keys in the order the
+dashboard shows them first: on a wide table at most 7, the row key
+first, with the rest behind the grid's column chooser; on a one-row
+summary table (such as `waste_summary`) at most 4 headline values, shown
+as tiles. An empty list means the grid's own default, the first 7
+columns. None of these fields changes `rows`: recommendation evidence
+and the CSV export keep the raw values, and the Markdown and HTML
+renderers ignore `lead_columns`.
+
 **`GET /api/session/<id>` returns a superset of the listed fields.**
 `Store.session()`'s dict includes `mode_source`/`purpose_source`
 alongside every field `/api/sessions` lists — a non-breaking addition,
