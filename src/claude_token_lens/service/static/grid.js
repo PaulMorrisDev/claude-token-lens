@@ -72,6 +72,13 @@ var VIRTUAL_ROWS = 200;
 var TALL_ROWS = 20;
 // A wide table shows this many columns until you choose more.
 var LEAD_COLUMNS = 7;
+// A report table longer than this shows its first REPORT_ROWS rows (in
+// the order it is sorted) and a button for the rest.
+var REPORT_ROWS = 10;
+
+function hasKeys(object) {
+  return !!object && Object.keys(object).length > 0;
+}
 
 function readJson(key) {
   var raw = storageGet(key);
@@ -189,6 +196,8 @@ var TINT_TABLES = ["quality_by_agent"];
 //   swatch    row -> the colour the row's entity has on the chart, shown
 //             as a swatch before its first cell, or null
 //   sortable  false for a form laid out as a table
+//   limit     show the first limit rows and a "Show all N rows" button,
+//             when there are more than limit + 2 (else all of them)
 //   empty     what to say when there are no rows
 //   caption   the table's name, read aloud
 //   valueLabels, rowGroups, rowKinds: the report Table's own fields
@@ -263,6 +272,10 @@ export function dataGrid(spec) {
   if (virtual) scroller.classList.add("grid-virtual");
   var orderedRows = rows;
   var rowHeight = 33;
+  // A long table opens on its top rows; the rest are one click away.
+  var limited = !virtual && spec.limit > 0 && rows.length > spec.limit + 2;
+  var expanded = false;
+  var moreButton = null;
 
   function visibleColumns() {
     return columns.filter(function (column) {
@@ -527,7 +540,8 @@ export function dataGrid(spec) {
     }
     var group = null;
     var groups = sort ? null : spec.rowGroups;
-    orderedRows.forEach(function (row) {
+    var drawn = limited && !expanded ? orderedRows.slice(0, spec.limit) : orderedRows;
+    drawn.forEach(function (row) {
       var rowGroup = groups && Array.isArray(row) && typeof row[0] === "string" ? groups[row[0]] : null;
       if (rowGroup && rowGroup !== group) {
         group = rowGroup;
@@ -552,20 +566,47 @@ export function dataGrid(spec) {
     tbody.appendChild(spacer((orderedRows.length - end) * rowHeight));
   }
 
+  function rowIndex(rowKey) {
+    for (var i = 0; i < orderedRows.length; i++) {
+      var row = orderedRows[i];
+      var key = spec.rowKey ? spec.rowKey(row) : Array.isArray(row) ? row[0] : null;
+      if (String(key) === String(rowKey)) return i;
+    }
+    return -1;
+  }
+
+  function setExpanded(open) {
+    expanded = open;
+    moreButton.setAttribute("aria-expanded", open ? "true" : "false");
+    moreButton.querySelector(".button-label").textContent = open ? "Show the first " + spec.limit : "Show all " + rows.length + " rows";
+    drawBody();
+  }
+
+  if (limited) {
+    moreButton = button("Show all " + rows.length + " rows", {
+      variant: "quiet",
+      action: function () {
+        setExpanded(!expanded);
+      },
+    });
+    moreButton.setAttribute("aria-expanded", "false");
+    moreButton.setAttribute("aria-controls", gridId);
+    wrap.appendChild(el("div", { class: "grid-more" }, [moreButton]));
+    // An evidence link's row may be past the first rows: show them all
+    // (pulseRow calls this). Returns whether the key is one of the rows.
+    table.gridScrollTo = function (rowKey) {
+      if (rowIndex(rowKey) === -1) return false;
+      if (!expanded) setExpanded(true);
+      return true;
+    };
+  }
+
   if (virtual) {
     // An evidence link's row may be out of the drawn window: scroll the
     // grid so it is drawn (pulseRow calls this). Returns whether the
     // key is one of the grid's rows.
     table.gridScrollTo = function (rowKey) {
-      var index = -1;
-      for (var i = 0; i < orderedRows.length; i++) {
-        var row = orderedRows[i];
-        var key = spec.rowKey ? spec.rowKey(row) : Array.isArray(row) ? row[0] : null;
-        if (String(key) === String(rowKey)) {
-          index = i;
-          break;
-        }
-      }
+      var index = rowIndex(rowKey);
       if (index === -1) return false;
       var viewport = scroller.clientHeight || 560;
       scroller.scrollTop = Math.max(0, index * rowHeight - viewport / 2 + rowHeight / 2);
@@ -885,6 +926,9 @@ export function renderTable(table, tableId, currency, options) {
       valueLabels: table.value_labels,
       rowGroups: table.row_groups,
       rowKinds: table.row_kinds,
+      // A table read down its rows (grouped, or one kind per row) stays
+      // whole. The report sends both as {} when a table has neither.
+      limit: hasKeys(table.row_groups) || hasKeys(table.row_kinds) ? 0 : REPORT_ROWS,
       empty: "Nothing to show for this window.",
       emptyNext: "A longer window may include some.",
       tint: TINT_TABLES.indexOf(table.name) !== -1,

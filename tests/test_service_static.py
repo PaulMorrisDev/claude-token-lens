@@ -378,6 +378,27 @@ def test_data_grid_keeps_each_tables_sort() -> None:
     assert grid.index(read) < grid.index(write)
 
 
+def test_long_report_tables_open_on_their_first_rows() -> None:
+    """Phase 9: a report table of more than REPORT_ROWS + 2 rows draws
+    its first REPORT_ROWS (after the sort, so a sorted table shows its
+    top rows) and a "Show all N rows" button; an evidence link to a
+    later row shows them all before it pulses (gridScrollTo, which
+    pulseRow calls). Savings ran to 5,900px on four 15-20 row tables."""
+    source = _app_js()
+    grid = _function_source(source, "dataGrid")
+    assert "orderedRows.slice(0, spec.limit)" in grid
+    assert '"Show all " + rows.length + " rows"' in grid
+    assert 'moreButton.setAttribute("aria-expanded", "false")' in grid
+    limited = grid.index("if (limited) {")
+    assert "table.gridScrollTo = function (rowKey)" in grid[limited:]
+    assert "if (!expanded) setExpanded(true);" in grid[limited:]
+    table = _function_source(source, "renderTable")
+    # row_groups and row_kinds arrive as {} when a table has neither.
+    assert "limit: hasKeys(table.row_groups) || hasKeys(table.row_kinds) ? 0 : REPORT_ROWS" in table
+    pulse = _function_source(source, "pulseRow")
+    assert 'typeof table.gridScrollTo === "function"' in pulse
+
+
 def test_command_block_shows_every_explainer_line() -> None:
     """Phase 4: a command block carries what changes, where, the
     trade-off and how to undo it -- the explainer fixes.build_fix

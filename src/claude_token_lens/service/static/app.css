@@ -3752,6 +3752,10 @@ details.disclosure {
   margin-bottom: var(--space-2);
 }
 
+.grid-more {
+  margin-top: var(--space-2);
+}
+
 .grid-scroll {
   overflow-x: auto;
   border: 1px solid var(--border);

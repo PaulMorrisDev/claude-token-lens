@@ -123,11 +123,11 @@ PLACEMENT: dict[str, str] = {
     "topology_chains_summary": "advanced",
     "topology_reminder_hook_pressure": "advanced",
     "topology_cache_signal_histogram": "report",
-    "topology_mcp_cost": "keep",
+    "topology_mcp_cost": "advanced",
     "topology_effort_tokens": "keep",
     "topology_per_turn_effort_tokens": "report",
     "topology_effort_by_agent_type": "advanced",
-    "topology_context_composition": "keep",
+    "topology_context_composition": "advanced",
     "topology_redundant_work": "advanced",
     "topology_redundant_reads": "advanced",
     # quality signals
@@ -3603,7 +3603,7 @@ TABLE_COPY: dict[str, TableCopy] = {
         },
         lead_columns=[
             "agent_type", "observed_model", "observed_cost", "best_cheaper_alternative_model", "saving_usd",
-            "saving_pct", "best_cheaper_alternative",
+            "saving_pct",
         ],
     ),
     "model_swap_summary": TableCopy(

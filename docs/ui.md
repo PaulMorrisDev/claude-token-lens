@@ -195,6 +195,10 @@ Every table on every page is `dataGrid`:
 - a thin bar in the lead measure's cells, the default ranking picture,
   so a ranking needs no separate chart; an optional tint by value (the
   Quality grid);
+- a report table of more than 12 rows opens on its first 10, in the
+  order it is sorted, with a "Show all N rows" button (a grouped or
+  per-row-kind table stays whole); an evidence link to a later row
+  shows them all first;
 - only the visible rows drawn once a table passes 200 rows;
 - an evidence link's row scrolled into view and briefly highlighted
   (`pulseRow`): a glow under the row's text fades over 1.2 seconds.
