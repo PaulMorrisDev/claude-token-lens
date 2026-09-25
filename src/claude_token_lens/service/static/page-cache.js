@@ -9,6 +9,7 @@ import { findSection, loadInto, loadReport, withWindow } from "./api.js";
 import { chip, errorNotice, loadingNode, tile, tileRow } from "./ui.js";
 import { renderMappedSections, renderReportBackedSection } from "./grid.js";
 import { pageLink, viewIntro } from "./links.js";
+import { avoidableRebuilds } from "./costs.js";
 
 // ======================================================================
 // Cache, Rebuilds (recache and limits sections + a quick /api/recache
@@ -120,20 +121,20 @@ function renderCacheExplainer(report, container) {
     var lost = moneyParts(rebuilds.avoidable_cost_usd);
     // The rebuilds that cost counts: the cache expired or a change broke
     // it. One after a usage-limit pause isn't avoidable.
-    var causes = rowObjects(reportTable(report, "recache", "recache_signature_split"));
-    var times = causes.reduce(function (sum, row) {
-      return row.signature === "limit-expiry" ? sum : sum + (Number(row.turns) || 0);
-    }, 0);
-    var told =
-      (causes.length ? "The cache was rebuilt " + (times === 1 ? "once" : thousands(times) + " times") : "A rebuild writes the cache again") +
-      (writeWords && readWords ? ": written again at " + writeWords + " the input price, where reading it would have cost " + readWords + "." : ".");
+    var times = avoidableRebuilds(report);
+    var told = [];
+    if (times !== null) told.push("The cache was rebuilt " + (times === 1 ? "once" : thousands(times) + " times") + ".");
+    if (writeWords && readWords) {
+      told.push("A rebuild writes the cache again at " + writeWords + " the input price, where reading it costs " + readWords + " the input price.");
+    }
+    told.push("Most follow an idle gap longer than the cache lifetime. Rebuilds after a usage-limit pause aren't counted.");
     tiles.push(
       tile({
         label: "Cost of avoidable rebuilds",
         value: lost.value,
         unit: lost.unit,
         hint: lost.secondary || null,
-        note: told + " Most follow an idle gap longer than the cache lifetime. Rebuilds after a usage-limit pause aren't counted.",
+        note: told.join(" "),
         link: costCardLink("cache-rebuilds", "What causes a rebuild"),
       })
     );

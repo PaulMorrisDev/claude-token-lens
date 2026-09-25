@@ -520,9 +520,9 @@ writes refuse to overwrite an existing profile unless asked to with
 profile. `POST /api/whatif` only works out an estimate and writes
 nothing. `POST /api/predictions/seen` (EST-P5) only flips a `seen` flag,
 by its own row id, on one of this tool's own logged "what if?"
-predictions already in the store, so the Profiles tab's "Did your
-estimates come true?" table can tell a prediction you've looked at from
-one still waiting on you — it names no session, setting or transcript
+predictions already in the store, so the "Did your estimates come
+true?" table on Setup › Settings can tell a prediction you've looked at
+from one still waiting on you — it names no session, setting or transcript
 content.
 
 The service's on-disk SQLite store (`<config-dir>/service.db`) is

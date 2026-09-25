@@ -3,8 +3,10 @@
  * The prices behind the dashboard's money: report.meta.rates (from
  * pricing.toml) turned into the sentences the Actions detail
  * (page-actions.js) and Glossary > How costs work (page-glossary.js)
- * both need. Every multiplier goes through format.js's fraction(), never
- * typed in here, so the words always match your pricing.
+ * both need, and the rebuild count Cache > Rebuilds (page-cache.js)
+ * shares with Glossary. Every multiplier goes through format.js's
+ * fraction(), never typed in here, so the words always match your
+ * pricing.
  */
 
 import { findSection } from "./api.js";
@@ -31,6 +33,29 @@ export function pricingFacts(report) {
     : [];
   var mainId = used[0] || Object.keys(rates)[0] || null;
   return { rates: rates, used: used, main: mainId ? rates[mainId] : null, mainId: mainId };
+}
+
+// How many cache rebuilds recache_summary's avoidable_cost_usd pays
+// for: the per-cause turns in recache_signature_split, leaving out
+// rebuilds after a usage-limit pause ("limit-expiry"), as that cost
+// does. recache_turns counts those too, so it would pair the cost with
+// more rebuilds than it covers. Cache > Rebuilds and Glossary > How
+// costs work both count here, so they name the same number. Null when
+// the report has no per-cause rows.
+export function avoidableRebuilds(report) {
+  var section = report ? findSection(report, "recache") : null;
+  var table = ((section && section.tables) || []).filter(function (t) {
+    return t.name === "recache_signature_split";
+  })[0];
+  if (!table || !table.rows.length) return null;
+  var keys = table.columns.map(function (column) {
+    return column.key;
+  });
+  var signature = keys.indexOf("signature");
+  var turns = keys.indexOf("turns");
+  return table.rows.reduce(function (sum, row) {
+    return row[signature] === "limit-expiry" ? sum : sum + (Number(row[turns]) || 0);
+  }, 0);
 }
 
 // A price as a share or multiple of the input price: "a tenth of the

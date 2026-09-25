@@ -1498,7 +1498,7 @@ def _item_outcome_misses(h: Habits) -> Item | None:
         parts[0] += f", costing {_mean(p.cost for p in misses) / _mean(p.cost for p in met):.1f}x one that met it"
     task = _dominant(p.task for p in misses)
     if task:
-        parts.append(f"mostly {task} work")
+        parts.append(f"mostly {catalogue.task_words(task)} work")
     slow = Counter(w for p in misses for w in p.slow).most_common(1)
     if slow:
         parts.append(f"slowed most by: {_ANSWER_LABELS['slow'].get(slow[0][0], slow[0][0]).lower()}")
@@ -2117,7 +2117,7 @@ def template_lines(task: str, cycles=()) -> tuple[list[str], str]:
     keys = mine + [k for k in DEFAULT_CHECKLISTS.get(task, ("goal", "done")) if k not in mine]
     if mine:
         top = mine[0]
-        why = f"{MISSING_LINES[top][0]} was missing in {counts[top]} of {len(cycles)} {task} asks."
+        why = f"{MISSING_LINES[top][0]} was missing in {counts[top]} of {len(cycles)} {catalogue.task_words(task)} asks."
     else:
         why = "A starting point; metrics capture (Standard) fits it to what your asks leave out."
     return keys, why

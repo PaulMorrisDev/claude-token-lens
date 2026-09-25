@@ -361,7 +361,12 @@ screen.
   from mark to mark and read it in the tooltip, Home and End jump to
   the ends, Enter opens the mark where it leads somewhere, and Esc
   lets go. On the session scatter, Shift with the arrow keys picks
-  the sessions from where the cursor started, as the brush does.
+  the sessions from where the cursor started, as the brush does. A
+  change label on a daily spend chart is a link of its own: the next
+  Tab stop after the plot, named "<change>, changed on <day>: see what
+  it did", opened with Enter or Space. Screen readers skip the rest of
+  the drawing (every other layer is `aria-hidden`; `layer(name,
+  {links: true})` keeps one reachable).
 - **Brush:** on the session scatter, dragging across a time range calls
   `opts.brushed` with the range, so the grid below can list only those
   sessions.
@@ -584,7 +589,7 @@ offers **Show all projects** while one is picked.
    - **daily spend** (chart 1, `/api/daily-usage` with the window and
      `split=agent`), with your settings changes from `/api/impact` as
      labelled rules; a day opens Spend › Sessions and a change Setup ›
-     Profiles. Beside it from 1440px (under it at 1280), **Next best
+     Settings. Beside it from 1440px (under it at 1280), **Next best
      actions**: the top five of `/api/recommendations`, most important
      first, then biggest `saving_usd`, each with its severity, title
      (a link to Actions › Recommendations), estimated saving and a Copy
@@ -726,8 +731,11 @@ offers **Show all projects** while one is picked.
    its card in Glossary › How costs work. What reading from the cache
    saved (`ttl_cache_economy`'s overall `net_saving_usd`, an estimate),
    what avoidable rebuilds cost (`recache_summary`'s
-   `avoidable_cost_usd` and `recache_turns`), and how many agent types a
-   1-hour lifetime would help (`ttl_break_even_share` rows with a
+   `avoidable_cost_usd`) and how many rebuilds that covers (the sum of
+   `recache_signature_split`'s `turns` without the usage-limit pause
+   row, `limit-expiry`, as the cost leaves it out; `costs.js`'s
+   `avoidableRebuilds`, which Glossary › How costs work counts with
+   too), and how many agent types a 1-hour lifetime would help (`ttl_break_even_share` rows with a
    positive `margin`, linking to Cache › Lifetime). Then
    `/api/recache`: stat cards for cache rebuilds by cause
    (expired while idle, invalidated by a change, expired during a
@@ -828,9 +836,10 @@ offers **Show all projects** while one is picked.
     estimated effect, why and the trade-off) with the ones your data
     supports already ticked; each tick re-posts the chosen changes to
     `POST /api/whatif` and updates the running total. The goal "A
-    profile for one kind of task" adds a "Kind of task" picker (it
-    reloads the draft with `task=`) and a note on what was found, and
-    names the profile after the task. Name it and save
+    profile for one kind of task" adds a "Kind of task" picker (each by
+    its plain name from the draft's `task_labels`; it reloads the draft
+    with `task=`) and a note on what was found, and names the profile
+    after the task ("Bug fix tasks"). Name it and save
     (`POST /api/profiles`). **Your profiles and the built-in
     ones** follows: one card per profile from `/api/profiles` (the
     catalogue's seven shipped profiles plus every user profile): name,
@@ -876,7 +885,8 @@ offers **Show all projects** while one is picked.
     Deep, Custom) each with what it adds and its weekly estimate, the
     sampling and end-time selects, and every metric grouped by where
     it is captured. Each group folds ("Main session (3 of 12 on)"), open
-    only when one of its metrics needs a hook entry or an install. A
+    only when one of its metrics needs a hook entry or an install, or
+    carries a note that its status line won't show. A
     metric is a row: a checkbox, what it captures, its estimate against
     its actual cost and how much has been collected, then "Why it helps
     and what Claude writes" folded (why, the tag Claude writes, what it
@@ -928,7 +938,12 @@ offers **Show all projects** while one is picked.
     number typed into the page), your own figures for the window from
     `report.json`, and a link to the page or recommendation that acts on
     it; a card whose section has no data for the window says so in a
-    line instead of a number. A link with `?card=<slug>` (`cardLink`)
+    line instead of a number. The cache rebuilds card counts the
+    rebuilds its cost covers, as Cache › Rebuilds does
+    (`avoidableRebuilds`), and the billing mode card says how amounts
+    read: money, a share of the weekly limit, or list-price equivalents
+    on a plan until usage-limit readings give a share
+    (`units.share_per_usd` is `null`). A link with `?card=<slug>` (`cardLink`)
     scrolls to and pulses its card, the same way a term link does.
 
 ## Help and labels
@@ -1052,7 +1067,7 @@ stdlib-only test suite.
 | `page-cache.js` | Cache › Rebuilds and Lifetime (TTL) |
 | `page-agents.js` | Agents & context › Subagents, Quality and Context |
 | `page-habits.js` | Work habits |
-| `page-setup.js` | Setup › Settings and Profiles (with impact and backtest) |
+| `page-setup.js` | Setup › Settings (with impact and backtest) and Profiles |
 | `page-capture.js` | Setup › Capture |
 | `page-data.js` | Data quality |
 | `page-glossary.js` | Glossary › Terms and How costs work |

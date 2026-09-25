@@ -161,6 +161,6 @@ Under subscription billing with usage-log rows, `report.build_report`
 adds the `elasticity` section right after `usage`, from the same fit
 `units.Units` uses, and adds `elasticity.ASSUMPTIONS` to the report's
 assumptions. `recommend.recommend()` runs `elasticity.RULES` last. The
-dashboard shows the section on the Usage tab. Under API billing, or with
+dashboard shows the section on Spend › Usage. Under API billing, or with
 no usage-log rows, none of this appears. No separate CLI subcommand
 prints the section; `claude-token-lens report` includes it.

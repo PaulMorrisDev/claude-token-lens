@@ -23,6 +23,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 
+from .capture_catalogue import TASK_LABELS
 from .capture_catalogue import THEMES as CAPTURE_THEMES
 from .habits import ITEMS as HABIT_ITEMS
 from .model import Column, Diagnostics, Help, ReportModel, Section, Table
@@ -310,7 +311,8 @@ SECTION_COPY: dict[str, SectionCopy] = {
             read="Every signal is a share of something counted in your logs, such as failed tool calls out of all "
             "tool calls. A difference is marked only when it is unlikely to be chance; with few runs it says so.",
             act="If a setup is marked worse, move that agent back to the model or effort that did better. "
-            "Profiles shows the same signals before and after each change you made.",
+            "\"Your changes and what they did\" on {{page:setup/settings}} shows the same signals before and after "
+            "each change you made.",
         ),
     ),
     "habits": SectionCopy(
@@ -1181,7 +1183,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             "the one that agent used most.",
             read="Worse or Better means the difference is unlikely to be chance, even allowing for the number of "
             "signals compared. Possibly means it would be, taken alone. The setups ran at different times and "
-            "maybe on different work, so check the before and after on Profiles too.",
+            "maybe on different work. Check the before and after in \"Your changes and what they did\" on "
+            "{{page:setup/settings}} too.",
             act="If a cheaper setup is marked worse, move that agent back to the setup it is compared with.",
         ),
         columns={
@@ -3985,24 +3988,9 @@ TABLE_COPY: dict[str, TableCopy] = {
     ),
 }
 
-#: Plain names for metrics capture's task words
-#: (``capture_catalogue.TAG_VOCAB["task"]``, tested), added to every table
-#: with a task column so "bugfix" reads "Bug fix". A table's own label for
-#: a word wins.
-TASK_LABELS: dict[str, str] = {
-    "feature": "Feature",
-    "bugfix": "Bug fix",
-    "refactor": "Refactor",
-    "debug": "Debugging",
-    "docs": "Docs",
-    "review": "Review",
-    "test": "Tests",
-    "research": "Research",
-    "plan": "Planning",
-    "ops": "Ops",
-    "chat": "Chat",
-}
-
+#: Every table with a task column. Each gets metrics capture's plain
+#: names for the task words (``capture_catalogue.TASK_LABELS``, tested),
+#: so "bugfix" reads "Bug fix". A table's own label for a word wins.
 TASK_TABLES: tuple[str, ...] = (
     "habits_by_task",
     "habits_brief_templates",

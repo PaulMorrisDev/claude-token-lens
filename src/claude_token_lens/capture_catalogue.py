@@ -71,6 +71,32 @@ TAG_VOCAB: dict[str, tuple[str, ...]] = {
     "useful": ("yes", "part", "no"),
 }
 
+#: Plain names for the ``task`` words, so "bugfix" reads "Bug fix"
+#: wherever a kind of task is shown: every table with a task column
+#: (``helptext.TASK_TABLES``), the brief templates' "why" line, and the
+#: dashboard's "Kind of task" picker (``/api/profile-goals``). Lowercase
+#: one in running text ("bug fix work").
+TASK_LABELS: dict[str, str] = {
+    "feature": "Feature",
+    "bugfix": "Bug fix",
+    "refactor": "Refactor",
+    "debug": "Debugging",
+    "docs": "Docs",
+    "review": "Review",
+    "test": "Tests",
+    "research": "Research",
+    "plan": "Planning",
+    "ops": "Ops",
+    "chat": "Chat",
+}
+
+
+def task_words(task: str) -> str:
+    """``task``'s plain name for running text ("bug fix" for ``bugfix``);
+    a word outside the vocabulary as it is."""
+    return TASK_LABELS.get(task, task).lower()
+
+
 #: Keys whose value is a comma-separated list of words.
 LIST_KEYS = frozenset({"missing"})
 
@@ -976,7 +1002,7 @@ BRIEF_LINES: dict[str, tuple[str, str]] = {
     "report": ("Report", "Report: <how long, and in what form>"),
 }
 
-#: The checklist each kind of task starts from. The Work habits tab puts
+#: The checklist each kind of task starts from. The Work habits page puts
 #: the lines your own requests most often lack first; the skill uses these
 #: as they are, so what it holds doesn't change with your data.
 BRIEF_CHECKLISTS: dict[str, tuple[str, ...]] = {

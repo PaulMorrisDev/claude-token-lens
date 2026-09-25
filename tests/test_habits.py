@@ -487,7 +487,11 @@ def test_brief_templates_start_from_the_checklist_and_put_what_you_leave_out_fir
     tag = CaptureTag(task="bugfix", missing=("constraints",))
     keys, why = habits.template_lines("bugfix", [_cycle(tag=tag) for _ in range(3)])
     assert keys == ["constraints", "repro", "files", "done"]
-    assert why == "Constraints was missing in 3 of 3 bugfix asks."
+    assert why == "Constraints was missing in 3 of 3 bug fix asks."
+    # Phase 10 review: the kind of task reads by its plain name, as the
+    # card's title does ("Debugging", not "debug").
+    cycles = [_cycle(tag=CaptureTag(task="debug", missing=("repro",))), _cycle(tag=CaptureTag(task="debug"))]
+    assert habits.template_lines("debug", cycles)[1] == "Reproduce was missing in 1 of 2 debugging asks."
     # With no tagged work, the common kinds of task get a template each.
     rows = _rows(_table(habits.section_from(Habits()), "habits_brief_templates"))
     assert [r["task"] for r in rows] == ["bugfix", "feature", "refactor", "research"]

@@ -446,10 +446,124 @@ def test_cache_tiles_count_what_they_cost() -> None:
     source = _app_js()
     explainer = _function_source(source, "renderCacheExplainer")
     assert 'label: "Saved by the cache after write costs"' in explainer
-    assert '"recache_signature_split"' in explainer
-    assert 'row.signature === "limit-expiry" ? sum' in explainer
+    # Phase 10 review: the count moved to costs.js's avoidableRebuilds,
+    # shared with Glossary's rebuilds card (test below).
+    count = _function_source(source, "avoidableRebuilds")
+    assert '"recache_signature_split"' in count
+    assert 'row[signature] === "limit-expiry" ? sum' in count
+    assert "var times = avoidableRebuilds(report);" in explainer
     assert "recache_turns" not in explainer
     assert 'moneyTile("Saved by the cache",' in source
+    # Phase 10 review: "...where reading it would have cost a tenth of."
+    assert 'readWords + " the input price."' in explainer
+
+
+def test_glossary_rebuilds_card_counts_what_its_cost_covers() -> None:
+    """Phase 10 review: Glossary said "456 replies rebuilt the cache, at
+    about $506" while Cache > Rebuilds said "rebuilt 430 times" for the
+    same $506: recache_turns counts rebuilds after a usage-limit pause,
+    which avoidable_cost_usd leaves out. Both count with one helper."""
+    source = _app_js()
+    cards = _declaration_source(source, "CARD_NUMBERS")
+    start = cards.index('"cache-rebuilds": function')
+    rebuilds = cards[start : _balanced_end(cards, cards.index("{", start))]
+    assert "var times = avoidableRebuilds(ctx.report);" in rebuilds
+    assert "thousands(times)" in rebuilds
+    assert "thousands(stats.recache_turns)" not in rebuilds
+    assert "stats.avoidable_cost_usd" in rebuilds
+    assert "Rebuilds after a usage-limit pause aren't counted." in rebuilds
+    assert "import { avoidableRebuilds, cardRuleText, pricingFacts } from \"./costs.js\";" in _static_text("page-glossary.js")
+    assert "import { avoidableRebuilds } from \"./costs.js\";" in _static_text("page-cache.js")
+
+
+def test_glossary_billing_card_says_when_amounts_are_list_price() -> None:
+    """Phase 10 review: on a plan with no usage-limit readings
+    (share_per_usd null) every amount reads "$... list-price equivalent",
+    but the Billing mode card said amounts show as a share of the weekly
+    limit. It follows format.js's money(): no share, no share wording."""
+    cards = _declaration_source(_app_js(), "CARD_NUMBERS")
+    start = cards.index('"billing-mode": function')
+    billing = cards[start : _balanced_end(cards, cards.index("{", start))]
+    null_check = "units.share_per_usd === null || units.share_per_usd === undefined"
+    assert null_check in billing
+    assert "sharePerUsd === null || sharePerUsd === undefined" in _function_source(_app_js(), "money")
+    branch = billing[billing.index(null_check) :]
+    assert "list-price equivalents until your usage-limit readings are logged" in branch.split("}", 1)[0]
+
+
+def test_capture_group_opens_for_a_metric_that_needs_you() -> None:
+    """Phase 10 review: a Capture group opened for a missing hook entry or
+    install, but not for a status-line note, so "this line won't show"
+    sat in a closed group."""
+    metrics = _function_source(_app_js(), "renderCaptureMetrics")
+    assert "group.open = section.metrics.some(" in metrics
+    assert "return row.needs_hook || row.needs_install || row.statusline_note;" in metrics
+    # The note it opens for is the one each row shows.
+    assert "if (row.statusline_note) box.appendChild(" in _function_source(_app_js(), "renderMetricRow")
+
+
+def test_a_change_marker_leads_to_its_change_on_settings() -> None:
+    """Phase 10 review (fedd805 gaps): a change marker on a daily spend
+    chart opens Setup > Settings with ?day=, which pulses that day's
+    change in "Your changes and what they did"; the marker's label is a
+    link the keyboard reaches too."""
+    source = _app_js()
+    changes = _function_source(source, "dailyChanges")
+    assert 'goTo("setup/settings", { params: { day: day } })' in changes
+    assert 'String(change.ts || "").slice(0, 10)' in changes
+    config = _function_source(source, "renderConfig")
+    assert 'onParams("setup/settings", function (params)' in config
+    assert r'if (!/^\d{4}-\d\d-\d\d$/.test(params.day || "")) return;' in config
+    assert "impactLoaded.then(" in config
+    assert ".impact-card[data-day=\"' + params.day + '\"]" in config
+    assert 'pulseNode(card, "block-target")' in config
+    assert '"data-day": String(change.ts || "").slice(0, 10)' in _function_source(source, "renderImpact")
+    # Keyboard: a Tab stop named for what it opens; Enter or Space opens it.
+    columns = _function_source(source, "stackedColumns")
+    assert 'ctx.layer("rule-links", { links: true })' in columns
+    for attr in ('.attr("tabindex", 0)', '.attr("role", "link")', '.attr("aria-label", '):
+        assert attr in columns, attr
+    assert ': see what it did"' in columns
+    assert '.on("click", change.open)' in columns
+    keydown = columns[columns.index('.on("keydown"') :]
+    assert 'event.key !== "Enter" && event.key !== " "' in keydown
+    assert "change.open();" in keydown
+    # The drawing stays hidden from screen readers, layer by layer, all
+    # but a layer of links; the svg itself isn't hidden, so they keep
+    # their names.
+    context = _function_source(source, "drawContext")
+    assert '.attr("role", "none")' in context and '"aria-hidden", "true").attr("focusable"' not in context
+    assert 'if (!(layerOpts && layerOpts.links)) g.attr("aria-hidden", "true");' in context
+    # Every focusable element gets the ring; nothing takes it off an SVG label.
+    css = _static_text("app.css")
+    assert re.search(r"(?m)^:focus-visible\s*\{[^}]*outline: 2px solid var\(--focus\)", css)
+    assert re.search(r"\.chart-rule-label\.is-openable:focus-visible\s*\{[^}]*outline: 2px solid var\(--focus\)", css)
+
+
+def test_profile_copy_names_a_section_not_a_direction() -> None:
+    """Phase 10 review: "Edit it below" (inside a drawer, with the editor
+    behind it) and "in the list above" (the list is below Create a
+    profile) pointed the wrong way. Each names its section."""
+    source = _app_js()
+    diff = _function_source(source, "renderProfileDiff")
+    assert "open Edit settings directly on this page" in diff and "below" not in diff
+    draft = _function_source(source, "renderGoalDraft")
+    assert "It's under Your profiles and the built-in ones" in draft and "list above" not in draft
+    assert '"Edit settings directly"' in _function_source(source, "renderProfiles")
+    assert '"Your profiles and the built-in ones"' in _function_source(source, "renderProfiles")
+
+
+def test_kind_of_task_reads_by_its_plain_name() -> None:
+    """Phase 10 review: the Kind of task picker showed "bugfix" and named
+    the profile "bugfix tasks". The draft carries each task's plain name
+    (task_labels, from capture_catalogue.TASK_LABELS); the value sent
+    back stays the task word."""
+    source = _app_js()
+    assert "draft.task_labels && draft.task_labels[task]" in _function_source(source, "taskName")
+    draft = _function_source(source, "renderGoalDraft")
+    assert 'el("option", { value: task, text: taskName(draft, task),' in draft
+    assert 'taskName(draft, draft.task) + " tasks"' in draft
+    assert "for: draft.task ? [draft.task] : []" in draft
 
 
 def test_show_all_sessions_hands_focus_to_the_list() -> None:
@@ -2442,10 +2556,14 @@ def test_cache_page_opens_with_what_the_cache_does_for_you() -> None:
     from the report's rates, never typed in."""
     app_js = _app_js()
     explainer = _function_source(app_js, "renderCacheExplainer")
-    for table in ("ttl_cache_economy", "recache_summary", "recache_signature_split", "ttl_break_even_share"):
+    for table in ("ttl_cache_economy", "recache_summary", "ttl_break_even_share"):
         assert '"' + table + '"' in explainer, table
-    for field in ("net_saving_usd", "avoidable_cost_usd", "turns", "margin"):
+    for field in ("net_saving_usd", "avoidable_cost_usd", "margin"):
         assert field in explainer, field
+    # The rebuild count reads the per-cause turns through costs.js.
+    assert "avoidableRebuilds(report)" in explainer
+    count = _function_source(app_js, "avoidableRebuilds")
+    assert '"recache_signature_split"' in count and 'keys.indexOf("turns")' in count
     for ratio in ("cache_read_ratio", "cache_write_5m_ratio", "cache_write_1h_ratio"):
         assert "fraction(rates." + ratio + ")" in explainer, ratio
     assert "moneyParts(" in explainer

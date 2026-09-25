@@ -239,7 +239,7 @@ python -m pip uninstall claude-token-lens
 - **Cheaper isn't free.** A cheaper model, lower effort or an earlier
   summary can make Claude less thorough. Each change says what it trades
   away. Try one change at a time and check **Your changes and what they
-  did** on **Setup › Profiles** after a few sessions.
+  did** on **Setup › Settings** after a few sessions.
 
 To see everything it installed, run `claude-token-lens changes` or open
 the Data quality page; both say how to undo each item. To remove it

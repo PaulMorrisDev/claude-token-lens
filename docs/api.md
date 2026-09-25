@@ -364,7 +364,7 @@ if `<id>` is unknown.
 `data`: the session-summary fields above, plus `transcripts` (list of
 `{"id", "kind", "agent_id", "agent_type", "spawn_depth", "parent_agent_id"}`
 — no `path`), `tags` (`{key: value}`) and `feedback`: your rating
-from the Sessions tab (`{"outcome", "slow", "worth", "helped",
+from Spend › Sessions (`{"outcome", "slow", "worth", "helped",
 "set_at"}`, words only; `null` when unrated). While the dashboard
 rating is switched on (`[capture] feedback` holds `dashboard_rating`),
 `data` also carries `feedback_questions`: the `/tl-feedback` questions
@@ -859,11 +859,13 @@ Query: `goal`, `task` (for `tasks`: a kind of task from the capture
 vocabulary, `feature` ... `chat`; any other value is `400`), plus the
 windowing params above (used only with `goal`).
 
-`data` (with `goal`): `{"goal": {"id", "title", "what"}, "period", "from_current", "tasks", "task", "note", "candidates": [{"key", "agent", "label", "now", "value", "ticked", "evidence", "what", "tradeoff", "note", "estimate"}, ...], "profile": {"settings", "agents"}, "whatif"}`.
+`data` (with `goal`): `{"goal": {"id", "title", "what"}, "period", "from_current", "tasks", "task_labels", "task", "note", "candidates": [{"key", "agent", "label", "now", "value", "ticked", "evidence", "what", "tradeoff", "note", "estimate"}, ...], "profile": {"settings", "agents"}, "whatif"}`.
 For `tasks`: `tasks` lists the kinds of task in the Work habits
-section's `habits_setups` table, `task` is the one drafted (the one
-asked for when it's there, else the first with a cheaper setup) and
-`note` says what was found; other goals return `[]`, `null` and `null`.
+section's `habits_setups` table, `task_labels` maps each to its plain
+name (`"bugfix"` to `"Bug fix"`, from `capture_catalogue.TASK_LABELS`),
+`task` is the one drafted (the one asked for when it's there, else the
+first with a cheaper setup) and `note` says what was found; other goals
+return `[]`, `{}`, `null` and `null`.
 A candidate is ticked only when the data supports it; the main model is
 never pre-ticked. `tasks` also drafts a cheaper-model candidate (`key`
 `"model"`, `agent` the subagent type) for each agent type that most
@@ -907,7 +909,7 @@ the main session, for any other setting): one entry per group, with a
 one-line `verdict` and every quality signal
 ([concepts](concepts.md#7-quality-signals)). `judged` is false when
 every signal had too little data (fewer than `min_runs` runs on a
-side); the Profiles tab folds those groups into one line. `kind` is
+side); Setup › Settings folds those groups into one line. `kind` is
 `pct` for a share or `per_run` for a mean per run. `label_key` is `worse`,
 `better`, `possibly_worse`, `possibly_better`, `higher`, `lower`,
 `possibly_higher`, `possibly_lower` (the last four for neutral measures
@@ -946,7 +948,7 @@ costs in tokens and how to undo it, plus what to expect
 
 ### `GET /api/capture`
 
-Metrics capture for the Capture tab and the banner on every tab
+Metrics capture for Setup › Capture and the banner on every page
 (`capture_view.view`): the setting, each level and metric with what it
 captures, why and what it costs on your own usage, and what capture
 has cost since it was turned on. Built from `[capture]` in
@@ -1216,7 +1218,7 @@ file (never a catalogue one).
 ### `POST /api/profiles/from-current`
 
 Saves your current settings as a user profile ("Save my current
-settings as a profile" on the Profiles tab). It reads the latest config
+settings as a profile" on Setup › Profiles). It reads the latest config
 snapshot's `effective` settings and `effective_agents`, keeps only the
 keys a profile may set (each checked on its own with
 `profiles.schema.validate`, so one out-of-range value drops only
