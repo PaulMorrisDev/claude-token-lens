@@ -198,7 +198,10 @@ function savingBasis(rec) {
 // Recommendations that say the same thing for several agents
 // ======================================================================
 
-function groupRecommendations(recs) {
+// The inbox's items: a rule that fires once per agent type, at one
+// severity, is one item for all of them. The Overview and the sidebar's
+// count read the same items, so every page counts what this list shows.
+export function groupRecommendations(recs) {
   var groups = [];
   var shared = {};
   recs.forEach(function (rec) {
@@ -228,8 +231,20 @@ function groupRecommendations(recs) {
     });
 }
 
-function groupTitle(group) {
+export function groupTitle(group) {
   return groupedTitle(group.id, group.members.length, group.members[0].title);
+}
+
+// What a group's changes save together, in dollars: each member's own
+// saving, once. Members are different agent types, so none overlaps.
+export function groupSavingUsd(group) {
+  var seen = {};
+  return group.members.reduce(function (total, rec) {
+    var key = rec.key || rec.id;
+    if (seen[key] || typeof rec.saving_usd !== "number" || !(rec.saving_usd > 0)) return total;
+    seen[key] = true;
+    return total + rec.saving_usd;
+  }, 0);
 }
 
 function agentName(agent) {
@@ -556,8 +571,8 @@ function recommendationInbox(container, groups, ctx) {
 }
 
 // The saving a list row shows: the recommendation's own; for a group,
-// the largest member's.
-function listSaving(group) {
+// the largest member's. The Overview's next best actions show the same.
+export function listSaving(group) {
   var lead = group.members[0];
   if (!lead.estimated_saving) return "";
   return group.members.length > 1 ? "Largest: " + lead.estimated_saving : lead.estimated_saving;

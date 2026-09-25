@@ -10,7 +10,7 @@ import { button, drawer, errorNotice, loadingNode, prose, tile, tileRow, toast }
 import { dataGrid, renderMappedSections, renderReportBackedSection } from "./grid.js";
 import { replaceParams, viewIntro } from "./links.js";
 import { chartError, dayLabel, holdChart } from "./charts.js";
-import { dailyChanges, modeColour, renderChart, savingsLevers, sessionContextChart } from "./charts-types.js";
+import { dailyChanges, modeColour, renderChart, savingsLevers, sessionContextChart, windowDays } from "./charts-types.js";
 
 // ======================================================================
 // Spend, Sessions: which sessions stand out (chart 4), over the list. A
@@ -623,11 +623,14 @@ export function renderUsage(panel) {
   panel.appendChild(chartHost);
   var loads = {};
   var impactLoad = fetchJson("/api/impact");
+  // The window's whole sessions, as the cost by model below counts them:
+  // the chart's reading gives that figure too, and says why it differs.
+  var summaryLoad = fetchJson(withWindow("/api/summary"));
   function drawDaily() {
     var wanted = split;
     if (!holdChart(chartHost, "daily-spend", { slot: "usage" })) chartHost.appendChild(loadingNode("Loading daily spend", "chart"));
     loads[wanted] = loads[wanted] || fetchJson(withWindow("/api/daily-usage") + "&split=" + wanted);
-    Promise.all([loads[wanted], impactLoad]).then(function (loaded) {
+    Promise.all([loads[wanted], impactLoad, summaryLoad]).then(function (loaded) {
       // A newer draw of this view, or another split since, has its own.
       if (!chartHost.isConnected || wanted !== split) return;
       var daily = loaded[0].body;
@@ -636,10 +639,14 @@ export function renderUsage(panel) {
         chartError(chartHost, "daily-spend", daily && daily.error, drawDaily, { slot: "usage", titleTag: "h2" });
         return;
       }
+      var summary = loaded[2].body;
       renderChart(
         chartHost,
         "daily-spend",
-        { rows: daily.data || [], split: wanted, changes: dailyChanges(loaded[1].body) },
+        Object.assign(
+          { rows: daily.data || [], split: wanted, changes: dailyChanges(loaded[1].body), sessionsTotal: summary && summary.ok === true ? summary.data.total_cost : null },
+          windowDays(state.window)
+        ),
         {
           slot: "usage",
           titleTag: "h2",
@@ -726,10 +733,15 @@ function renderCompactionsRaw(rows, container) {
   rows = rows.slice().sort(function (a, b) {
     return String(b.ts || "").localeCompare(String(a.ts || ""));
   });
+  // The list folds under its count, as a section's More tables do: the
+  // compactions section above already sums it up.
+  var host = container;
   if (rows.length) {
-    container.appendChild(el("p", { class: "notes", text: thousands(rows.length) + (rows.length === 1 ? " summary." : " summaries.") }));
+    host = el("details", { class: "advanced-detail" });
+    host.appendChild(el("summary", { text: thousands(rows.length) + (rows.length === 1 ? " summary" : " summaries") }));
+    container.appendChild(host);
   }
-  container.appendChild(
+  host.appendChild(
     dataGrid({
       id: "usage-compactions-grid",
       caption: "Conversation summaries",

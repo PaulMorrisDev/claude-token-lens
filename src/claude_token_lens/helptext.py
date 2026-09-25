@@ -38,7 +38,7 @@ PLACEMENT: dict[str, str] = {
     "totals": "keep",
     "by_model": "keep",
     # usage
-    "by_day": "keep",
+    "by_day": "advanced",
     "by_week": "advanced",
     "by_month": "advanced",
     "by_project": "keep",
@@ -118,7 +118,7 @@ PLACEMENT: dict[str, str] = {
     "topology_session_baseline": "advanced",
     "topology_upward_tool_result": "advanced",
     "topology_report_proxy": "advanced",
-    "topology_skills_rollup": "keep",
+    "topology_skills_rollup": "advanced",
     "topology_spawn_depth": "advanced",
     "topology_cost_per_spawn": "keep",
     "topology_chains_summary": "advanced",
@@ -156,7 +156,7 @@ PLACEMENT: dict[str, str] = {
     "habits_tool_output": "advanced",
     "capture_usage": "report",
     # workstyle / workflows
-    "workstyle_archetypes": "keep",
+    "workstyle_archetypes": "advanced",
     "workflows_summary": "keep",
     "workflows_status_mix": "advanced",
     "workflows_detail": "advanced",

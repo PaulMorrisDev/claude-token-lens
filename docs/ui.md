@@ -261,7 +261,7 @@ with U+203A (`viewLabel`), such as "Spend › Sessions".
 
 216px wide, 232px from 1440px. It holds the brand, the main pages with
 an icon each, and on Actions a count of "Do this" recommendations for
-the window and project. The foot holds Data quality, the Glossary and
+the window and project, counted as Actions lists them. The foot holds Data quality, the Glossary and
 the status line. A toggle narrows it to a 56px rail of icons
 (`tls:sidebar`), where each page's name is a tooltip on hover and on
 focus. Below 1024px it is always the rail and the toggle hides. A "Skip
@@ -423,17 +423,23 @@ Each view opens with its one-line intro from `PAGES` (`viewIntro`).
    recorded yet, and, before any session is read, **What Token Lens
    does for you** (saying the first scan is running while
    `scan.scanning` is true).
-2. **Four tiles**, each linking to its page: Spend, with its change and a
-   daily sparkline; Available saving, the four ways to save plus any
-   priced action no lever counts, marked "At most" because they overlap
+2. **Four tiles**, each linking to its page: Spend, every session with a
+   reply in the window at its whole cost, with its change and a daily
+   sparkline; Available saving, the four ways to save plus any priced
+   Actions item no lever counts, marked "At most" because they overlap
    (never less than any one action); Saved by the cache (`cache_saved`,
    an estimate); and Sessions, with the subagent runs.
 3. **Daily spend** (chart 1) with your settings changes from
-   `/api/impact` as labelled rules. A day opens Spend › Sessions and a
-   change Setup › Settings. Beside it from 1440px (under it at 1280px),
-   **Next best actions**: the top five recommendations, each with its
-   severity, title, saving and a Copy prompt button. Side by side, the
-   chart grows from 300px to 560px to the actions' height
+   `/api/impact` as labelled rules. It counts replies by the UTC day they
+   were sent, over every day of the window (`windowDays`); when the
+   window's whole sessions come to a different figure, its reading gives
+   that too and says why. A day opens Spend › Sessions and a change
+   Setup › Settings. Beside it from 1440px (under it at 1280px), **Next
+   best actions**: the first five items on Actions › Recommendations, in
+   its order and with its titles (`groupRecommendations`), each with its
+   severity, title, saving and a Copy prompt button named for it, or a
+   link to the prompts of a rule for several agent types. Side by side,
+   the chart grows from 300px to 560px to the actions' height
    (`setChartHeight`), so neither panel ends in a blank band.
 4. **How your setup scores**: the overall level, set by the lowest area,
    then the five scorecard areas as meters (5 and 4 good, 3 fair, 2 poor,
@@ -520,7 +526,8 @@ Their recommendations show on Actions › Recommendations, not here.
 
 Chart 4 plots every session in the window (the newest 2,000 at most,
 with a note when there are more) by start time and cost on a log scale,
-coloured by work mode. Dragging across it, or Shift with the arrow keys,
+coloured by work mode. Its reading says how many cost nothing, or have no
+start time, and so aren't plotted. Dragging across it, or Shift with the arrow keys,
 lists only the sessions that started then. A `?day=` lists the sessions
 active that UTC day. A line above the list says what it is narrowed to,
 with **Show all sessions**. A row and its dot light up together. The
@@ -861,6 +868,10 @@ Every chart has the same parts, top to bottom:
   2px lines, hairline gridlines, a 2px gap between stacked parts;
 - a note for what the reader needs to trust it, such as "Days run
   midnight to midnight UTC" or why a bar is hatched.
+
+On daily spend, today's column is marked "so far" in the margin above
+the plot, over the change labels; each change label sits right of its
+rule, else left, else is cut to fit, so labels never overlap.
 
 Money axes use `moneyAxis`, the chart mirror of `Units.money`: "% of
 your weekly usage limit", "list-price $", or plain "$" on the API. Token

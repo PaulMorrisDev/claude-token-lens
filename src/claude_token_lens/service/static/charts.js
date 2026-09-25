@@ -37,7 +37,11 @@ export var CHART_SPECS = {
     source: "/api/daily-usage",
     form: "stacked-columns",
     title: "Is spend rising, and did my changes move it?",
-    summary: "{total} over {days}. The busiest day was {peakDay}, at {peak}.",
+    summary: "Replies sent {span} cost {total}. The busiest day was {peakDay}, at {peak}.",
+    alt: {
+      sessions: "Replies sent {span} cost {total}. With their earlier replies, the window's sessions cost {sessionsTotal}. The busiest day was {peakDay}, at {peak}.",
+      firstDay: "Replies sent {span} cost {total}. The first day began before this window, whose sessions cost {sessionsTotal}. The busiest day was {peakDay}, at {peak}.",
+    },
   },
   "savings-levers": {
     n: 2,
@@ -60,6 +64,7 @@ export var CHART_SPECS = {
     form: "scatter",
     title: "Which sessions are the expensive outliers?",
     summary: "{count} sessions. The most expensive cost {max}, {ratio} times the typical session.",
+    alt: { unplotted: "{count} of {total} sessions. {unplotted}. The most expensive cost {max}, {ratio} times the typical session." },
   },
   "session-context": {
     n: 5,
