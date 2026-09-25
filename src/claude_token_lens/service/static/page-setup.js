@@ -526,7 +526,7 @@ function setLeverValue(field, value) {
 
 function renderProfileEditor(container, profiles, onSaved) {
   clear(container);
-  container.appendChild(loadingNode());
+  container.appendChild(loadingNode("Loading the profile editor"));
   loadProfileSchema().then(function (schema) {
     clear(container);
     if (!schema) {

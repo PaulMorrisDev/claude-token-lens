@@ -510,11 +510,12 @@ export function skeleton(kind, count) {
   return node;
 }
 
-// While a view's data is on its way: a skeleton, with the words a
-// screen reader hears.
+// While a view's data is on its way: what is loading, in words, over a
+// skeleton in its shape. The words stay when reduced motion stops the
+// shimmer.
 export function loadingNode(label, kind) {
   var node = el("div", { class: "loading", role: "status", "aria-busy": "true" });
-  node.appendChild(el("span", { class: "visually-hidden", text: label || "Loading" }));
+  node.appendChild(el("p", { class: "loading-label", text: (label || "Loading") + "\u2026" }));
   node.appendChild(skeleton(kind || "lines"));
   return node;
 }

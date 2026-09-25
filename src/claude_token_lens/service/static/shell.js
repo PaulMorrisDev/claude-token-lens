@@ -131,6 +131,15 @@ function captureStatusText(block) {
   return "Capture: " + title;
 }
 
+// A running scan's progress in a few words, from /api/health's scan
+// block (the phases the banner's message names); "" before there's any.
+function scanProgressText(scan) {
+  if (scan.phase === "finding" && scan.done) return "Found " + thousands(scan.done) + " transcript files so far";
+  if (scan.phase === "reading" && scan.total) return "Read " + thousands(scan.done || 0) + " of " + thousands(scan.total) + " changed files";
+  if (scan.phase === "storing" && scan.total) return "Stored " + thousands(scan.done || 0) + " of " + thousands(scan.total) + " sessions";
+  return "";
+}
+
 function renderStatusLine() {
   var line = document.getElementById("status-line");
   if (!line) return;
@@ -139,9 +148,15 @@ function renderStatusLine() {
   var watcher = (health && health.watcher) || {};
   var scan = (health && health.scan) || {};
   var lastScan = scan.last_success_at || watcher.finished_at;
-  var label = HEALTH_LABELS[status] || "Service " + status;
+  // A later scan runs with the status still "ok": say so while it does.
+  var rescanning = status === "ok" && !!scan.scanning;
+  var label = rescanning ? "Checking for new sessions" : HEALTH_LABELS[status] || "Service " + status;
+  var tone = rescanning ? "accent" : HEALTH_TONES[status] || "muted";
+  var progress = status === "starting" || rescanning ? scanProgressText(scan) : "";
   var parts = [
     status,
+    rescanning ? "1" : "0",
+    progress,
     lastScan || "",
     watcher.errors || 0,
     figures.asOf || "",
@@ -161,10 +176,11 @@ function renderStatusLine() {
 
   line.appendChild(
     el("div", { class: "status-row status-health", "data-tip": label }, [
-      el("span", { class: "status-dot tone-" + (HEALTH_TONES[status] || "muted"), "aria-hidden": "true" }),
+      el("span", { class: "status-dot tone-" + tone, "aria-hidden": "true" }),
       el("span", { class: "status-text", text: label }),
     ])
   );
+  if (progress) line.appendChild(el("div", { class: "status-row status-detail", text: progress }));
   // Freshness reads relative, with the absolute time on hover (timeNode).
   if (lastScan || watcher.errors) {
     var scanRow = el("div", { class: "status-row status-detail" });
@@ -215,7 +231,7 @@ figures.notify = renderStatusLine;
 // progress, a failed scan, a scanner that has stopped) and, once a scan
 // that was running when the page drew its figures finishes, a way to
 // redraw them (also offered in the status line).
-var healthPoll = { status: null, timer: null, health: null, redrawDue: false, inflight: false, misses: 0 };
+var healthPoll = { status: null, timer: null, health: null, redrawDue: false, rescanning: false, inflight: false, misses: 0 };
 
 // options.focus moves focus to the page title: the button pressed is
 // redrawn away. A redraw after reconnecting leaves focus where it is.
@@ -320,6 +336,13 @@ export function pollHealth() {
     var previous = healthPoll.status;
     healthPoll.status = health ? health.status : result.httpStatus === 0 ? "unreachable" : previous || "starting";
     if (health) healthPoll.health = health;
+    // A later scan that stored sessions, seen running and now finished:
+    // the figures on screen are older than it, so offer the redraw.
+    var wasRescanning = healthPoll.rescanning;
+    healthPoll.rescanning = !!(health && health.status === "ok" && health.scan && health.scan.scanning);
+    if (wasRescanning && health && !healthPoll.rescanning && health.watcher && health.watcher.sessions_upserted) {
+      healthPoll.redrawDue = true;
+    }
     renderHealthBanner(result.httpStatus === 0 ? null : health, previous);
     renderStatusLine();
     if (health) updateCaptureBanner(health.capture);
@@ -330,7 +353,7 @@ export function pollHealth() {
     } else {
       healthPoll.misses = 0;
       // Poll quickly while a scan's progress is worth watching.
-      delay = health && health.status === "starting" ? 3000 : 60000;
+      delay = health && (health.status === "starting" || healthPoll.rescanning) ? 3000 : 60000;
     }
     healthPoll.timer = setTimeout(pollHealth, delay);
   });

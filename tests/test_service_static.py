@@ -1998,6 +1998,38 @@ def test_capture_banner_is_polled_with_health_and_links_to_its_segment() -> None
     assert "captureLink(" in status and "captureStatusText(" in status
 
 
+def test_loading_says_what_it_is_waiting_for() -> None:
+    """A view loading for the first time says what is loading in words
+    over its skeleton (not only to a screen reader), a view being
+    refetched keeps its figures under an "Updating" label, and the status
+    line says when a later scan is checking for new sessions, with its
+    progress, polling quickly while it runs."""
+    app_js = _app_js()
+    css = _static_text("app.css")
+    node = _function_source(app_js, "loadingNode")
+    assert 'class: "loading-label"' in node and "visually-hidden" not in node
+    # Every loadInto names what it waits for, by its route.
+    assert "loadingLabel(url)" in _function_source(app_js, "loadInto")
+    labels = re.search(r"var LOADING_LABELS = \[(.*?)\n\];", app_js, re.S).group(1)
+    prefixes = re.findall(r'\["(/api/[^"]*)"', labels)
+    for match in re.finditer(r'loadInto\(\s*\w+,\s*(?:withWindow\()?"(/api/[^"?]*)', app_js):
+        assert any(match.group(1).startswith(p.split("?")[0]) for p in prefixes), match.group(1)
+    assert "loadingNode()" not in app_js
+    assert ".loading-label {" in css
+    assert ".is-refreshing::after {" in css and 'content: "Updating\\2026";' in css
+    assert ".is-refreshing > * {" in css
+    status = _function_source(app_js, "renderStatusLine")
+    assert '"Checking for new sessions"' in status
+    assert "scanProgressText(scan)" in status and "status-detail" in status
+    progress = _function_source(app_js, "scanProgressText")
+    for phase in ('"finding"', '"reading"', '"storing"'):
+        assert phase in progress
+    poll = _function_source(app_js, "pollHealth")
+    assert '(health.status === "starting" || healthPoll.rescanning) ? 3000 : 60000' in poll
+    # A rescan that stored sessions offers the redraw once it finishes.
+    assert "wasRescanning && health && !healthPoll.rescanning" in poll and "healthPoll.redrawDue = true" in poll
+
+
 def test_capture_segment_repeats_the_cost_warning_before_using_more_tokens() -> None:
     """Switching to a level, a metric or a larger sample that asks Claude
     for more goes through confirmCapture, which shows data.warning."""

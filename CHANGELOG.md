@@ -66,6 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Loading says what it's waiting for.** Each view shows what is
+  loading in words over its skeleton, a view being refreshed keeps its
+  figures under an "Updating…" label, and the status line says when the
+  service is checking for new sessions, with how far the scan has got.
 - **Every recommendation has a key of its own.** A rule that made
   several cards, such as one per CLAUDE.md source, gave them the same
   key, so the dashboard couldn't tell them apart.

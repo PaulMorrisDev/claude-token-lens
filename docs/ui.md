@@ -276,8 +276,13 @@ to the page" link before the sidebar moves focus to the page title
 (`#page-title`, the one `h1`).
 
 **The status line** gives the service's state in words beside a dot: Up
-to date, Scanning your history, Last scan failed, Not updating, or Can't
-reach the service. Under it: "Last scan", when the last scan finished;
+to date, Scanning your history, Checking for new sessions (a later scan
+running while the figures are up to date), Last scan failed, Not
+updating, or Can't reach the service. While a scan runs, a line under it
+says how far it has got (`scanProgressText`, from `/api/health`'s
+`scan`): "Found 1,204 transcript files so far", "Read 12 of 40 changed
+files" or "Stored 30 of 40 sessions". Under that: "Last scan", when the
+last scan finished;
 "Figures updated", the time of the oldest figures drawn
 (`X-Figures-As-Of`), both as "5 min ago" with the time on hover
 (`timeNode`), moved on at each health poll; the capture level as a link
@@ -389,12 +394,13 @@ all-projects report, `loadProjects()`).
 ### Banners
 
 **The health banner** sits under the page header, from `/api/health`.
-`pollHealth()` asks every 3 seconds while `status` is `"starting"` and
-every minute otherwise. The banner hides while the status is `"ok"`.
-Otherwise it shows the route's `message`: the first scan's progress with
-a bar, or a warning with the restart command when `"degraded"` or
-`"stale"`. When a scan finishes, the banner and the status line offer
-**Redraw figures**, which drops every drawn view and the report cache
+`pollHealth()` asks every 3 seconds while `status` is `"starting"` or a
+later scan is running, and every minute otherwise. The banner hides
+while the status is `"ok"`. Otherwise it shows the route's `message`:
+the first scan's progress with a bar, or a warning with the restart
+command when `"degraded"` or `"stale"`. When a scan finishes (the first
+one, or a later one that stored sessions), the banner and the status
+line offer **Redraw figures**, which drops every drawn view and the report cache
 and redraws the view on screen. Views never redraw under the reader.
 
 **The capture banner** sits under it (`#capture-banner`,
@@ -773,7 +779,7 @@ Every helper builds nodes with `textContent`; server text goes through
 | Panel | `panel` | a surface with a hairline border, a header and a body. Never nested |
 | Callout | `callout`, `errorNotice` | info, success, warning or critical: a tint, an icon and a label. An error says what happened and offers "Try again" when a retry can help |
 | Empty state | `emptyState` | what happened, why, and what would fill it. Never "No data" |
-| Skeleton | `skeleton` | grey bars in the shape of what is loading, with a 1.4-second shimmer |
+| Skeleton | `skeleton`, `loadingNode` | grey bars in the shape of what is loading, with a 1.4-second shimmer. `loadingNode` puts what is loading above them in words ("Loading the report…"), which stay when reduced motion stops the shimmer |
 | Command block | `commandBlock`, `renderFix` | the ways to make a change as a tab list (a prompt, a dry-run command, a one-session trial), each with Copy, then `fixes.build_fix`'s explainer and `fixes.RESTART_NOTE` |
 | Popover | `popoverButton`, `helpButton` | the (i) and (?) help. Closes on Esc, a click outside, or a link inside |
 | Tooltip | `attachTooltip` | on hover and focus after 40ms, value first; a text tip is also the element's `aria-describedby` |
@@ -1127,7 +1133,10 @@ Every view's data comes from `fetch('/api/...')` and the envelope
 `docs/api.md` describes. `fetchJson` unwraps `{"ok": true, "data": ...}`,
 or the view shows `error.message` inline on `{"ok": false, ...}`; the
 API never sends a stack trace. `loadInto` calls a view's render with the
-data first and the container second. `postJson` sends ratings, profiles
+data first and the container second. The first load shows a
+`loadingNode`; a refetch (a new window, project or redraw) keeps the
+last figures in place, dimmed under an "Updating…" label
+(`.is-refreshing`, with `aria-busy`), until the new ones arrive. `postJson` sends ratings, profiles
 and capture changes; session tags go through `fetchJson` with `POST`. No
 view holds state the server doesn't have, so a reload is always safe.
 
