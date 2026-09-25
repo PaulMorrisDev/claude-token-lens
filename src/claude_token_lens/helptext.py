@@ -4149,7 +4149,7 @@ DIAGNOSTIC_LABELS: dict[str, tuple[str, str]] = {
     "pre_split_turns": ("Replies from older Claude Code", "Replies logged before Claude Code split cache writes by lifetime."),
     "limit_hits": ("Usage-limit stops", "Times a session stopped at a usage limit."),
     "limit_resumes": ("Resumes after a limit", "Times a session carried on after a usage-limit stop."),
-    "agents_terminated": ("Subagents stopped by a limit", "Subagents that ended because a usage limit was reached."),
+    "agents_terminated": ("Subagents stopped early", "Subagents Claude Code ended before they finished, for any reason."),
     "pricing_closest_match_turns": ("Replies priced by closest match", "Replies costed at another, similar model's rate because this one has no price list entry of its own. See Usage's \"Priced by closest match\" table."),
     "pricing_fast_priced_as_standard_turns": ("Fast replies priced at standard rate", "Replies flagged fast mode but costed at the standard rate because this model has no fast-mode price on file."),
 }

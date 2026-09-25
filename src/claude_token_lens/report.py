@@ -804,7 +804,8 @@ def _effort_mismatch_share_threshold(config: Config) -> float:
 def _merge_diagnostics(acc: Diagnostics, d: Diagnostics) -> None:
     """Fold one transcript's :class:`Diagnostics` into the running
     corpus-wide total: sum every int counter, merge every dict counter
-    key-by-key, OR every bool.
+    key-by-key, OR every bool. The two ``pricing_*`` totals are left
+    alone: :func:`build_report` sets them once after the loop.
     """
     acc.lines += d.lines
     acc.unparsable_lines += d.unparsable_lines
@@ -820,6 +821,9 @@ def _merge_diagnostics(acc: Diagnostics, d: Diagnostics) -> None:
     acc.replayed_lines += d.replayed_lines
     acc.timestamp_parse_failures += d.timestamp_parse_failures
     acc.pre_split_turns += d.pre_split_turns
+    acc.limit_hits += d.limit_hits
+    acc.limit_resumes += d.limit_resumes
+    acc.agents_terminated += d.agents_terminated
     for key, value in d.ignored_line_types.items():
         acc.ignored_line_types[key] = acc.ignored_line_types.get(key, 0) + value
     for key, value in d.agent_settings.items():
