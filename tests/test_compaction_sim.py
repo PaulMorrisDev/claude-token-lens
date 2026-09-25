@@ -672,6 +672,27 @@ def test_rule_fires_when_saving_clears_both_thresholds():
     assert_privacy(rec)
 
 
+def test_rule_names_the_env_variable_while_it_overrides_the_setting():
+    from claude_token_lens.snapshots import Snapshot
+
+    snap = Snapshot(
+        path=None,
+        ts="2026-09-20T00:00:00Z",
+        data={
+            "effective": {"autoCompactWindow": 500_000},
+            "env_names": ["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
+            "effective_env_provenance": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "project_local"},
+        },
+    )
+    [rec] = RULES[0](_plateau_report(), _SMALL_FIXTURE_TH, snap)
+    assert rec.title == "Set CLAUDE_CODE_AUTO_COMPACT_WINDOW to at least 100,000"
+    assert rec.action.startswith(
+        "Set CLAUDE_CODE_AUTO_COMPACT_WINDOW to at least 100,000 in the env block of "
+        "<project>/.claude/settings.local.json. It overrides the autoCompactWindow setting. "
+    )
+    assert rec.scope == "project" and rec.lever == "autoCompactWindow"
+
+
 def test_rule_action_has_no_bare_dollar_under_a_subscription():
     """UX-2 / finding F1-F2: a subscription's Recommendation.action must
     route through Units, never a raw f"${...:.2f}"."""

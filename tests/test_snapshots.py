@@ -418,6 +418,39 @@ def test_effective_provenance_schema1_snapshot_is_empty():
     assert snap_mod.effective_provenance(snap) == {}
 
 
+def test_auto_compact_window_reads_the_setting():
+    snap = _schema2_snapshot(effective={"autoCompactWindow": 300_000})
+    assert snap_mod.auto_compact_window(snap) == 300_000
+    assert snap_mod.effective_config_in_force(snap) == {"autoCompactWindow": 300_000}
+    assert snap_mod.auto_compact_window(None) is None
+
+
+def test_the_env_variable_overrides_the_auto_compact_window_setting():
+    # docs/en/env-vars.md: it beats the setting, and is clamped to 100K-1M.
+    for value, expected in ((400_000, 400_000), (500, 100_000), (2_000_000, 1_000_000)):
+        snap = _schema2_snapshot(
+            effective={"autoCompactWindow": 300_000},
+            env_names=["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
+            env_numeric_caps={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": value},
+        )
+        assert snap_mod.auto_compact_window(snap) == expected
+        in_force = snap_mod.effective_config_in_force(snap)
+        assert in_force["autoCompactWindow"] == expected
+        assert in_force["env.CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == expected
+        # The written settings stay as they are.
+        assert snap_mod.effective_config(snap) == {"autoCompactWindow": 300_000}
+
+
+def test_an_env_window_without_a_recorded_value_is_unknown_not_the_setting():
+    # Set in a settings env block, captured by a hook that kept no value.
+    snap = _schema2_snapshot(
+        effective={"autoCompactWindow": 300_000},
+        effective_env_names=["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
+    )
+    assert snap_mod.auto_compact_window(snap) is None
+    assert snap_mod.effective_config_in_force(snap) == {"env.CLAUDE_CODE_AUTO_COMPACT_WINDOW": "set"}
+
+
 def test_layers_returns_the_settings_layers_field():
     snap = _schema2_snapshot(settings_layers={"user": {"present": True}})
     assert snap_mod.layers(snap) == {"user": {"present": True}}

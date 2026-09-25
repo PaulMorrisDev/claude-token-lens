@@ -135,6 +135,17 @@ def test_compaction_goal_never_offers_a_window_that_summarises_more_than_twice_a
     assert candidate["value"] == 200000
 
 
+def test_compaction_goal_warns_and_leaves_the_window_unticked_while_the_env_variable_overrides_it():
+    # snapshots.effective_config_in_force's shape while the variable is set.
+    effective = {"autoCompactWindow": 400_000, "env.CLAUDE_CODE_AUTO_COMPACT_WINDOW": 400_000}
+    [candidate] = goals.draft("compaction", _report(), UNITS, effective=effective)["candidates"]
+    assert candidate["value"] == 200000 and not candidate["ticked"]
+    assert candidate["evidence"].endswith(
+        "Won't apply while CLAUDE_CODE_AUTO_COMPACT_WINDOW is set: it overrides this setting, so change the "
+        "variable instead."
+    )
+
+
 def test_thinking_is_offered_unticked_and_settings_already_in_effect_are_skipped():
     out = goals.draft("thinking", _report(), UNITS)
     [candidate] = out["candidates"]

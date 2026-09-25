@@ -312,12 +312,16 @@ _ENV_EXTRA_NAMES = frozenset(
 #: docs/en/env-vars.md notes raising it "reduces the effective context
 #: window available before auto-compaction triggers", which a rule needs
 #: the actual value to reason about, not just presence.
+#: CLAUDE_CODE_AUTO_COMPACT_WINDOW sets the auto-compact window in tokens
+#: and overrides the autoCompactWindow setting (same doc), so a report
+#: needs its value to know the window a session ran at.
 _ENV_NUMERIC_CAP_NAMES = frozenset(
     {
         "MAX_THINKING_TOKENS",
         "MAX_MCP_OUTPUT_TOKENS",
         "BASH_MAX_OUTPUT_LENGTH",
         "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
         "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
     }
 )

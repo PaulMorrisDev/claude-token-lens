@@ -1670,7 +1670,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
             units=model.units or Units(),
             period=_period_phrase(window),
             config_dir=Path(config_dir),
-            effective=snapshots.effective_config(snapshot) if snapshot is not None else {},
+            effective=snapshots.effective_config_in_force(snapshot) if snapshot is not None else {},
             effective_agents=agents if isinstance(agents, dict) else {},
         )
         if args.id:

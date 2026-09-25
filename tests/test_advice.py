@@ -286,6 +286,38 @@ def test_compaction_window_is_dropped_when_already_at_or_below_the_floor():
     assert not any(r.id == "compaction-window" for r in out)
 
 
+def _env_window_snapshot(value: int, setting: int = 500_000) -> Snapshot:
+    """CLAUDE_CODE_AUTO_COMPACT_WINDOW set, from the user's settings env
+    block, over an autoCompactWindow setting it overrides."""
+    return Snapshot(
+        path=None,
+        ts="2026-09-20T00:00:00Z",
+        data={
+            "effective": {"autoCompactWindow": setting},
+            "env_names": ["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
+            "env_numeric_caps": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": value},
+            "effective_env_provenance": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "user"},
+        },
+    )
+
+
+def test_compaction_window_changes_the_env_variable_while_it_overrides_the_setting():
+    report = _model_swap_report([])
+    recs = [_compaction("compaction-window", title="Set CLAUDE_CODE_AUTO_COMPACT_WINDOW to at least 250,000")]
+    out = advice.finish(recs, report, _env_window_snapshot(400_000), Units())
+    [change] = next(r for r in out if r.id == "compaction-window").changes
+    assert change.key == "env.CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+    assert (change.value, change.current, change.scope) == ("250000", "400000", "user")
+
+
+def test_compaction_window_is_dropped_when_the_env_variable_is_already_below_the_floor():
+    # The setting (500,000) is above the floor, but the variable wins.
+    report = _model_swap_report([])
+    recs = [_compaction("compaction-window", title="Set CLAUDE_CODE_AUTO_COMPACT_WINDOW to at least 250,000")]
+    out = advice.finish(recs, report, _env_window_snapshot(200_000), Units())
+    assert not any(r.id == "compaction-window" for r in out)
+
+
 def _replayed_report() -> ReportModel:
     """A report whose compaction replay priced the main sessions and found
     no window worth setting (the live case: 300,000 within 0.2% of the

@@ -225,6 +225,12 @@ SETTING_TEXT["env.CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = (
     "everything else in the conversation.",
     "",
 )
+SETTING_TEXT["env.CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = (
+    SETTING_TEXT["autoCompactWindow"][0]
+    + " While this variable is set, it overrides the autoCompactWindow setting.",
+    SETTING_TEXT["autoCompactWindow"][1],
+    "A value in a settings file's env block replaces the one from your shell.",
+)
 
 #: Short names for every allowlisted key, for forms and tables.
 LEVER_LABELS = {
@@ -258,6 +264,7 @@ LEVER_LABELS = {
     "env.DISABLE_PROMPT_CACHING_FABLE": "Prompt caching (env override, Fable)",
     "env.ENABLE_TOOL_SEARCH": "MCP tool search (env override)",
     "env.CLAUDE_CODE_MAX_OUTPUT_TOKENS": "Output token cap (env override)",
+    "env.CLAUDE_CODE_AUTO_COMPACT_WINDOW": "Summarise the conversation at (tokens, env override)",
     "fastMode": "Fast mode (price premium for a faster reply)",
 }
 
@@ -333,7 +340,8 @@ _WORKFLOW_PROMPTS = {
     ),
     "compaction-churn": (
         "Compaction is running often enough to matter: {title_lower}. Please check the current "
-        "autoCompactWindow in ~/.claude/settings.json or this project's .claude/settings.json, and raise "
+        "autoCompactWindow in ~/.claude/settings.json or this project's .claude/settings.json (or the "
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW variable, which overrides it when set), and raise "
         "it to a value that fits this finding. Show me the diff before saving. Claude Code will ask my "
         "permission before editing files under .claude."
     ),
@@ -419,7 +427,8 @@ _WORKFLOW_PROMPTS = {
     "compaction-window": (
         "My session simulation suggests a larger autoCompactWindow would cost less overall: {title_lower}. "
         "Please check the current autoCompactWindow in ~/.claude/settings.json or this project's "
-        ".claude/settings.json, and raise it to at least the value this finding names. Show me the diff "
+        ".claude/settings.json (or the CLAUDE_CODE_AUTO_COMPACT_WINDOW variable, which overrides it when "
+        "set), and raise it to at least the value this finding names. Show me the diff "
         "before saving. Claude Code will ask my permission before editing files under .claude."
     ),
     "model-tier": (
@@ -494,12 +503,13 @@ _WORKFLOW_EXPLAINER: dict[str, tuple[str, str, str]] = {
         "Go back to spawning it as before, or set the model back to what it was.",
     ),
     "compaction-churn": (
-        "settings.json's autoCompactWindow, at whichever scope this report's \"Setting to change\" line "
-        "above names.",
+        "settings.json's autoCompactWindow, or the CLAUDE_CODE_AUTO_COMPACT_WINDOW variable when it's set "
+        "(it overrides the setting), at whichever scope this report's \"Setting to change\" line above "
+        "names.",
         "A summary drops detail; after one, Claude may re-read files or lose track of earlier decisions -- "
         "raising the window trades that against compacting, and re-reading the growing conversation, more "
         "often.",
-        "Set autoCompactWindow back to its previous value (Claude Code shows the change before saving it).",
+        "Set the window back to its previous value (Claude Code shows the change before saving it).",
     ),
     "long-context-share": (
         "Nowhere in the config: how you work in the main session. The auto-compact window is left to the "
@@ -627,12 +637,13 @@ _WORKFLOW_EXPLAINER: dict[str, tuple[str, str, str]] = {
         "Nothing to undo -- go back to reading full output as before.",
     ),
     "compaction-window": (
-        "settings.json's autoCompactWindow, at whichever scope this report's \"Setting to change\" line "
-        "above names.",
+        "settings.json's autoCompactWindow, or the CLAUDE_CODE_AUTO_COMPACT_WINDOW variable when it's set "
+        "(it overrides the setting), at whichever scope this report's \"Setting to change\" line above "
+        "names.",
         "A larger window means fewer summaries, but each one that does happen drops more; a smaller "
         "window compacts more often and can't see files a session re-reads after a summary the way this "
         "simulation's rediscovery correction accounts for.",
-        "Set autoCompactWindow back to its previous value (Claude Code shows the change before saving it).",
+        "Set the window back to its previous value (Claude Code shows the change before saving it).",
     ),
     "model-tier": (
         "settings.json's model key (the main session) or the agent's own model frontmatter field, at "

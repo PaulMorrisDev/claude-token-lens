@@ -521,6 +521,28 @@ def test_autocompact_pct_override_changes_the_report_end_to_end(tmp_path):
     assert sim_a.tables != sim_b.tables
 
 
+def test_the_env_auto_compact_window_beats_the_setting_in_the_report(tmp_path):
+    """CLAUDE_CODE_AUTO_COMPACT_WINDOW overrides autoCompactWindow
+    (docs/en/env-vars.md), so compaction_sim replays the sessions at the
+    variable's window, not the setting's."""
+    corpus = _two_session_corpus(tmp_path)
+    setting = {"effective": {"autoCompactWindow": 300_000}}
+    env = {
+        **setting,
+        "env_names": ["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
+        "env_numeric_caps": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": 100_000},
+    }
+    same_as_env = {"effective": {"autoCompactWindow": 100_000}}
+
+    def sim(data):
+        snap = Snapshot(path="cfg", ts="2020-01-01T00:00:00.000Z", data=data)
+        report = build_report(corpus, PRICING, Config(), projects=("proj-two",), window="w", snapshots=[snap])
+        return next(s for s in report.sections if s.key == "compaction_sim").tables
+
+    assert sim(env) != sim(setting)
+    assert sim(env) == sim(same_as_env)
+
+
 # -- COV-02: observed model/effort vs. settings -> config-drift table -------
 
 

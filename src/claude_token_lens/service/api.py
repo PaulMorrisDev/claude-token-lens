@@ -2264,7 +2264,7 @@ def make_handler(
         )
 
     def _current_settings() -> tuple[dict, dict, bool]:
-        """The latest snapshot's effective settings, every project's agent
+        """The latest snapshot's effective settings as in force, every project's agent
         fields, and (PROF-03) whether ``CLAUDE_CODE_EFFORT_LEVEL`` is set
         -- content_layers' own flag, never a value that could be
         anything else -- or empty/``False`` when no snapshot is recorded
@@ -2275,7 +2275,9 @@ def make_handler(
         agents = snapshot.data.get("effective_agents")
         content_layers = snapshot.data.get("content_layers")
         env_set = bool(isinstance(content_layers, dict) and content_layers.get("effort_level_env_set"))
-        return snapshots_mod.effective_config(snapshot), agents if isinstance(agents, dict) else {}, env_set
+        # In force, not as written: CLAUDE_CODE_AUTO_COMPACT_WINDOW beats
+        # autoCompactWindow while it's set.
+        return snapshots_mod.effective_config_in_force(snapshot), agents if isinstance(agents, dict) else {}, env_set
 
     def route_profile_goals(store, query, body):
         """Without ``goal``: the goals a profile can start from. With it:

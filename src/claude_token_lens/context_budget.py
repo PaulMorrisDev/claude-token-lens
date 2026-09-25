@@ -30,7 +30,8 @@ Three tables (:func:`build_section`, section key ``"context_budget"``):
   "system prompt and tools" bucket (the baseline minus every other known
   bucket, floored at 0).
 - ``context_budget_autocompact`` -- per project: the configured
-  ``autoCompactWindow`` from the latest schema-2 snapshot, the model's
+  ``autoCompactWindow`` from the latest schema-2 snapshot (or
+  ``CLAUDE_CODE_AUTO_COMPACT_WINDOW``, which overrides it), the model's
   context window size (from a statusline ground-truth row when one is
   available, else an assumed 1,000,000/200,000 split on a ``"[1m]"``
   model alias), the *observed* effective autocompact threshold (median
@@ -757,11 +758,8 @@ def _build_autocompact_table(
         acc = stats.projects[project]
         snapshot = _snapshot_for_project(latest_snapshots, acc)
 
-        configured_window = None
-        if snapshot is not None:
-            value = snapshots_mod.effective_config(snapshot).get("autoCompactWindow")
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                configured_window = value
+        # CLAUDE_CODE_AUTO_COMPACT_WINDOW, when set, beats the setting.
+        configured_window = snapshots_mod.auto_compact_window(snapshot)
 
         window_size = statusline_window_by_project.get(project)
         source = "statusline"

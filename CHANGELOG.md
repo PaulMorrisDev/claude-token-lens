@@ -76,6 +76,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`CLAUDE_CODE_AUTO_COMPACT_WINDOW` counts as your auto-compact
+  window.** The variable overrides the `autoCompactWindow` setting, but
+  only the setting was read. So the compaction replay started from the
+  wrong window, and the advice asked you to change a setting that had no
+  effect. The config hook now keeps the variable's value, and the window
+  comes from the variable whenever it's set. The replay, the context
+  budget table and the "Now" value on every card use it. The
+  compaction advice then changes the variable, in a settings file's
+  `env` block, whose value replaces the one from your shell. A profile
+  draft still offers the setting, unticked, and says it won't apply.
+  Refresh the hook for the value to be kept; until then the window
+  reads as unknown while the variable is set.
+
 - **Workflow agents get their own row wherever a table splits by
   transcript kind.** Every agent a workflow run started was filed as a
   subagent, so "Workflow agents" never appeared in "Cost by phase: main

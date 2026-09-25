@@ -428,6 +428,64 @@ def effective_provenance(snapshot: Snapshot) -> dict:
     return dict(value) if isinstance(value, dict) else {}
 
 
+#: docs/en/env-vars.md: sets the auto-compact window in tokens, from
+#: 100,000 to 1,000,000, and "takes precedence over the /autocompact
+#: command, the --autocompact flag, and the autoCompactWindow setting".
+AUTO_COMPACT_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+_AUTO_COMPACT_WINDOW_RANGE = (100_000, 1_000_000)
+
+
+def auto_compact_window_env_set(snapshot: Snapshot | None) -> bool:
+    """Whether ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` was set when
+    ``snapshot`` was taken, in the shell or a settings ``env`` block:
+    then it, not the ``autoCompactWindow`` setting, decides the window."""
+    if snapshot is None:
+        return False
+    return any(
+        isinstance(names, list) and AUTO_COMPACT_WINDOW_ENV in names
+        for names in (snapshot.data.get("env_names"), snapshot.data.get("effective_env_names"))
+    )
+
+
+def auto_compact_window(snapshot: Snapshot | None) -> int | None:
+    """The auto-compact window, in tokens, a session under ``snapshot``
+    runs at: ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` when it's set (clamped to
+    the documented range, as Claude Code does), else the effective
+    ``autoCompactWindow``. ``None`` when neither is known, including a
+    variable whose value the snapshot didn't keep: the setting isn't
+    what applied then."""
+    if snapshot is None:
+        return None
+    if auto_compact_window_env_set(snapshot):
+        caps = snapshot.data.get("env_numeric_caps")
+        value = caps.get(AUTO_COMPACT_WINDOW_ENV) if isinstance(caps, dict) else None
+        if not isinstance(value, int) or isinstance(value, bool):
+            return None
+        low, high = _AUTO_COMPACT_WINDOW_RANGE
+        return min(max(value, low), high)
+    value = effective_config(snapshot).get("autoCompactWindow")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value)
+    return None
+
+
+def effective_config_in_force(snapshot: Snapshot) -> dict:
+    """:func:`effective_config` as Claude Code runs it, for comparing a
+    proposed change with what applies now (never for writing settings).
+    While ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` is set, ``autoCompactWindow``
+    holds the variable's window (left out when its value wasn't kept),
+    and ``env.CLAUDE_CODE_AUTO_COMPACT_WINDOW`` names the override, so a
+    change to the setting can say it won't take effect."""
+    config = effective_config(snapshot)
+    if auto_compact_window_env_set(snapshot):
+        window = auto_compact_window(snapshot)
+        config.pop("autoCompactWindow", None)
+        if window is not None:
+            config["autoCompactWindow"] = window
+        config[f"env.{AUTO_COMPACT_WINDOW_ENV}"] = window if window is not None else "set"
+    return config
+
+
 def layers(snapshot: Snapshot) -> dict:
     """Schema 2's ``settings_layers`` field: ``{layer_name: {present,
     source_path_hash, content_hash, ...}}`` for each of ``managed``,
@@ -644,6 +702,7 @@ ENV_LEVER_NAMES: tuple[str, ...] = (
     "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
     "CLAUDE_CODE_SUBAGENT_MODEL",
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
+    AUTO_COMPACT_WINDOW_ENV,
 )
 
 #: COV-09's other lever pair, ``attribution``/``includeCoAuthoredBy`` --

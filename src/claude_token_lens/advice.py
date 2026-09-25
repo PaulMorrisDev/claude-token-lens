@@ -44,7 +44,13 @@ from . import model_gate, model_swap, whatif
 from .fixes import already_set
 from .model import Recommendation, ReportModel, SettingChange
 from .pricing import model_names_in
-from .snapshots import Snapshot, effective_config
+from .snapshots import (
+    AUTO_COMPACT_WINDOW_ENV,
+    Snapshot,
+    auto_compact_window,
+    auto_compact_window_env_set,
+    effective_config,
+)
 from .units import NO_LIMIT_SHARE_HINT, Units
 
 #: Agent types Claude Code starts itself (workflow scripts, forks): no
@@ -81,6 +87,16 @@ class _Context:
         if self.snapshot is None:
             return _UNKNOWN
         return effective_config(self.snapshot).get(key)
+
+    def window_now(self):
+        """The auto-compact window in force: CLAUDE_CODE_AUTO_COMPACT_WINDOW,
+        while it's set, overrides the setting."""
+        if self.snapshot is None:
+            return _UNKNOWN
+        if auto_compact_window_env_set(self.snapshot):
+            window = auto_compact_window(self.snapshot)
+            return window if window is not None else f"set by {AUTO_COMPACT_WINDOW_ENV} (value not recorded)"
+        return self.setting_now("autoCompactWindow")
 
     def agent_entry(self, agent_type: str) -> dict | None:
         if self.snapshot is None:
@@ -417,7 +433,7 @@ def _consolidate_compaction(recs: list[Recommendation], ctx: _Context) -> list[R
     window = next((r for r in recs if r.id == "compaction-window"), None)
     if window is not None:
         floor = window.title.rsplit(" ", 1)[-1].replace(",", "")
-        current = ctx.setting_now("autoCompactWindow")
+        current = ctx.window_now()
         if floor.isdigit() and isinstance(current, int) and current <= int(floor):
             # Already summarising at or below the modelled window.
             recs = [r for r in recs if r is not window]
@@ -481,6 +497,34 @@ def _advice_scope(rec_scope: str) -> str:
     return _SCOPE_ALIASES.get(rec_scope, rec_scope)
 
 
+def _window_change(rec: Recommendation, ctx: _Context, *, value: int | None = None, suggested: str) -> SettingChange:
+    """A change to the auto-compact window. While
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW is set it overrides autoCompactWindow,
+    so the change goes to the variable, in a settings file's env block
+    (whose value replaces the shell's)."""
+    now = ctx.window_now()
+    if not auto_compact_window_env_set(ctx.snapshot):
+        return SettingChange(
+            target="settings",
+            key="autoCompactWindow",
+            value=value,
+            current=now,
+            suggested=suggested,
+            scope=_advice_scope(rec.scope),
+        )
+    from .recommend import _env_lever_scope
+
+    # Env block values are strings.
+    return SettingChange(
+        target="settings",
+        key=f"env.{AUTO_COMPACT_WINDOW_ENV}",
+        value=str(value) if value is not None else None,
+        current=str(now) if isinstance(now, int) else now,
+        suggested=suggested,
+        scope=_env_lever_scope(AUTO_COMPACT_WINDOW_ENV, ctx.snapshot),
+    )
+
+
 def _explain_compaction_window(rec: Recommendation, ctx: _Context) -> None:
     label = rec.title.rsplit(" ", 1)[-1]
     value = int(label.replace(",", "")) if label.replace(",", "").isdigit() else None
@@ -494,16 +538,7 @@ def _explain_compaction_window(rec: Recommendation, ctx: _Context) -> None:
         f"Set your auto-compact window to {label} tokens. Claude Code then summarises the main session a "
         "little before its context reaches that size."
     )
-    rec.changes = [
-        SettingChange(
-            target="settings",
-            key="autoCompactWindow",
-            value=value,
-            current=ctx.setting_now("autoCompactWindow"),
-            suggested=f"{label} tokens",
-            scope=_advice_scope(rec.scope),
-        )
-    ]
+    rec.changes = [_window_change(rec, ctx, value=value, suggested=f"{label} tokens")]
     rec.estimated_saving = ctx.money(saving, prefix="About ")
     rec.saving_usd = saving if isinstance(saving, (int, float)) else None
     rec.saving_basis = ctx.basis(
@@ -522,15 +557,7 @@ def _explain_compaction_churn(rec: Recommendation, ctx: _Context) -> None:
     rec.action = (
         "Raise your auto-compact window so summaries happen less often, or start a fresh session between tasks."
     )
-    rec.changes = [
-        SettingChange(
-            target="settings",
-            key="autoCompactWindow",
-            current=ctx.setting_now("autoCompactWindow"),
-            suggested="a larger window than now, so summaries happen less often",
-            scope=_advice_scope(rec.scope),
-        )
-    ]
+    rec.changes = [_window_change(rec, ctx, suggested="a larger window than now, so summaries happen less often")]
 
 
 def _explain_long_context_share(rec: Recommendation, ctx: _Context) -> None:
@@ -555,13 +582,7 @@ def _explain_long_context_share(rec: Recommendation, ctx: _Context) -> None:
         "Summarise the main session sooner (a smaller auto-compact window), and send exploration to subagents."
     )
     rec.changes = [
-        SettingChange(
-            target="settings",
-            key="autoCompactWindow",
-            current=ctx.setting_now("autoCompactWindow"),
-            suggested="a smaller window than now, so the main session is summarised sooner",
-            scope=_advice_scope(rec.scope),
-        )
+        _window_change(rec, ctx, suggested="a smaller window than now, so the main session is summarised sooner")
     ]
 
 

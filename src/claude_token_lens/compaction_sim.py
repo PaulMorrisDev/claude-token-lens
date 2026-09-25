@@ -90,7 +90,8 @@ ownership rules):
    mapping each top-level session id to its project's configured
    ``autoCompactWindow`` -- the same value ``context_budget.py``'s
    ``_build_autocompact_table`` already reads via
-   ``snapshots.effective_config(snapshot).get("autoCompactWindow")``,
+   ``snapshots.auto_compact_window(snapshot)`` (the setting, or
+   ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` when that overrides it),
    just keyed by session id instead of project (reuse
    ``context_budget.py``'s own ``session_to_project`` reverse-lookup
    pattern, built from ``ContextBudgetStats.projects[project].session_ids``,
@@ -147,7 +148,13 @@ from .model import (
 )
 from .pricing import ModelRates, ResolvedRates, price_turn
 from .recache import RecacheThresholds
-from .snapshots import Snapshot, effective_provenance, managed_keys
+from .snapshots import (
+    AUTO_COMPACT_WINDOW_ENV,
+    Snapshot,
+    auto_compact_window_env_set,
+    effective_provenance,
+    managed_keys,
+)
 
 if TYPE_CHECKING:
     from .units import Units
@@ -1336,9 +1343,24 @@ def _scope_and_lever_note(snapshot: Snapshot | None) -> tuple[str, str]:
     (``snapshots.SETTINGS_LAYER_NAMES``) actually set the effective
     value, and reports "user" or "project" per the brief's convention
     (with "managed" doing what it always does everywhere else: named,
-    not offered as user-actionable)."""
+    not offered as user-actionable).
+
+    While ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` is set it overrides the
+    setting, so the note names a settings file's ``env`` block instead:
+    the layer that sets the variable now, else the user's file (an
+    ``env`` entry replaces the shell's value, docs/en/env-vars.md)."""
     if snapshot is None:
         return "user", "~/.claude/settings.json"
+    if auto_compact_window_env_set(snapshot):
+        provenance = snapshot.data.get("effective_env_provenance")
+        layer = provenance.get(AUTO_COMPACT_WINDOW_ENV) if isinstance(provenance, dict) else None
+        if layer == "managed":
+            return "managed", "the env block of the org's managed-settings.json (raise with your administrator)"
+        if layer == "project_shared":
+            return "project", "the env block of <project>/.claude/settings.json"
+        if layer == "project_local":
+            return "project", "the env block of <project>/.claude/settings.local.json"
+        return "user", "the env block of ~/.claude/settings.json"
     keys = set(managed_keys(snapshot))
     if "autoCompactWindow" in keys:
         return "managed", "the org's managed-settings.json (raise with your administrator)"
@@ -1510,6 +1532,8 @@ def _rule_compaction_window(
     has_fidelity_rows = bool(fidelity_table and fidelity_table.rows)
 
     scope, file_note = _scope_and_lever_note(snapshot)
+    overridden = auto_compact_window_env_set(snapshot)
+    name = AUTO_COMPACT_WINDOW_ENV if overridden else "autoCompactWindow"
     # UX-2: units may be unset (a caller without a billing config) --
     # money_text still gives a plain currency-suffixed number rather than
     # a bare "$" in that case.
@@ -1520,7 +1544,9 @@ def _rule_compaction_window(
     observed_cost_text = units.money_text(observed_cost) if units is not None else f"${observed_cost:.2f}"
     raw_saving_text = units.money_text(raw_saving_usd) if units is not None else f"${raw_saving_usd:.2f}"
     action = (
-        f"Set autoCompactWindow to at least {label} in {file_note}. This is a modelled, not "
+        f"Set {name} to at least {label} in {file_note}."
+        + (" It overrides the autoCompactWindow setting." if overridden else "")
+        + " This is a modelled, not "
         f"observed, range floor: smaller windows compact more often, and the replay can't see "
         f"the files a session re-reads after a summary, so only the smallest window clearing the "
         f"threshold after a rediscovery correction ({allowance_source}) is named, rather than a "
@@ -1549,7 +1575,7 @@ def _rule_compaction_window(
             severity="advice",
             category="settings",
             archetypes=(),
-            title=f"Set autoCompactWindow to at least {label}",
+            title=f"Set {name} to at least {label}",
             action=action,
             lever="autoCompactWindow",
             evidence=evidence,

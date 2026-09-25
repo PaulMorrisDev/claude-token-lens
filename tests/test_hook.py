@@ -725,6 +725,7 @@ def test_env_numeric_caps_record_the_integer_value(home, project):
             "MAX_MCP_OUTPUT_TOKENS": "100000",
             "BASH_MAX_OUTPUT_LENGTH": "20000",
             "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "80",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "400000",
         },
     )
     assert result.returncode == 0
@@ -734,6 +735,7 @@ def test_env_numeric_caps_record_the_integer_value(home, project):
         "MAX_MCP_OUTPUT_TOKENS": 100000,
         "BASH_MAX_OUTPUT_LENGTH": 20000,
         "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": 80,
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": 400000,
     }
     # The names are also still recorded in the general env-names list.
     for name in snapshot["env_numeric_caps"]:
