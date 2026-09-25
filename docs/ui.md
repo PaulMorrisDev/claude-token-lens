@@ -745,16 +745,20 @@ Every table on every page is `dataGrid`.
 
 - **Cells and sort.** Numbers right-aligned in even-width digits; short
   text stays on one line and sentences wrap. The sort is kept per table
-  (`tls:sort:<table>`).
+  (`tls:sort:<table>`). Until one is picked, a table the server lists
+  A to Z opens biggest first on its lead measure (a total row stays
+  last); dated, bucketed and grouped tables keep their order.
 - **Lead columns.** A table of more than 8 columns shows its first 7 (or
   its `lead_columns`), with a chooser for the rest (`tls:cols:<table>`)
-  and a pinned first column while it scrolls sideways.
+  and a pinned first column while it scrolls sideways. Headings wrap to
+  two lines, and a shadow marks each edge with more to scroll to.
 - **Inline bars.** The lead measure carries a thin bar, so a ranking
   needs no chart. A table in `TINT_TABLES` shades values instead.
 - **Long tables.** A report table of more than 12 rows opens on its
   first 10, with "Show all N rows"; a grouped table stays whole. A dated
   table listed oldest first (`NEWEST_LAST`) opens on its latest 10 until
-  sorted. An evidence link to a hidden row shows them all first.
+  sorted. The fold always takes in the rows an action cites, and an
+  evidence link to a hidden row shows them all first.
 - **Tall tables.** Past 20 rows a table scrolls in its own box with the
   header pinned. Past 200 only the visible rows are drawn.
 - **Row pulse.** An evidence link's row scrolls into view and glows for
@@ -765,9 +769,14 @@ Every table on every page is `dataGrid`.
   (N notes)**.
 - **Placement.** `Table.dashboard`: `keep` shows a table, `advanced` puts
   it in one folded **More tables (N)** per section, and `report` leaves
-  it to the CLI report with a note.
+  it to the CLI report with a note whose buttons open it in the table
+  drawer. A table empty for a known reason says it (five-hour blocks on
+  API billing).
 - **Help and labels.** A column's (?) is a real `<button>` that never
-  sorts. `Table.value_labels` turns raw values such as `top-level` into
+  sorts; on a heading that sorts it leaves the Tab order and **?** opens
+  it. The heading's name is its label and unit. Controls every grid has
+  end their names with the table's title (an evidence mark, its row's).
+  `Table.value_labels` turns raw values such as `top-level` into
   "Main session", with the raw value in `data-raw`.
 
 A section whose table a catalogue chart reads draws that chart between

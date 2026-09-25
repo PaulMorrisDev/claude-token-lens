@@ -393,7 +393,9 @@ def test_long_report_tables_open_on_their_first_rows() -> None:
     pulseRow calls). Savings ran to 5,900px on four 15-20 row tables."""
     source = _app_js()
     grid = _function_source(source, "dataGrid")
-    assert "orderedRows.slice(0, spec.limit)" in grid
+    assert "var size = spec.limit;" in _function_source(grid, "foldSize")
+    assert "var size = foldSize();" in _function_source(grid, "drawBody")
+    assert "orderedRows.slice(0, size)" in grid
     assert '"Show all " + rows.length + " rows"' in grid
     assert 'moreButton.setAttribute("aria-expanded", "false")' in grid
     limited = grid.index("if (limited) {")
@@ -401,7 +403,7 @@ def test_long_report_tables_open_on_their_first_rows() -> None:
     assert "if (!expanded) setExpanded(true);" in grid[limited:]
     # The capped table is short: it only scrolls in its own box once all
     # its rows show (a 46-row table clipped its tenth row).
-    assert "var tall = (limited && !expanded ? spec.limit : rows.length) > TALL_ROWS;" in grid
+    assert "var tall = (folded() ? foldSize() : rows.length) > TALL_ROWS;" in grid
     assert "fitBox();\n    drawBody();" in grid
     table = _function_source(source, "renderTable")
     # row_groups and row_kinds arrive as {} when a table has neither.
@@ -427,7 +429,7 @@ def test_dated_report_tables_fold_to_their_latest_rows() -> None:
     assert set(names) == {"by_day", "by_week", "by_month", "five_hour_blocks"}
     assert all(name in TABLE_COPY for name in names)
     grid = _function_source(source, "dataGrid")
-    assert "fromEnd() ? orderedRows.slice(-spec.limit)" in grid
+    assert "fromEnd() ? orderedRows.slice(-size)" in grid
     assert 'return spec.limitFrom === "end" && !sort;' in grid
     assert 'limitFrom: NEWEST_LAST[table.name] ? "end" : "start"' in _function_source(source, "renderTable")
 
@@ -1835,7 +1837,7 @@ def test_tables_say_which_actions_they_feed() -> None:
     app_js = _app_js()
     index = _function_source(app_js, "actionIndex")
     assert "rec.evidence" in index and "item[2]" in index and "item[3]" in index
-    assert "markFeeds(wrap, head, gridNode, table.name)" in _function_source(app_js, "renderTable")
+    assert "markFeeds(wrap, head, gridNode, table.name, table.title || table.name)" in _function_source(app_js, "renderTable")
     feeds = _function_source(app_js, "markFeeds")
     assert "index.byTable[tableName]" in feeds and "markRows(" in feeds
     button = _function_source(app_js, "feedsButton")

@@ -6,10 +6,13 @@
  * column chooser for wide tables (tls:cols:<table>), numbers right-
  * aligned in even-width digits, an inline bar on the lead measure, an
  * optional tint by value, readable project names, and only the visible
- * rows drawn once a table passes 200 rows. A row can link to the same
- * thing's mark in the chart above it (core.js's highlight). A table
- * that is evidence for a recommendation says so: "Feeds N actions" in
- * its header, and a mark on each row the recommendation cites.
+ * rows drawn once a table passes 200 rows. A list the report sends A to
+ * Z opens as a ranking, biggest first on its lead measure. Headers wrap
+ * to two lines, and a grid wider than its box shows a shadow at the
+ * edge it scrolls towards. A row can link to the same thing's mark in
+ * the chart above it (core.js's highlight). A table that is evidence
+ * for a recommendation says so: "Feeds N actions" in its header, and a
+ * mark on each row the recommendation cites, which a fold never hides.
  */
 
 import { clear, el, highlight, listenHighlight, state, storageGet, storageSet } from "./core.js";
@@ -79,6 +82,25 @@ var REPORT_ROWS = 10;
 // Report tables listed oldest first (usage.py): capped, they show their
 // latest rows.
 export var NEWEST_LAST = { by_day: true, by_week: true, by_month: true, five_hour_blocks: true };
+
+// The width a header's label keeps, in ch: all of a short label, which
+// stays on one line; else the longer line of its most even split into
+// two at a space. A line of words sets narrower than its count of ch
+// (at most 94% of it across the report's headers), and a label is never
+// narrower than its longest word. words: the label's words, a unit
+// joined to the last (it never wraps alone), hyphenated words whole.
+var LABEL_ONE_LINE = 12;
+
+function labelWidth(words) {
+  var length = words.join(" ").length;
+  if (length <= LABEL_ONE_LINE) return length;
+  var best = length;
+  for (var i = 1; i < words.length; i++) {
+    var first = words.slice(0, i).join(" ").length;
+    best = Math.min(best, Math.max(first, length - first - 1));
+  }
+  return best;
+}
 
 function hasKeys(object) {
   return !!object && Object.keys(object).length > 0;
@@ -205,8 +227,13 @@ var TINT_TABLES = ["quality_by_agent"];
 //   swatch    row -> the colour the row's entity has on the chart, shown
 //             as a swatch before its first cell, or null
 //   sortable  false for a form laid out as a table
+//   rank      true: until the reader picks a sort, rows run biggest
+//             first on the bar column (the lead measure)
+//   totalLast the key of a row (a total, or "other") that stays last
+//             under any sort and takes no bar
 //   limit     show the first limit rows and a "Show all N rows" button,
-//             when there are more than limit + 2 (else all of them)
+//             when there are more than limit + 2 (else all of them); a
+//             row an action cites (markRows) is always in the first ones
 //   empty     what to say when there are no rows
 //   caption   the table's name, read aloud
 //   valueLabels, rowGroups, rowKinds: the report Table's own fields
@@ -242,14 +269,39 @@ export function dataGrid(spec) {
   var savedKeys = chooserOn ? readJson("tls:cols:" + gridId) : null;
   var shownKeys = Array.isArray(savedKeys) && savedKeys.length ? savedKeys : defaultKeys;
 
+  // The key evidence links and pulses use.
+  function keyOf(row) {
+    return spec.rowKey ? spec.rowKey(row) : Array.isArray(row) ? row[0] : null;
+  }
+
+  // The row that stays last (spec.totalLast): out of the ranking, and
+  // with no bar, so the other rows' bars compare with each other.
+  function isTotal(row) {
+    return spec.totalLast !== undefined && spec.totalLast !== null && String(keyOf(row)) === String(spec.totalLast);
+  }
+
   // -- sort: the saved one, read back ------------------------------------
   var sort = sortable ? readJson("tls:sort:" + gridId) : null;
   if (sort && !columns.some(function (c) { return c.key === sort.key; })) sort = null;
 
-  var maxima = columnMaxima(columns, rows);
+  var maxima = columnMaxima(
+    columns,
+    rows.filter(function (row) {
+      return !isTotal(row);
+    })
+  );
   var proseCols = proseColumns(columns, rows);
   var bar = barColumn(columns, spec);
   if (rows.length < 2) bar = -1;
+  // A ranking opens biggest first on its lead measure, the column with
+  // the inline bar. That order isn't stored: only the reader's own is.
+  if (!sort && sortable && spec.rank && bar !== -1) sort = { key: columns[bar].key, ascending: false };
+
+  // A control each grid on a page has (the column chooser, the fold,
+  // a column's help) is named by its visible words, then its table's.
+  function inTable(words) {
+    return spec.caption ? words + ": " + spec.caption : words;
+  }
 
   var toolbar = null;
   var chooserButton = null;
@@ -257,7 +309,7 @@ export function dataGrid(spec) {
     toolbar = el("div", { class: "grid-toolbar" });
     chooserButton = button("", { variant: "quiet", icon: "table", class: "grid-columns" });
     toolbar.appendChild(
-      popoverButton(chooserButton, buildChooser, { class: "grid-chooser", label: "Columns to show", align: "end" })
+      popoverButton(chooserButton, buildChooser, { class: "grid-chooser", label: inTable("Columns to show"), align: "end" })
     );
     wrap.appendChild(toolbar);
   }
@@ -270,7 +322,10 @@ export function dataGrid(spec) {
   table.appendChild(thead);
   table.appendChild(tbody);
   scroller.appendChild(table);
-  wrap.appendChild(scroller);
+  // The frame holds the edge shadows (app.css), which stay put while the
+  // grid scrolls under them.
+  var frame = el("div", { class: "grid-frame" }, [scroller]);
+  wrap.appendChild(frame);
 
   var virtual = rows.length > VIRTUAL_ROWS;
   if (virtual) scroller.classList.add("grid-virtual");
@@ -280,11 +335,31 @@ export function dataGrid(spec) {
   var limited = !virtual && spec.limit > 0 && rows.length > spec.limit + 2;
   var expanded = false;
   var moreButton = null;
+  // The keys of the rows an action cites (markRows), or null until the
+  // recommendations load.
+  var cited = null;
+
+  // How many rows the folded table shows: its limit, or as many as it
+  // takes to include every row an action cites, counted from the end the
+  // fold keeps. A fold that would leave out 2 rows or fewer shows all.
+  function foldSize() {
+    var size = spec.limit;
+    if (cited) {
+      orderedRows.forEach(function (row, i) {
+        if (cited[String(keyOf(row))]) size = Math.max(size, fromEnd() ? orderedRows.length - i : i + 1);
+      });
+    }
+    return size;
+  }
+
+  function folded() {
+    return limited && !expanded && rows.length > foldSize() + 2;
+  }
 
   // A grid drawing more than TALL_ROWS rows scrolls in its own box, so
   // a capped table only does once all its rows show.
   function fitBox() {
-    var tall = (limited && !expanded ? spec.limit : rows.length) > TALL_ROWS;
+    var tall = (folded() ? foldSize() : rows.length) > TALL_ROWS;
     scroller.classList.toggle("grid-tall", tall);
     if (tall) {
       scroller.tabIndex = 0;
@@ -310,6 +385,7 @@ export function dataGrid(spec) {
     var text = "Columns (" + visibleColumns().length + " of " + columns.length + ")";
     if (label) label.textContent = text;
     else chooserButton.appendChild(el("span", { class: "button-label", text: text }));
+    chooserButton.setAttribute("aria-label", inTable(text));
   }
 
   function buildChooser(body) {
@@ -367,21 +443,51 @@ export function dataGrid(spec) {
     });
   }
 
-  // Column help opens from a (?) in the header, one column at a time.
+  // A header wraps to two lines at most (app.css): its label keeps room
+  // for the longer line of its most even split (labelWidth), and one
+  // still cut says the rest in a title (titleCutLabels). Its accessible name is
+  // the label and unit alone, not the (?)'s. Column help opens from the
+  // (?) or, on a heading that sorts, its ? key, so a column is one Tab
+  // stop, not two.
   function headerCell(column) {
-    var th = el("th", { scope: "col", class: (headerNumeric(column) ? "num" : "") + (column.key === "__select" ? " col-select" : ""), "data-key": column.key });
-    var label = el("span", { class: "th-label", text: column.label || column.key });
-    th.appendChild(label);
-    if (column.kind === "money") th.appendChild(el("span", { class: "unit", text: " " + moneyUnit() }));
+    var name = column.label || column.key;
+    var unit = column.kind === "money" ? moneyUnit() : "";
+    var th = el("th", {
+      scope: "col",
+      class: (headerNumeric(column) ? "num" : "") + (column.key === "__select" ? " col-select" : ""),
+      "data-key": column.key,
+      "aria-label": unit ? name + " (" + unit + ")" : name,
+    });
+    // A hyphenated word, and the last word with the unit, don't break.
+    var words = name.split(/\s+/).filter(Boolean);
+    var label = el("span", { class: "th-label" });
+    words.forEach(function (word, i) {
+      var last = unit && i === words.length - 1;
+      if (i) label.appendChild(document.createTextNode(" "));
+      if (!last && word.indexOf("-") === -1) {
+        label.appendChild(document.createTextNode(word));
+        return;
+      }
+      var whole = label.appendChild(el("span", { class: "nowrap", text: word }));
+      if (last) whole.appendChild(el("span", { class: "unit", text: " " + unit }));
+    });
+    if (unit && words.length) words[words.length - 1] += " " + unit;
+    label.style.minWidth = labelWidth(words) + "ch";
+    var inner = el("span", { class: "th-inner" }, [label]);
+    th.appendChild(inner);
+    var helpBtn = null;
     if (column.help) {
-      var helpBtn = button("?", { class: "col-help-btn", label: "What is " + (column.label || column.key) + "?" });
+      helpBtn = button("?", {
+        class: "col-help-btn",
+        label: "What is " + name + (spec.caption ? " in " + spec.caption.replace(/\?$/, "") : "") + "?",
+      });
       popoverButton(
         helpBtn,
         function (body) {
-          body.appendChild(el("p", { class: "popover-title", text: column.label || column.key }));
+          body.appendChild(el("p", { class: "popover-title", text: name }));
           body.appendChild(el("p", null, prose(column.help)));
         },
-        { class: "help-popover", label: column.label || column.key, focusInside: false }
+        { class: "help-popover", label: name, focusInside: false }
       );
       // A click or Enter on the (?) must not also sort the column.
       helpBtn.addEventListener("click", function (event) {
@@ -390,16 +496,19 @@ export function dataGrid(spec) {
       helpBtn.addEventListener("keydown", function (event) {
         event.stopPropagation();
       });
-      th.appendChild(helpBtn);
+      // The heading takes the Tab stop, and its ? key opens the help.
+      if (sortable) helpBtn.tabIndex = -1;
+      inner.appendChild(helpBtn);
     }
     if (sortable) {
       th.tabIndex = 0;
       th.classList.add("sortable");
       var active = sort && sort.key === column.key;
       th.setAttribute("aria-sort", active ? (sort.ascending ? "ascending" : "descending") : "none");
+      if (helpBtn) th.setAttribute("aria-keyshortcuts", "?");
       var indicator = el("span", { class: "sort-indicator" });
       if (active) indicator.appendChild(icon(sort.ascending ? "arrow-up" : "arrow-down", { size: 12 }));
-      th.appendChild(indicator);
+      inner.appendChild(indicator);
       th.addEventListener("click", function () {
         sortBy(column);
       });
@@ -407,10 +516,23 @@ export function dataGrid(spec) {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           sortBy(column);
+        } else if (event.key === "?" && helpBtn) {
+          // Handled here, so the page's own ? (the shortcuts) stays out.
+          event.preventDefault();
+          helpBtn.click();
         }
       });
     }
     return th;
+  }
+
+  // A label still cut at two lines says the rest in its title. Read
+  // after layout: when the grid is drawn, sorted or resized.
+  function titleCutLabels() {
+    Array.prototype.forEach.call(thead.querySelectorAll(".th-label"), function (label) {
+      if (label.scrollHeight > label.clientHeight + 1) label.title = label.textContent;
+      else label.removeAttribute("title");
+    });
   }
 
   function drawHead() {
@@ -420,6 +542,7 @@ export function dataGrid(spec) {
       tr.appendChild(headerCell(column));
     });
     thead.appendChild(tr);
+    if (table.isConnected) titleCutLabels();
   }
 
   function sortValue(column, row) {
@@ -433,6 +556,8 @@ export function dataGrid(spec) {
     }
     var column = columns.filter(function (c) { return c.key === sort.key; })[0];
     orderedRows = rows.slice().sort(function (a, b) {
+      // A total stays last whichever way the other rows run.
+      if (isTotal(a) !== isTotal(b)) return isTotal(a) ? 1 : -1;
       var av = sortValue(column, a);
       var bv = sortValue(column, b);
       var an = typeof av === "number" ? av : parseFloat(av);
@@ -453,8 +578,11 @@ export function dataGrid(spec) {
     storageSet("tls:sort:" + gridId, JSON.stringify(sort));
     applySort();
     var focusedKey = document.activeElement && document.activeElement.getAttribute && document.activeElement.getAttribute("data-key");
+    // The fold keeps the cited rows of the new order.
+    fitBox();
     drawHead();
     drawBody();
+    updateMore();
     if (focusedKey) {
       var again = thead.querySelector('th[data-key="' + CSS.escape(focusedKey) + '"]');
       if (again) again.focus();
@@ -463,7 +591,8 @@ export function dataGrid(spec) {
 
   function bodyRow(row) {
     var tr = el("tr");
-    var key = spec.rowKey ? spec.rowKey(row) : Array.isArray(row) ? row[0] : null;
+    var key = keyOf(row);
+    var total = isTotal(row);
     if (key !== null && key !== undefined) tr.setAttribute("data-row-key", String(key));
     var rowClass = spec.rowClass ? spec.rowClass(row) : null;
     if (rowClass) tr.classList.add(rowClass);
@@ -481,7 +610,7 @@ export function dataGrid(spec) {
       var content = cellContent(column, row, value, spec, rowKind);
       var full = fullValue(value, column.kind);
       if (full) td.title = plainText(full);
-      if (column.index === bar && typeof value === "number" && value > 0 && maxima[column.index] > 0) {
+      if (column.index === bar && !total && typeof value === "number" && value > 0 && maxima[column.index] > 0) {
         td.appendChild(
           el("span", { class: "bar-cell" }, [barNode(value, maxima[column.index]), typeof content === "string" ? el("span", { text: content }) : content])
         );
@@ -496,7 +625,7 @@ export function dataGrid(spec) {
       }
       tr.appendChild(td);
     });
-    if (rowMark && key !== null && key !== undefined) markRow(tr, rowMark(String(key)));
+    if (rowMark && key !== null && key !== undefined) markRow(tr, rowMark(String(key), rowName(tr)));
     if (spec.rowAction) {
       tr.classList.add("clickable");
       tr.tabIndex = 0;
@@ -518,6 +647,11 @@ export function dataGrid(spec) {
       });
     }
     return tr;
+  }
+
+  // A row's name as its first cell shows it (before any mark joins it).
+  function rowName(tr) {
+    return tr.firstChild ? tr.firstChild.textContent.trim() : "";
   }
 
   function markRow(tr, mark) {
@@ -561,7 +695,8 @@ export function dataGrid(spec) {
     }
     var group = null;
     var groups = sort ? null : spec.rowGroups;
-    var drawn = limited && !expanded ? (fromEnd() ? orderedRows.slice(-spec.limit) : orderedRows.slice(0, spec.limit)) : orderedRows;
+    var size = foldSize();
+    var drawn = folded() ? (fromEnd() ? orderedRows.slice(-size) : orderedRows.slice(0, size)) : orderedRows;
     drawn.forEach(function (row) {
       var rowGroup = groups && Array.isArray(row) && typeof row[0] === "string" ? groups[row[0]] : null;
       if (rowGroup && rowGroup !== group) {
@@ -589,9 +724,7 @@ export function dataGrid(spec) {
 
   function rowIndex(rowKey) {
     for (var i = 0; i < orderedRows.length; i++) {
-      var row = orderedRows[i];
-      var key = spec.rowKey ? spec.rowKey(row) : Array.isArray(row) ? row[0] : null;
-      if (String(key) === String(rowKey)) return i;
+      if (String(keyOf(orderedRows[i])) === String(rowKey)) return i;
     }
     return -1;
   }
@@ -602,10 +735,22 @@ export function dataGrid(spec) {
     return spec.limitFrom === "end" && !sort;
   }
 
+  // The fold's button says what it does next. It goes once the fold,
+  // grown to take in a cited row, would leave out 2 rows or fewer.
+  var moreRow = null;
+  function updateMore() {
+    if (!moreButton) return;
+    var size = foldSize();
+    moreRow.hidden = rows.length <= size + 2;
+    moreButton.setAttribute("aria-expanded", expanded ? "true" : "false");
+    var words = expanded ? (fromEnd() ? "Show the latest " : "Show the first ") + size : "Show all " + rows.length + " rows";
+    moreButton.querySelector(".button-label").textContent = words;
+    moreButton.setAttribute("aria-label", inTable(words));
+  }
+
   function setExpanded(open) {
     expanded = open;
-    moreButton.setAttribute("aria-expanded", open ? "true" : "false");
-    moreButton.querySelector(".button-label").textContent = open ? (fromEnd() ? "Show the latest " : "Show the first ") + spec.limit : "Show all " + rows.length + " rows";
+    updateMore();
     fitBox();
     drawBody();
   }
@@ -618,8 +763,9 @@ export function dataGrid(spec) {
       },
     });
     moreButton.setAttribute("aria-expanded", "false");
+    moreButton.setAttribute("aria-label", inTable("Show all " + rows.length + " rows"));
     moreButton.setAttribute("aria-controls", gridId);
-    wrap.appendChild(el("div", { class: "grid-more" }, [moreButton]));
+    moreRow = wrap.appendChild(el("div", { class: "grid-more" }, [moreButton]));
     // An evidence link's row may be past the first rows: show them all
     // (pulseRow calls this). Returns whether the key is one of the rows.
     table.gridScrollTo = function (rowKey) {
@@ -662,12 +808,32 @@ export function dataGrid(spec) {
   drawHead();
   drawBody();
   updateChooserLabel();
+
+  // Edge cues (app.css): a shadow at the right while the grid scrolls
+  // further right, and one off the pinned first column once it has
+  // scrolled. Set from the scroll position, at most once a frame.
+  var cueFrame = 0;
+  function setCues() {
+    cueFrame = 0;
+    var room = scroller.scrollWidth - scroller.clientWidth;
+    frame.classList.toggle("cue-start", room > 1 && scroller.scrollLeft > 1);
+    frame.classList.toggle("cue-end", room > 1 && scroller.scrollLeft < room - 1);
+  }
+  scroller.addEventListener(
+    "scroll",
+    function () {
+      if (!cueFrame) cueFrame = requestAnimationFrame(setCues);
+    },
+    { passive: true }
+  );
+
   // A grid wider than its box scrolls sideways: it becomes a Tab stop
   // so the arrow keys can scroll it, and its first column stays put.
-  // Checked whenever the box changes size, so a grid drawn inside a
-  // closed "More tables" is checked when it opens.
+  // Checked whenever the box or the table changes size (the window, a
+  // column chosen, rows shown), so a grid drawn inside a closed "More
+  // tables" is checked when it opens.
   if (typeof ResizeObserver === "function") {
-    new ResizeObserver(function () {
+    var observer = new ResizeObserver(function () {
       var wide = scroller.clientWidth > 0 && scroller.scrollWidth > scroller.clientWidth + 1;
       scroller.classList.toggle("grid-wide", wide);
       if (wide && scroller.tabIndex !== 0) {
@@ -677,7 +843,11 @@ export function dataGrid(spec) {
           scroller.setAttribute("aria-label", (spec.caption || "Table") + ", scrolls sideways");
         }
       }
-    }).observe(scroller);
+      setCues();
+      titleCutLabels();
+    });
+    observer.observe(scroller);
+    observer.observe(table);
   }
   if (spec.link) {
     // Dropped once the grid has been on the page and left it.
@@ -696,11 +866,27 @@ export function dataGrid(spec) {
     table: table,
     scroller: scroller,
     // Marks the rows drawn now; rows drawn later (sorting, scrolling a
-    // long grid) are marked as they are drawn.
+    // long grid) are marked as they are drawn. mark(key, name) is told
+    // the row's name as drawn. A folded table first grows its fold to
+    // take in every row an action cites.
     markRows: function (mark) {
       rowMark = mark;
+      if (limited) {
+        var before = foldSize();
+        cited = {};
+        rows.forEach(function (row) {
+          var key = keyOf(row);
+          if (key !== null && key !== undefined && mark(String(key))) cited[String(key)] = true;
+        });
+        if (foldSize() !== before) {
+          updateMore();
+          fitBox();
+          drawBody();
+          return;
+        }
+      }
       Array.prototype.forEach.call(tbody.querySelectorAll("tr[data-row-key]"), function (tr) {
-        if (!tr.classList.contains("is-evidence")) markRow(tr, mark(tr.getAttribute("data-row-key")));
+        if (!tr.classList.contains("is-evidence")) markRow(tr, mark(tr.getAttribute("data-row-key"), rowName(tr)));
       });
     },
   };
@@ -809,11 +995,16 @@ export function notesList(notes, seen) {
 // The actions a table or row is evidence for (api.js's actionIndex), as
 // a button that lists them, each linked to its detail in Actions.
 // chip: the header's "Feeds N actions"; otherwise a row's small mark.
-function feedsButton(actions, chip) {
+// of: the table's title (the chip) or the row's name and table (the
+// mark), which ends the button's name, so a page's marks don't read alike.
+function feedsButton(actions, chip, of) {
   var words = actions.length === 1 ? "1 action" : actions.length + " actions";
+  var named = function (text) {
+    return of ? text + ": " + of : text;
+  };
   var trigger = chip
-    ? el("button", { type: "button", class: "chip chip-accent feeds-chip" }, [icon("actions", { size: 12 }), el("span", { text: "Feeds " + words })])
-    : el("button", { type: "button", class: "row-feeds", "aria-label": "Evidence for " + words, title: "Evidence for " + words }, [icon("actions", { size: 12 })]);
+    ? el("button", { type: "button", class: "chip chip-accent feeds-chip", "aria-label": named("Feeds " + words) }, [icon("actions", { size: 12 }), el("span", { text: "Feeds " + words })])
+    : el("button", { type: "button", class: "row-feeds", "aria-label": named("Evidence for " + words), title: "Evidence for " + words }, [icon("actions", { size: 12 })]);
   return popoverButton(
     trigger,
     function (body) {
@@ -833,7 +1024,8 @@ function feedsButton(actions, chip) {
 }
 
 // Once the recommendations load: the header chip and the row marks.
-function markFeeds(wrap, head, gridNode, tableName) {
+// title: the table's, which the chip's name ends with.
+function markFeeds(wrap, head, gridNode, tableName, title) {
   actionIndex().then(function (index) {
     var actions = index.byTable[tableName];
     if (!actions || !actions.length) return;
@@ -841,11 +1033,12 @@ function markFeeds(wrap, head, gridNode, tableName) {
       head = el("div", { class: "block-head block-head-help" });
       wrap.insertBefore(head, wrap.firstChild);
     }
-    head.appendChild(feedsButton(actions, true));
+    head.appendChild(feedsButton(actions, true, title));
     if (gridNode && gridNode.grid) {
-      gridNode.grid.markRows(function (key) {
+      gridNode.grid.markRows(function (key, name) {
         var rowActions = index.byRow[tableName + "\n" + key];
-        return rowActions && rowActions.length ? feedsButton(rowActions, false) : null;
+        // A row can be cited in more than one table on a page.
+        return rowActions && rowActions.length ? feedsButton(rowActions, false, (name || key) + (title ? " in " + title : "")) : null;
       });
     }
   });
@@ -906,6 +1099,61 @@ function summaryFacts(table) {
   return list;
 }
 
+// -- which report tables rank ----------------------------------------------------
+
+// The report lists rows in an order that means something (by date, by
+// bucket or size, ranked on some figure) or, where none does, A to Z by
+// name. An A-to-Z list opens as a ranking instead, biggest first on its
+// lead measure (dataGrid's rank). A table keeps its own order when it is
+// dated (NEWEST_LAST), read down its rows (row groups or kinds), or led
+// by a scale: numbers, dates, hours, sizes, buckets or levels.
+var SCALE_KEY = /(?:^|_)(?:bucket|window|depth|level|effort|hour|day|date|week|month|period|start)$/;
+var SCALE_VALUE = /^[<>~]?\s*\d/;
+
+function inOrder(names, by) {
+  for (var i = 1; i < names.length; i++) if (!(by(names[i - 1]) < by(names[i]))) return false;
+  return true;
+}
+
+function aToZ(names) {
+  return inOrder(names, String) || inOrder(names, function (name) { return name.toLowerCase(); });
+}
+
+// null when the table keeps its order. Else {total}: the table ranks,
+// and total is the key of a last row after the A-to-Z run (a total, or
+// "other"), which stays last, or null.
+function ranking(table) {
+  var rows = table.rows || [];
+  var first = (table.columns || [])[0];
+  if (rows.length < 2 || !first || NEWEST_LAST[table.name] || hasKeys(table.row_groups) || hasKeys(table.row_kinds)) return null;
+  if (NUMERIC_KINDS[first.kind] || SCALE_KEY.test(first.key || "")) return null;
+  var names = rows.map(function (row) {
+    return row[0];
+  });
+  var named = names.every(function (name) {
+    return typeof name === "string" && !SCALE_VALUE.test(name);
+  });
+  if (!named) return null;
+  if (aToZ(names)) return { total: null };
+  if (names.length > 3 && aToZ(names.slice(0, -1))) return { total: names[names.length - 1] };
+  return null;
+}
+
+// A table's own empty state where "a longer window" is the wrong reason:
+// [what happened, why or what next].
+var EMPTY_TEXT = {
+  context_budget_statusline: ["No status line readings in this window.", "This table fills once the status line logger is installed and has logged a session."],
+  habits_outcomes: ["No feedback on your work in this window.", "Answer /tl-feedback, or rate a session on {{page:spend/sessions}}, to fill this table."],
+};
+
+function emptyText(table) {
+  // Five-hour blocks come only with a plan's usage limits.
+  if (table.name === "five_hour_blocks" && (state.units || {}).mode !== "subscription") {
+    return ["Five-hour blocks exist only on a Pro or Max plan.", "Your billing is set to pay per token (API), so there are none to show."];
+  }
+  return EMPTY_TEXT[table.name] || ["Nothing to show for this window.", "A longer window may include some."];
+}
+
 // options.heading false: the caller has already titled the table (a
 // table shown away from its section, under its own section heading).
 // options.seen: the glossary terms its section has already explained.
@@ -944,9 +1192,11 @@ export function renderTable(table, tableId, currency, options) {
       el("details", { class: "disclosure summary-details" }, [el("summary", { text: "All figures (" + facts.querySelectorAll("dt").length + ")" }), facts])
     );
     if (table.notes && table.notes.length) wrap.appendChild(notesList(table.notes, (options && options.seen) || new Set()));
-    if (table.name) markFeeds(wrap, head, null, table.name);
+    if (table.name) markFeeds(wrap, head, null, table.name, table.title || table.name);
     return wrap;
   }
+  var rank = ranking(table);
+  var empty = emptyText(table);
   var gridNode = wrap.appendChild(
     dataGrid({
       id: tableId,
@@ -962,27 +1212,63 @@ export function renderTable(table, tableId, currency, options) {
       // report sends both as {} when a table has neither.
       limit: hasKeys(table.row_groups) || hasKeys(table.row_kinds) || (options && options.allRows) ? 0 : REPORT_ROWS,
       limitFrom: NEWEST_LAST[table.name] ? "end" : "start",
-      empty: "Nothing to show for this window.",
-      emptyNext: "A longer window may include some.",
+      rank: !!rank,
+      totalLast: rank ? rank.total : null,
+      empty: empty[0],
+      emptyNext: empty[1],
       tint: TINT_TABLES.indexOf(table.name) !== -1,
     })
   );
   if (table.notes && table.notes.length) wrap.appendChild(notesList(table.notes, (options && options.seen) || new Set()));
-  if (table.name) markFeeds(wrap, head, gridNode, table.name);
+  if (table.name) markFeeds(wrap, head, gridNode, table.name, table.title || table.name);
   return wrap;
+}
+
+// Opens a table a page leaves to the full report in the table drawer:
+// open(table, sectionTitle). evidence.js sets it, since this module
+// can't import that one (it imports this).
+var reportTableDrawer = null;
+
+export function setReportTableDrawer(open) {
+  reportTableDrawer = open;
+}
+
+// The line under a section's tables for the ones left to the full
+// report, with a button that opens each in the table drawer.
+function reportTablesNote(tables, sectionTitle) {
+  var note = el("p", {
+    class: "notes report-tables-note",
+    text:
+      (tables.length === 1 ? "1 more table is" : tables.length + " more tables are") +
+      " in the full report (claude-token-lens report).",
+  });
+  if (!reportTableDrawer) return note;
+  tables.forEach(function (table) {
+    note.appendChild(document.createTextNode(" "));
+    note.appendChild(
+      button("Open " + (table.title || table.name), {
+        variant: "link",
+        action: function () {
+          reportTableDrawer(table, sectionTitle);
+        },
+      })
+    );
+  });
+  return note;
 }
 
 // Tables by dashboard placement (helptext.py's table audit): "keep"
 // shown, "advanced" collapsed into "More tables", "report" left to the
-// CLI report (and the JSON/CSV exports), with a line saying so.
+// CLI report (and the JSON/CSV exports), with a line saying so that
+// opens each in the table drawer.
 export function renderPlacedTables(container, tables, currency, idPrefix, sectionTitle, seen) {
   var advanced = [];
-  var reportOnly = 0;
+  var reportOnly = [];
   tables.forEach(function (table, i) {
     var tableId = idPrefix + "-" + table.name + "-" + i;
     var placement = table.dashboard || "keep";
     if (placement === "report") {
-      reportOnly += 1;
+      reportOnly.push(table);
     } else if (placement === "advanced") {
       advanced.push({ table: table, id: tableId });
     } else {
@@ -1002,16 +1288,7 @@ export function renderPlacedTables(container, tables, currency, idPrefix, sectio
     });
     container.appendChild(details);
   }
-  if (reportOnly) {
-    container.appendChild(
-      el("p", {
-        class: "notes",
-        text:
-          (reportOnly === 1 ? "1 more table is" : reportOnly + " more tables are") +
-          " in the full report (claude-token-lens report).",
-      })
-    );
-  }
+  if (reportOnly.length) container.appendChild(reportTablesNote(reportOnly, sectionTitle));
 }
 
 // The chart a section draws above its tables (charts-types.js's
