@@ -48,9 +48,10 @@ def github_slug(heading: str) -> str:
     with punctuation other than ``-`` and ``_`` removed and each space
     turned into a hyphen (so "Spend › Usage" becomes ``spend--usage``)."""
     text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", heading)
-    text = re.sub(r"<[^>]+>", "", text)
-    text = text.replace("`", "").replace("*", "")
-    text = re.sub(r"[^\w\- ]", "", text.lower())
+    # HTML tags drop out, but ``<name>`` inside a code span is text.
+    parts = re.split(r"(`[^`]*`)", text)
+    text = "".join(p.strip("`") if p.startswith("`") else re.sub(r"<[^>]+>", "", p) for p in parts)
+    text = re.sub(r"[^\w\- ]", "", text.replace("*", "").lower())
     return text.replace(" ", "-")
 
 
@@ -88,6 +89,11 @@ def test_github_slug_matches_githubs_rules() -> None:
     assert github_slug("`--aggregate` (team documents)") == "--aggregate-team-documents"
     assert github_slug("Glossary › Terms") == "glossary--terms"
     assert github_slug("What it reads, and what it can't") == "what-it-reads-and-what-it-cant"
+    assert github_slug("`agents.<name>` (per-agent frontmatter overrides)") == "agentsname-per-agent-frontmatter-overrides"
+    assert (
+        github_slug("`<claude-root>`: the real Claude Code directory, resolved independently of `--config-dir`")
+        == "claude-root-the-real-claude-code-directory-resolved-independently-of---config-dir"
+    )
 
 
 @pytest.mark.parametrize("path", DOC_FILES, ids=lambda p: str(p.relative_to(REPO_ROOT)).replace("\\", "/"))
