@@ -2680,3 +2680,35 @@ def test_search_only_moves_around_and_copies() -> None:
     assert not re.search(r"apply", source, re.IGNORECASE)
     assert "copyToClipboard(prompt)" in _function_source(source, "recommendationEntries")
 
+
+
+def test_models_read_by_name_on_screen() -> None:
+    """A model id in a table cell, a check's evidence or a change's
+    current value reads as its name ("Sonnet 5 (+3 more)", "Haiku 4.5"),
+    with the id on hover. Display only: the id stays the row key, the
+    evidence key and the sort value. Only Claude model ids match, so an
+    agent or folder named claude-something is left alone."""
+    fmt = _static_text("format.js")
+    match = re.search(r"var MODEL_ID = /(.+)/g;", fmt)
+    assert match
+    model_id = re.compile(match.group(1))
+    for text, ids in (
+        ("claude-sonnet-5 (+3 more)", ["claude-sonnet-5"]),
+        ("not set (used claude-opus-5-5 (+1 more))", ["claude-opus-5-5"]),
+        ("claude-haiku-4-5-20251001", ["claude-haiku-4-5-20251001"]),
+        ("claude-3-5-sonnet-20241022", ["claude-3-5-sonnet-20241022"]),
+        ("claude-opus-5-5[1m]", ["claude-opus-5-5[1m]"]),
+        ("claude-implementer", []),
+        ("C--Dev-claude-token-lens", []),
+    ):
+        assert [m.group(0) for m in model_id.finditer(text)] == ids, text
+    assert '" (1M context)"' in _function_source(fmt, "modelNames")
+    # Every place server text shows a model goes through it.
+    assert "return modelNames(String(value));" in _function_source(fmt, "formatCell")
+    grid = _static_text("grid.js")
+    cell = _function_source(grid, "cellContent")
+    assert 'kind === "str") return el("span", { title: value, text: plainText(text) });' in cell
+    table = _function_source(grid, "simpleTable")
+    assert "var text = modelNames(String(cell));" in table
+    assert 'el("span", { title: String(cell), text: text })' in table
+    assert "return modelNames(String(value));" in _function_source(_static_text("page-actions.js"), "valueText")

@@ -13,7 +13,7 @@
  */
 
 import { clear, el, highlight, listenHighlight, state, storageGet, storageSet } from "./core.js";
-import { cellSortValue, formatCell, fullValue, moneyParts, moneyText, moneyUnit, NUMERIC_KINDS, PROJECT_KEYS, projectName } from "./format.js";
+import { cellSortValue, formatCell, fullValue, modelNames, moneyParts, moneyText, moneyUnit, NUMERIC_KINDS, PROJECT_KEYS, projectName } from "./format.js";
 import { actionIndex, findSection } from "./api.js";
 import { COST_CARDS, pageLink, plainText, viewForSection, viewForTable } from "./links.js";
 import { button, emptyState, helpButton, motionOK, popoverButton, prose, swatch, tile, tileRow } from "./ui.js";
@@ -157,14 +157,17 @@ function cellContent(column, row, value, spec, rowKind) {
     return el("span", { class: "value-label", title: value, "data-raw": value, text: labels[value] });
   }
   // A cell can't hold a link (a row opens its own detail): a page link
-  // in its text reads as the page's name.
+  // in its text reads as the page's name. A model reads by its name,
+  // with its id on hover.
   var text = formatCell(value, kind, state.currency);
-  return typeof text === "string" ? plainText(text) : text;
+  if (typeof text !== "string") return text;
+  if (typeof value === "string" && text !== value && kind === "str") return el("span", { title: value, text: plainText(text) });
+  return plainText(text);
 }
 
 // A text column holding sentences wraps as prose; any other text (a
-// name, a model, a key) stays on one line, so "claude-haiku-4-5" never
-// breaks across lines. A column drawn by its own render is left alone.
+// name, a model, a key) stays on one line, so "Haiku 4.5 (+1 more)"
+// never breaks across lines. A column drawn by its own render is left alone.
 var PROSE_CHARS = 40;
 
 function proseColumns(columns, rows) {
@@ -1109,7 +1112,10 @@ export function simpleTable(columns, rows, caption, id) {
           label: col.label,
           render: function (row) {
             var cell = row[i];
-            return cell === null || cell === undefined ? "" : String(cell);
+            if (cell === null || cell === undefined) return "";
+            // A model reads by its name, with its id on hover.
+            var text = modelNames(String(cell));
+            return text === String(cell) ? text : el("span", { title: String(cell), text: text });
           },
           kind: numericColumn[i] && i > 0 ? "float" : "str",
         };

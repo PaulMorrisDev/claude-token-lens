@@ -35,7 +35,7 @@ import {
   toast,
 } from "./ui.js";
 import { dataGrid, simpleTable } from "./grid.js";
-import { modelName } from "./format.js";
+import { modelName, modelNames } from "./format.js";
 import { formatHash, pageLink, replaceParams, scopeParams, viewIntro } from "./links.js";
 import { evidenceList } from "./evidence.js";
 import { modelSentence, priced, pricingFacts } from "./costs.js";
@@ -569,7 +569,7 @@ function valueText(value) {
   if (value === false) return "Off";
   if (Array.isArray(value)) return value.length ? value.join(", ") : "None";
   if (value === null || value === undefined || value === "") return "—";
-  return String(value);
+  return modelNames(String(value));
 }
 
 // What a change sets: a model by the name the rest of the page uses,

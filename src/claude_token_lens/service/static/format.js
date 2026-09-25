@@ -107,7 +107,7 @@ export function formatCell(value, kind, currency) {
       if (typeof value === "number" && isFinite(value)) {
         return signed(Math.abs(value).toLocaleString("en-US", { maximumFractionDigits: 2 }), value < 0);
       }
-      return String(value);
+      return modelNames(String(value));
     case "int":
       return signed(thousands(Math.abs(Number(value))), Number(value) < 0 && Math.round(Number(value)) !== 0);
     case "tokens":
@@ -362,6 +362,18 @@ export function modelName(id) {
   var numbers = text.match(/\d+/g) || [];
   if (!family) return String(id || "");
   return family.charAt(0).toUpperCase() + family.slice(1) + (numbers.length ? " " + numbers.join(".") : "");
+}
+
+// Text with model ids in it, each as people say it: "claude-sonnet-5
+// (+3 more)" -> "Sonnet 5 (+3 more)". For display only: the ids stay
+// the data (row keys, evidence, sorting). Only Claude model ids match,
+// so a name like "claude-implementer" is left alone.
+var MODEL_ID = /\bclaude-(?:(?:opus|sonnet|haiku|fable)(?:-\d+)+|\d+(?:-\d+)*-(?:opus|sonnet|haiku|fable)(?:-\d{8})?)\b(\[1m\])?/g;
+
+export function modelNames(text) {
+  return String(text).replace(MODEL_ID, function (id, wide) {
+    return wide ? modelName(id.slice(0, -wide.length)) + " (1M context)" : modelName(id);
+  });
 }
 
 // A change as a signed percentage: "+12%", "−3%" with a true minus
