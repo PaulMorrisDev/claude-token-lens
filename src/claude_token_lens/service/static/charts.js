@@ -142,7 +142,9 @@ export function modelTier(model) {
 
 // How much a chart moves: the morph when figures change, the draw-in on
 // first show. None with reduced motion, and none past 1,500 marks,
-// where a morph costs more than it explains.
+// where a morph costs more than it explains. A page can hold either
+// back a little (opts.delay: the Overview's chart waits 80ms for its
+// headline figures to start counting).
 var MORPH_MS = 600;
 var DRAW_IN_MS = 600;
 var MAX_MORPH_MARKS = 1500;
@@ -312,6 +314,8 @@ function buildFrame(key, spec, opts) {
     linkScope: null,
     stopHighlight: null,
     observer: null,
+    // The move under way: {first, starts, ends} (performance.now()).
+    moving: null,
   };
 
   toggle.addEventListener("click", function () {
@@ -377,7 +381,8 @@ function wireResize(frame) {
       if (!width || width === frame.width || !frame.data) return;
       var first = !frame.drawn;
       frame.width = width;
-      drawFrame(frame, { first: first, resize: !first });
+      if (first) drawFrame(frame, { first: true, resize: false });
+      else redraw(frame);
     });
   });
   frame.observer.observe(frame.plot);
@@ -489,7 +494,10 @@ function drawContext(frame, how) {
     frame.svg.append("defs");
   }
   // A hidden tab never runs the frames a morph needs: draw it settled.
-  var animate = motionOK() && !how.resize && !document.hidden;
+  // A resize is drawn at once, unless it lands mid-move (how.ms: see
+  // redraw).
+  var animate = motionOK() && (!how.resize || how.ms > 0) && !document.hidden;
+  var delay = (animate && how.delay) || 0;
   var ctx = {
     frame: frame,
     svg: frame.svg,
@@ -512,11 +520,18 @@ function drawContext(frame, how) {
       frame.svg.attr("viewBox", "0 0 " + ctx.width + " " + height).attr("width", ctx.width).attr("height", height);
       return ctx.inner;
     },
-    // The morph for a window change; the draw-in on first show.
+    // The morph for a window change; the draw-in on first show. The
+    // frame notes when the move ends, so a resize before then carries
+    // it on.
     duration: function (marks) {
       if (!animate || (marks || 0) > MAX_MORPH_MARKS) return 0;
-      return how.first ? DRAW_IN_MS : MORPH_MS;
+      var ms = how.ms || (how.first ? DRAW_IN_MS : MORPH_MS);
+      var now = performance.now();
+      frame.moving = { first: !!how.first, starts: now + delay, ends: now + delay + ms };
+      return ms;
     },
+    // How long the marks wait before they move.
+    delay: delay,
     ease: how.first ? d3.easeExpOut : d3.easeCubicInOut,
     // A named layer inside the plot area (drawn in the order first asked for).
     layer: function (name) {
@@ -552,6 +567,22 @@ function drawContext(frame, how) {
     },
   };
   return ctx;
+}
+
+// A drawn chart at a new size (width or height). A draw-in or morph
+// still under way carries on to the new size in the time it had left:
+// stopped, or left to run, it would finish at the old size. A settled
+// chart is redrawn in place at once, with no morph.
+function redraw(frame) {
+  var moving = frame.moving;
+  var now = performance.now();
+  frame.moving = null;
+  if (moving && now < moving.ends) {
+    drawFrame(frame, { first: moving.first, resize: true, delay: Math.max(0, moving.starts - now), ms: moving.ends - Math.max(now, moving.starts) });
+    return;
+  }
+  frame.svg.selectAll("*").interrupt();
+  drawFrame(frame, { first: false, resize: true });
 }
 
 function drawFrame(frame, how) {
@@ -709,7 +740,7 @@ export function drawChart(container, key, data, form, opts) {
   if (width) {
     var first = !frame.drawn;
     frame.width = width;
-    drawFrame(frame, { first: first, resize: false });
+    drawFrame(frame, { first: first, resize: false, delay: opts.delay });
   }
   return frame;
 }
@@ -729,15 +760,14 @@ export function holdChart(container, key, opts) {
   return true;
 }
 
-// A drawn chart at a new height, redrawn in place with no morph: the
-// Overview lines its chart up with the panel beside it.
+// A drawn chart at a new height, redrawn in place: the Overview lines
+// its chart up with the panel beside it. A draw-in or morph still under
+// way carries on to the new height (redraw).
 export function setChartHeight(key, opts, height) {
   var frame = framesBySlot[slotName(key, opts)];
   if (!frame || !frame.drawn || !frame.opts || frame.opts.height === height) return;
   frame.opts = Object.assign({}, frame.opts, { height: height });
-  // A draw-in still running would finish at the old height.
-  frame.svg.selectAll("*").interrupt();
-  drawFrame(frame, { first: false, resize: true });
+  redraw(frame);
 }
 
 // A chart whose figures couldn't load: the frame and its question stay,

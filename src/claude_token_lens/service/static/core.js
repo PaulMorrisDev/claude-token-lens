@@ -90,6 +90,8 @@ export var state = {
   reportPromises: {},
   // The same for /api/recommendations (api.js's loadRecommendations).
   recommendationPromises: {},
+  // And for /api/quick-actions, the checks (api.js's loadQuickActions).
+  quickActionPromises: {},
   currency: "USD",
   // UX-1: report.meta.units {mode, share_per_usd, period_label,
   // basis} (model.py's ReportMeta.units) -- the billing-mode facts

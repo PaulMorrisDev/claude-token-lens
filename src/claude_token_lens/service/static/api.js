@@ -181,6 +181,35 @@ export function loadRecommendations() {
   return state.recommendationPromises[key];
 }
 
+// /api/quick-actions (the checks) for the window on screen, fetched once
+// per window the same way: Actions › Checks and the recommendation
+// detail share it. A failed fetch isn't kept.
+export function loadQuickActions() {
+  var key = state.window;
+  if (!state.quickActionPromises[key]) {
+    state.quickActionPromises[key] = fetchJson(withWindow("/api/quick-actions")).then(function (result) {
+      var body = result.body;
+      if (!body || body.ok !== true) delete state.quickActionPromises[key];
+      return result;
+    });
+  }
+  return state.quickActionPromises[key];
+}
+
+// Once the Overview has settled, fetch what Actions draws from while the
+// page is idle, so Actions opens from the cache (docs/ui.md,
+// "Performance"): requestIdleCallback where the browser has it, with a
+// timeout so a busy page still gets there, and a short timer where it
+// doesn't.
+export function prefetchActions() {
+  function fetchBoth() {
+    loadRecommendations();
+    loadQuickActions();
+  }
+  if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(fetchBoth, { timeout: 2000 });
+  else setTimeout(fetchBoth, 500);
+}
+
 // A rule that fires once per agent type sends one recommendation each;
 // the inbox shows them as one item, titled for all of them, and so do
 // the "Feeds N actions" lists.

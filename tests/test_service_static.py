@@ -1312,15 +1312,19 @@ def test_the_overview_leaves_the_health_detail_to_data_quality() -> None:
 
 def test_the_overview_chart_lines_up_with_the_actions() -> None:
     """Side by side, the Overview's chart grows to the actions' height,
-    redrawn without a morph; a running draw-in is stopped first so it
-    can't finish at the old height (docs/ui.md)."""
+    redrawn in place; a draw-in still running carries on to the new
+    height, and anything else is stopped first so it can't finish at
+    the old height (docs/ui.md)."""
     overview = _function_source(_app_js(), "renderOverview")
     assert "fittedChartHeight(main, chartHost, actionsPanel)" in overview
     assert 'setChartHeight("daily-spend", { slot: "overview" }' in overview
     assert "height: chartHeight" in overview
     fit = _function_source(_app_js(), "setChartHeight")
-    assert ".interrupt()" in fit
-    assert "resize: true" in fit
+    assert "redraw(frame)" in fit
+    carry = _function_source(_app_js(), "redraw")
+    assert "now < moving.ends" in carry
+    assert ".interrupt()" in carry
+    assert "resize: true" in carry
 
 
 def test_the_first_run_tells_a_running_scan_from_an_empty_one() -> None:

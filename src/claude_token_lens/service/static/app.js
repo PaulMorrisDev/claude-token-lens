@@ -30,6 +30,7 @@
 
 import { el, paramsChanged, renderedViews, setRouteHandler, state, storageGet, storageRemove, storageSet, WINDOW_OPTIONS } from "./core.js";
 import { icon } from "./icons.js";
+import { motionOK } from "./ui.js";
 import { loadRecommendations, resetFiguresAsOf } from "./api.js";
 import { pollHealth } from "./shell.js";
 import { formatHash, OLD_TAB_VIEWS, PAGES, parseHash, VIEW_KEYS, viewFor } from "./links.js";
@@ -139,13 +140,60 @@ function resolveRoute() {
   var asked = pending !== null && pending.key === key;
   // An evidence link (t, row) scrolls to its row itself.
   var target = extra.t ? "keep" : null;
-  showView(key, {
+  var options = {
     force: asked && pending.options.force,
     focus: asked && pending.options.focus,
     scroll: target || (asked ? (key === router.current ? "keep" : "top") : "restore"),
+  };
+  changeView(key, function () {
+    showView(key, options);
+    if (extra.t) revealEvidence(viewPanel(key), extra.t, extra.row);
+    paramsChanged(key, extra);
   });
-  if (extra.t) revealEvidence(viewPanel(key), extra.t, extra.row);
-  paramsChanged(key, extra);
+}
+
+// A new view fades in over the old one (docs/ui.md, "Motion"): a View
+// Transition, where the browser has them, with the timing in app.css.
+// Only for a real change of view, with motion welcome and no dialog
+// open (the new view would cover it while it fades in). The sidebar,
+// the page header and the toasts are named while it runs, so they
+// change at once instead of fading with the view. Otherwise the change
+// is made at once.
+var viewChanges = 0;
+
+function changeView(key, change) {
+  var moving =
+    router.current !== null &&
+    key !== router.current &&
+    typeof document.startViewTransition === "function" &&
+    motionOK() &&
+    !document.hidden &&
+    !document.querySelector("dialog[open]");
+  if (!moving) {
+    change();
+    return;
+  }
+  var root = document.documentElement;
+  var views = document.getElementById("views");
+  var top = views.getBoundingClientRect().top;
+  viewChanges += 1;
+  root.classList.add("view-changing");
+  var transition = document.startViewTransition(function () {
+    change();
+    // The old view stays where it was on screen, however far the page
+    // scrolls for the new one.
+    root.style.setProperty("--view-shift", Math.round(top - views.getBoundingClientRect().top) + "px");
+  });
+  function settled() {
+    viewChanges -= 1;
+    if (viewChanges > 0) return;
+    root.classList.remove("view-changing");
+    root.style.removeProperty("--view-shift");
+  }
+  // A transition cut short (the next view was asked for first) has still
+  // made its change.
+  transition.ready.catch(function () {});
+  transition.finished.then(settled, settled);
 }
 
 // Every in-app navigation comes through here (links.js's pageLink, the
@@ -359,6 +407,7 @@ function applyWindow(value) {
   storageSet("tls:window", value);
   delete state.reportPromises[value];
   delete state.recommendationPromises[value];
+  delete state.quickActionPromises[value];
   resetFiguresAsOf();
   Object.keys(renderedViews).forEach(function (key) {
     var view = viewFor(key);
@@ -524,6 +573,8 @@ function init() {
   window.addEventListener("hashchange", resolveRoute);
   resolveRoute();
   refreshActionsBadge();
+  // The shell answers from here (docs/ui.md, "Performance").
+  performance.mark("tl-shell-ready");
 }
 
 // VIEW_KEYS and VIEW_RENDERERS must name the same views: a page added to

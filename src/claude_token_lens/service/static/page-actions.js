@@ -7,7 +7,7 @@
  */
 
 import { clear, el, onParams, state } from "./core.js";
-import { fetchJson, findSection, groupedTitle, loadInto, loadRecommendations, loadReport, withWindow } from "./api.js";
+import { fetchJson, findSection, groupedTitle, loadInto, loadQuickActions, loadRecommendations, loadReport, withWindow } from "./api.js";
 import {
   AGENT_LABELS,
   basisChip,
@@ -442,7 +442,7 @@ export function renderRecommendations(panel) {
     }
   });
 
-  var checksLoad = fetchJson(withWindow("/api/quick-actions"));
+  var checksLoad = loadQuickActions();
   Promise.all([loadRecommendations(), loadReport()]).then(function (results) {
     // A newer render (the window changed) has replaced this one; drawing
     // it would select a stale item and rewrite the address.
@@ -820,7 +820,7 @@ export function renderQuickActions(panel) {
   });
 
   var recsLoad = loadRecommendations();
-  fetchJson(withWindow("/api/quick-actions")).then(function (result) {
+  loadQuickActions().then(function (result) {
     if (!container.isConnected) return;
     clear(container);
     var body = result.body;

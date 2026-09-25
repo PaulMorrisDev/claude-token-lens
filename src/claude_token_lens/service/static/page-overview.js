@@ -8,12 +8,14 @@
 
 import { clear, el, goTo, state, WINDOW_OPTIONS } from "./core.js";
 import { formatCell, fraction, money, moneyParts, thousands } from "./format.js";
-import { fetchJson, findSection, loadRecommendations, loadReport, withWindow } from "./api.js";
+import { fetchJson, findSection, loadRecommendations, loadReport, prefetchActions, withWindow } from "./api.js";
 import {
   button,
   copyToClipboard,
+  countUp,
   deltaChip,
   emptyState,
+  enterInTurn,
   errorNotice,
   loadingNode,
   SEVERITY_ORDER,
@@ -32,6 +34,16 @@ import { dailyChanges, meter, renderChart, savingsLevers, sparkline } from "./ch
 // A page draw that a newer one (a new window) has replaced: its late
 // answers are dropped, so they can't take the chart back.
 var overviewRun = 0;
+
+// The entrance (docs/ui.md, "Motion"): the headline figures count up,
+// the chart draws in 80ms after they start, and the next best actions
+// arrive in turn 80ms after that. Under reduced motion nothing moves.
+var CHART_AFTER_MS = 80;
+var ACTIONS_AFTER_MS = 160;
+
+// The headline figures last drawn, by tile: a new window counts up from
+// them, the first draw from 0.
+var shownFigures = null;
 
 // -- the period before -----------------------------------------------------------
 
@@ -223,7 +235,33 @@ function renderTiles(container, facts, meta, dailyRows) {
     link: pageLink("spend/sessions", "See the sessions"),
   });
   container.appendChild(tileRow([spend, available, cache, sessions], { class: "overview-tiles" }));
-  return { spend: spend, saving: saving };
+  var counts = [tileCount(spend, "spend", facts.cost, moneyValue), tileCount(cache, "cache", facts.summary.cache_saved || 0, moneyValue), tileCount(sessions, "sessions", facts.summary.sessions || 0, wholeNumber)];
+  if (saving > 0) counts.push(tileCount(available, "available", saving, moneyValue));
+  return { spend: spend, saving: saving, counts: counts };
+}
+
+// A tile's figure as it counts up: its node, the value it ends on and how
+// to write the values on the way (money in the billing mode's units).
+function tileCount(tileNode, key, value, write) {
+  return { node: tileNode.querySelector(".metric-value > span"), key: key, value: value, write: write };
+}
+
+function moneyValue(usd) {
+  return moneyParts(usd).value;
+}
+
+function wholeNumber(n) {
+  return thousands(Math.round(n));
+}
+
+// Count each headline figure up from the one this tile last showed.
+function countTiles(counts) {
+  var from = shownFigures || {};
+  shownFigures = {};
+  counts.forEach(function (count) {
+    countUp(count.node, from[count.key] || 0, count.value, count.write);
+    shownFigures[count.key] = count.value;
+  });
 }
 
 // The Spend tile's trend: one point a day, from 3 days up.
@@ -520,6 +558,8 @@ export function renderOverview(panel) {
   // Refit once both the chart and the actions are drawn, whichever lands last.
   var actionsDrawn = false;
   var chartDrawn = false;
+  // When the headline figures began to count: the chart draws in after.
+  var entrance = null;
   function fitChart() {
     if (!current() || !actionsDrawn || !chartDrawn) return;
     chartHeight = fittedChartHeight(main, chartHost, actionsPanel);
@@ -532,7 +572,7 @@ export function renderOverview(panel) {
     renderLogonNotice(health, notices);
   });
 
-  Promise.all([reportLoad, summaryLoad, previousLoad, recsLoad, healthLoad, dailyLoad]).then(function (loaded) {
+  var figuresDrawn = Promise.all([reportLoad, summaryLoad, previousLoad, recsLoad, healthLoad, dailyLoad]).then(function (loaded) {
     if (!current()) return;
     var reportResult = loaded[0];
     var summaryBody = loaded[1].body;
@@ -584,14 +624,18 @@ export function renderOverview(panel) {
     facts.available = availableSaving(levers, recs);
     var tiles = renderTiles(tilesHost, facts, meta, dailyRows);
     addSpendTrend(tiles.spend, dailyRows);
+    countTiles(tiles.counts);
+    entrance = performance.now();
     facts.saving = tiles.saving;
     facts.worth = recs.filter(function (rec) {
       return rec.severity === "action" || rec.severity === "advice";
     }).length;
     sentence.appendChild(el("p", { class: "overview-summary", text: summarySentence(facts) }));
 
-    if (recsBody && recsBody.ok === true) renderActions(actionsHost, recs);
-    else {
+    if (recsBody && recsBody.ok === true) {
+      renderActions(actionsHost, recs);
+      enterInTurn(actionsHost.querySelectorAll(".next-action"), ACTIONS_AFTER_MS);
+    } else {
       clear(actionsHost);
       actionsHost.appendChild(errorNotice(recsBody && recsBody.error));
     }
@@ -610,7 +654,16 @@ export function renderOverview(panel) {
 
   });
 
-  Promise.all([dailyLoad, impactLoad, reportLoad]).then(function (loaded) {
+  // The chart waits for the headline figures, so it draws in after them
+  // and at the height of the actions beside it. Figures that failed to
+  // draw still let it draw; their error is thrown on its own, as it
+  // would have been.
+  var figuresDone = figuresDrawn.then(null, function (err) {
+    setTimeout(function () {
+      throw err;
+    });
+  });
+  var chartDone = Promise.all([dailyLoad, impactLoad, reportLoad, figuresDone]).then(function (loaded) {
     if (!current() || body.hidden) return;
     var daily = loaded[0].body;
     if (!daily || daily.ok !== true) {
@@ -627,6 +680,7 @@ export function renderOverview(panel) {
         slot: "overview",
         titleTag: "h2",
         height: chartHeight,
+        delay: entrance === null ? 0 : Math.max(0, entrance + CHART_AFTER_MS - performance.now()),
         // A day leads to the sessions active on it.
         open: function (day) {
           goTo("spend/sessions", { params: { day: day } });
@@ -635,6 +689,11 @@ export function renderOverview(panel) {
     );
     chartDrawn = true;
     fitChart();
+  });
+
+  // Once the page has settled, Actions' figures load while it is idle.
+  chartDone.then(function () {
+    if (current()) prefetchActions();
   });
 }
 

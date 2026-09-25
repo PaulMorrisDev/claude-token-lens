@@ -186,6 +186,7 @@
   --dur-base: 200ms;
   --dur-drawer: 240ms;
   --dur-page: 220ms;
+  --dur-page-out: 120ms;
   --dur-chart: 600ms;
   --dur-count: 700ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
@@ -4284,6 +4285,69 @@ td.nowrap,
   }
 }
 
+/* A new view (app.js's changeView, a View Transition): the old view
+   fades out over 120ms and the new one fades in over 220ms, rising 6px.
+   The sidebar, the page header and the toasts are named while it runs,
+   so they change at once rather than fade with the view, and stay over
+   it. The old view keeps its place on screen however far the page
+   scrolled for the new one (--view-shift, set by app.js). */
+.view-changing {
+  --view-shift: 0px;
+}
+
+.view-changing .sidebar {
+  view-transition-name: sidebar;
+}
+
+.view-changing .page-header {
+  view-transition-name: page-header;
+}
+
+.view-changing .views {
+  view-transition-name: views;
+}
+
+.view-changing .toast-region {
+  view-transition-name: toast;
+}
+
+::view-transition-group(*),
+::view-transition-old(*),
+::view-transition-new(*) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-old(views) {
+  translate: 0 var(--view-shift);
+  animation: fade-out var(--dur-page-out) var(--ease-in) both;
+}
+
+::view-transition-new(views) {
+  animation: rise-in var(--dur-page) var(--ease-out) both;
+}
+
+/* Rows arriving in turn (ui.js's enterInTurn: the Overview's next best
+   actions), each --enter-delay after the page asked. */
+.is-entering {
+  --enter-delay: 0ms;
+  animation: rise-in var(--dur-base) var(--ease-out) backwards;
+  animation-delay: var(--enter-delay);
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
 /* -- reduced motion ------------------------------------------------------------------ */
 /* Everything still shows; nothing moves. Changes land at once. */
 
@@ -4316,6 +4380,18 @@ td.nowrap,
   .popover:popover-open {
     transform: none;
   }
+
+  /* app.js starts no View Transition and ui.js staggers nothing under
+     reduced motion; these hold even if one slips through. */
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+
+  .is-entering {
+    animation: none;
+  }
 }
 
 /* -- forced colours (Windows High Contrast) -------------------------------------------- */
@@ -4328,18 +4404,36 @@ td.nowrap,
     outline-offset: -2px;
   }
 
-  .status-dot {
+  /* The dot's tone class sets a colour the system would drop. */
+  .status-dot,
+  .status-dot[class*="tone-"] {
     background: CanvasText;
   }
 
   .severity-badge,
   .chip,
+  .delta-chip,
+  .basis-chip,
+  .filter-chip,
+  .control-button,
   .metric-tile,
   .score-item,
   .panel,
   .callout,
-  .rec {
+  .rec,
+  .menu,
+  .popover,
+  .drawer,
+  .tooltip,
+  .toast {
     border-color: CanvasText;
+  }
+
+  /* Rings on everything a keyboard can reach, in the system's own
+     focus colour. */
+  :focus-visible,
+  .chart-plot:focus-visible {
+    outline-color: Highlight;
   }
 
   .bar-svg rect {
@@ -4364,6 +4458,73 @@ td.nowrap,
   .filter-chip[aria-pressed="true"] {
     border-color: Highlight;
     color: Highlight;
+  }
+
+  /* Charts keep their own colours: a mark's colour and hatching are
+     what the legend names, and the system's few colours can't keep the
+     series apart. The words and lines around the marks take the
+     system's text colours instead, so they read on its background. */
+  .chart-svg,
+  .sparkline,
+  .swatch {
+    forced-color-adjust: none;
+  }
+
+  .chart-axis text,
+  .chart-unit,
+  .chart-label,
+  .chart-value,
+  .chart-rule-label,
+  .chart-offscale {
+    fill: CanvasText;
+  }
+
+  .chart-rule-label.is-openable {
+    fill: LinkText;
+  }
+
+  .chart-grid {
+    stroke: GrayText;
+  }
+
+  .chart-baseline,
+  .chart-rule,
+  .sparkline-line,
+  .chart-hover-ring,
+  .chart-dot.is-linked,
+  .chart-point.is-hover .chart-dot {
+    stroke: CanvasText;
+  }
+
+  /* The ring that keeps overlapping marks apart is the background's
+     colour, as it is in the theme. */
+  .chart-dot,
+  .chart-marker :is(circle, rect, polygon),
+  .sparkline-end {
+    stroke: Canvas;
+  }
+
+  .chart-cursor-band,
+  .chart-cursor-ring {
+    stroke: Highlight;
+  }
+
+  .chart-brush .selection {
+    fill: Highlight;
+    stroke: Highlight;
+  }
+
+  /* A meter's lit segments are filled and the rest outlined; the level
+     is in words beside it too. */
+  .meter-seg {
+    forced-color-adjust: none;
+    background: Canvas;
+    box-shadow: inset 0 0 0 1px GrayText;
+  }
+
+  .meter .meter-seg.is-on {
+    background: CanvasText;
+    box-shadow: none;
   }
 }
 
