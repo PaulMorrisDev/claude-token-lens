@@ -28,11 +28,12 @@
  * site data must never break rendering.
  */
 
-import { el, renderedViews, setRouteHandler, state, storageGet, storageRemove, storageSet, WINDOW_OPTIONS } from "./core.js";
+import { el, paramsChanged, renderedViews, setRouteHandler, state, storageGet, storageRemove, storageSet, WINDOW_OPTIONS } from "./core.js";
 import { icon } from "./icons.js";
 import { fetchJson, resetFiguresAsOf, withWindow } from "./api.js";
 import { pollHealth } from "./shell.js";
 import { formatHash, OLD_TAB_VIEWS, PAGES, parseHash, VIEW_KEYS, viewFor } from "./links.js";
+import { revealEvidence } from "./evidence.js";
 import { renderOverview } from "./page-overview.js";
 import { renderQuickActions, renderRecommendations } from "./page-actions.js";
 import { renderSavings, renderSessions, renderUsage, sessionsState } from "./page-spend.js";
@@ -66,7 +67,7 @@ var VIEW_RENDERERS = {
 };
 
 // ======================================================================
-// The router: #/<page>[/<segment>][?w=<window>]
+// The router: #/<page>[/<segment>][?w=<window>&id=<item>&t=<table>&row=<row>]
 // ======================================================================
 
 var router = {
@@ -126,32 +127,40 @@ function resolveRoute() {
   params.w = state.window;
   var hash = formatHash(key, params);
   if (window.location.hash !== hash) window.history.replaceState(null, "", hash);
+  var extra = Object.assign({}, params);
+  delete extra.w;
+  state.params = extra;
 
   var pending = router.pending;
   router.pending = null;
   var asked = pending !== null && pending.key === key;
+  // An evidence link (t, row) scrolls to its row itself.
+  var target = extra.t ? "keep" : null;
   showView(key, {
     force: asked && pending.options.force,
     focus: asked && pending.options.focus,
-    scroll: asked ? (key === router.current ? "keep" : "top") : "restore",
+    scroll: target || (asked ? (key === router.current ? "keep" : "top") : "restore"),
   });
+  if (extra.t) revealEvidence(viewPanel(key), extra.t, extra.row);
+  paramsChanged(key, extra);
 }
 
 // Every in-app navigation comes through here (links.js's pageLink, the
 // sidebar, the segments): it adds one history entry, and resolveRoute
 // does the rest when the hash changes. A page id alone opens that
-// page's last-used segment.
+// page's last-used segment. options.params go in the address too: an
+// item to select (id) or a table row to show (t, row).
 function goTo(target, options) {
   options = options || {};
   var route = parseHash("#/" + String(target));
   if (!route) return;
   var key = routeKey(route.page, route.segment);
-  if (key === router.current && !options.force) {
+  if (key === router.current && !options.force && !options.params) {
     if (options.focus) focusTitle();
     return;
   }
   router.pending = { key: key, options: options };
-  var hash = formatHash(key, { w: state.window });
+  var hash = formatHash(key, Object.assign({}, options.params || {}, { w: state.window }));
   if (window.location.hash === hash) resolveRoute();
   else window.location.hash = hash;
 }
@@ -282,7 +291,7 @@ function refreshActionsBadge(again) {
     var badge = document.getElementById("actions-badge");
     if (!badge) return;
     var body = result.body;
-    var recs = body && body.ok === true && body.data ? body.data.recommendations || [] : [];
+    var recs = body && body.ok === true && Array.isArray(body.data) ? body.data : [];
     var count = recs.filter(function (rec) {
       return rec.severity === "action";
     }).length;
@@ -359,7 +368,12 @@ function setWindow(value) {
   if (value === state.window || !knownWindow(value)) return;
   applyWindow(value);
   var view = viewFor(router.current);
-  window.history.replaceState(null, "", formatHash(router.current, { w: value }));
+  // What the view had open stays open if the new window has it; a table
+  // row shown from an evidence link was a one-off.
+  var keep = {};
+  if (state.params.id) keep.id = state.params.id;
+  state.params = keep;
+  window.history.replaceState(null, "", formatHash(router.current, Object.assign({ w: value }, keep)));
   updateHeader(view);
   if (windowMode(view) === "follow") showView(router.current, { force: true, scroll: "keep" });
 }

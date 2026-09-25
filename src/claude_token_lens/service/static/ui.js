@@ -146,11 +146,27 @@ export function severityChip(severity) {
   return chipNode;
 }
 
+// The severity's icon alone, in its colour, for a tight list whose
+// rows also say the severity in words (the Actions inbox).
+export function severityMark(severity) {
+  var node = el("span", { class: "severity-mark severity-" + severity, "aria-hidden": "true" });
+  node.appendChild(icon(SEVERITY_ICONS[severity] || "info", { size: 16 }));
+  return node;
+}
+
+// A check's status (quick_actions.py): the order the Checks list uses,
+// and each one's words.
+export var CHECK_STATUS_ORDER = ["act", "ok", "no_data"];
+
 var CHECK_STATUS = {
   act: { label: "Worth a look", cls: "severity-action", icon: "critical" },
   ok: { label: "Nothing to do", cls: "severity-good", icon: "success" },
   no_data: { label: "Not enough data", cls: "severity-info", icon: "info" },
 };
+
+export function statusLabel(status) {
+  return (CHECK_STATUS[status] || { label: status }).label;
+}
 
 export function statusBadge(status) {
   var info = CHECK_STATUS[status] || { label: status, cls: "severity-info", icon: "info" };
@@ -158,6 +174,14 @@ export function statusBadge(status) {
   badge.appendChild(icon(info.icon, { size: 14 }));
   badge.appendChild(el("span", { text: info.label }));
   return badge;
+}
+
+// A check's status as its icon alone, like severityMark.
+export function statusMark(status) {
+  var info = CHECK_STATUS[status] || { cls: "severity-info", icon: "info" };
+  var node = el("span", { class: "severity-mark " + info.cls, "aria-hidden": "true" });
+  node.appendChild(icon(info.icon, { size: 16 }));
+  return node;
 }
 
 // How sure a number is (docs/ui.md, "Basis"): the same words on tiles,
@@ -542,9 +566,10 @@ export function renderFixList(fixes, container) {
   });
 }
 
-export function renderTips(tips, container) {
+// level: the heading's tag, for where the tips sit ("h4" by default).
+export function renderTips(tips, container, level) {
   if (!tips || !tips.length) return;
-  container.appendChild(el("h4", { text: "Habits that help" }));
+  container.appendChild(el(level || "h4", { text: "Habits that help" }));
   container.appendChild(
     el(
       "ul",

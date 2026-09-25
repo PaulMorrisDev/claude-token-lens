@@ -607,29 +607,38 @@ export function dataGrid(spec) {
 }
 
 // Bring a row into view and pulse it (an evidence link's target). A
-// virtualised grid scrolls to the row first. Returns false when the row
-// isn't in the grid.
-export function pulseRow(gridId, rowKey) {
-  var table = document.getElementById(gridId);
+// virtualised grid scrolls to the row first. grid: the table's id or
+// the table itself. Returns false when the row isn't in the grid.
+export function pulseRow(grid, rowKey) {
+  var table = typeof grid === "string" ? document.getElementById(grid) : grid;
   if (!table) return false;
   var selector = 'tr[data-row-key="' + CSS.escape(String(rowKey)) + '"]';
   var row = table.querySelector(selector);
   if (!row && typeof table.gridScrollTo === "function" && table.gridScrollTo(rowKey)) row = table.querySelector(selector);
   if (!row) return false;
-  row.scrollIntoView({ block: "center", behavior: motionOK() ? "smooth" : "instant" });
-  row.classList.remove("row-target");
-  void row.offsetWidth;
-  row.classList.add("row-target");
+  pulseNode(row, "row-target");
+  return true;
+}
+
+// Bring any evidence target into view and pulse it: a grid row
+// ("row-target") or a block that isn't a grid, such as a scorecard area
+// ("block-target").
+export function pulseNode(node, cls) {
+  cls = cls || "block-target";
+  node.scrollIntoView({ block: "center", behavior: motionOK() ? "smooth" : "instant" });
+  node.classList.remove(cls);
+  void node.offsetWidth;
+  node.classList.add(cls);
   if (motionOK()) {
     setTimeout(function () {
-      row.classList.remove("row-target");
+      node.classList.remove(cls);
     }, 1400);
-    return true;
+    return;
   }
   // Reduced motion: the highlight holds still until the next click or
   // key, so a slower reader never loses the row.
   function clearTarget() {
-    row.classList.remove("row-target");
+    node.classList.remove(cls);
     document.removeEventListener("pointerdown", clearTarget, true);
     document.removeEventListener("keydown", clearTarget, true);
   }
@@ -637,7 +646,6 @@ export function pulseRow(gridId, rowKey) {
     document.addEventListener("pointerdown", clearTarget, true);
     document.addEventListener("keydown", clearTarget, true);
   }, 0);
-  return true;
 }
 
 // -- report tables and sections ------------------------------------------------
@@ -654,7 +662,9 @@ export function headRow(heading, help, subject) {
 // options.heading false: the caller has already titled the table (a
 // table shown away from its section, under its own section heading).
 export function renderTable(table, tableId, currency, options) {
-  var wrap = el("div", { class: "table-wrap" });
+  // Named for evidence links (evidence.js): report table names are
+  // unique across the report.
+  var wrap = el("div", { class: "table-wrap", "data-table-name": table.name || null });
   if (!options || options.heading !== false) {
     wrap.appendChild(headRow(el("h3", { text: table.title || table.name }), table.help, table.title || table.name));
   } else if (table.help) {

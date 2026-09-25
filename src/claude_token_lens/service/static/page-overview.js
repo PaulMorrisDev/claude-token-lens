@@ -289,7 +289,7 @@ function renderActions(container, recs) {
   var list = el("ol", { class: "next-actions" });
   ranked.slice(0, 5).forEach(function (rec) {
     var fix = (rec.fixes || [])[0];
-    var text = el("div", { class: "next-action-text" }, [el("p", { class: "next-action-title" }, [pageLink("actions/recommendations", rec.title)])]);
+    var text = el("div", { class: "next-action-text" }, [el("p", { class: "next-action-title" }, [pageLink("actions/recommendations", rec.title, { id: rec.key || rec.id })])]);
     if (rec.estimated_saving) text.appendChild(el("p", { class: "next-action-saving", text: rec.estimated_saving }));
     var item = el("li", { class: "next-action" }, [el("div", { class: "next-action-severity" }, [severityChip(rec.severity)]), text]);
     if (fix && fix.prompt) item.appendChild(el("div", { class: "next-action-copy" }, [copyPromptButton(fix.prompt)]));
@@ -421,13 +421,15 @@ function renderScorecard(container, section, recs) {
   recs.forEach(function (rec) {
     if (!byId[rec.id]) byId[rec.id] = rec;
   });
-  var strip = el("ul", { class: "scorecard-strip" });
+  // Tagged like a report table, so evidence links from a recommendation
+  // find the row (evidence.js).
+  var strip = el("ul", { class: "scorecard-strip", "data-table-name": "dimensions" });
   dimTable.rows.forEach(function (row) {
     // [dimension, level, label, metric, value, threshold]
     var dimension = row[0], level = row[1], value = row[4], threshold = row[5];
     var copy = DIMENSION_TEXT[dimension];
     var measured = typeof level === "number" && level > 0;
-    var item = el("li", { class: "score-item" }, [
+    var item = el("li", { class: "score-item", "data-row-key": String(dimension) }, [
       el("h3", { class: "score-name", text: plain(dimension) }),
       meter(level, { label: plain(dimension), status: levelStatus(level), text: measured ? plain(row[2]) : "Not measured" }),
     ]);
@@ -447,7 +449,7 @@ function renderScorecard(container, section, recs) {
       })
       .filter(Boolean)[0];
     if (mover && level < 5) {
-      links.appendChild(el("span", { class: "score-mover" }, [el("span", { text: "What moves it: " }), pageLink("actions/recommendations", mover.title)]));
+      links.appendChild(el("span", { class: "score-mover" }, [el("span", { text: "What moves it: " }), pageLink("actions/recommendations", mover.title, { id: mover.key || mover.id })]));
     }
     if (links.childNodes.length) item.appendChild(links);
     strip.appendChild(item);

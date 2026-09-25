@@ -343,8 +343,19 @@ export function fraction(ratio) {
   for (var i = 0; i < FRACTION_WORDS.length; i++) {
     if (Math.abs(n - FRACTION_WORDS[i][0]) < 0.005) return FRACTION_WORDS[i][1];
   }
-  if (n < 1) return formatCell(n * 100, "pct") + " of";
+  if (n < 1) return Math.round(n * 100) + "% of";
   return String(Math.round(n * 100) / 100) + " times";
+}
+
+// A model id as people say it: "claude-opus-5-5" -> "Opus 5.5",
+// "claude-3-5-haiku-20241022" -> "Haiku 3.5". An id of another shape
+// comes back as it is.
+export function modelName(id) {
+  var text = String(id || "").replace(/^claude-/, "").replace(/-\d{8}$/, "");
+  var family = (text.match(/[a-z]+/) || [""])[0];
+  var numbers = text.match(/\d+/g) || [];
+  if (!family) return String(id || "");
+  return family.charAt(0).toUpperCase() + family.slice(1) + (numbers.length ? " " + numbers.join(".") : "");
 }
 
 // A change as a signed percentage: "+12%", "−3%" with a true minus

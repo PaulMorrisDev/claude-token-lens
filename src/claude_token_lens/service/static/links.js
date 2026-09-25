@@ -5,7 +5,7 @@
  * links between pages.
  */
 
-import { el, goTo } from "./core.js";
+import { el, goTo, state } from "./core.js";
 
 // ======================================================================
 // Pages and segments
@@ -317,14 +317,28 @@ export function viewIntro(container, key) {
 // A link to another view: a real #/ address (so it opens in a new tab
 // and shows in the status bar), which moves focus to the new page's
 // title when followed here. Without text it reads as the view's name.
-export function pageLink(key, text) {
-  var link = el("a", { class: "page-link", href: formatHash(key, {}), text: text || viewLabel(key) });
+// params: what to open there ({id: a recommendation's key}).
+export function pageLink(key, text, params) {
+  var link = el("a", { class: "page-link", href: formatHash(key, Object.assign({ w: state.window }, params || {})), text: text || viewLabel(key) });
   link.addEventListener("click", function (event) {
     if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
-    goTo(key, { focus: true });
+    goTo(key, { focus: !params, params: params || null });
   });
   return link;
+}
+
+// Say in the address what the view on screen has open (the selected
+// recommendation), without a new history entry: Back leaves the view,
+// not each item looked at.
+export function replaceParams(params) {
+  state.params = Object.assign({}, params || {});
+  var clean = {};
+  Object.keys(state.params).forEach(function (name) {
+    if (state.params[name] !== null && state.params[name] !== undefined) clean[name] = state.params[name];
+  });
+  state.params = clean;
+  window.history.replaceState(null, "", formatHash(state.view, Object.assign({ w: state.window }, clean)));
 }
 
 export function captureLink(text) {

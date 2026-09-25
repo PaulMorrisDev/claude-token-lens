@@ -101,6 +101,9 @@ export var state = {
   window: "30",
   // The view on screen, as links.js's view key ("spend/usage").
   view: null,
+  // The address's other parameters for that view (everything but w):
+  // an item to select (id), a table and row to show (t, row).
+  params: {},
 };
 
 // Short windows show a change's effect within the hour; "Since my
@@ -133,9 +136,24 @@ export function setRouteHandler(handler) {
 }
 
 // Show a view ("spend/usage", or a page id for its last-used segment).
-// options: focus (move focus to the page title), force (draw again).
+// options: focus (move focus to the page title), force (draw again),
+// params (the address's other parameters: {id}, or {t, row}).
 export function goTo(viewKey, options) {
   if (routeHandler) routeHandler(viewKey, options);
+}
+
+// A view that takes parameters (an item to select) says how to follow
+// them: app.js calls the handler each time the address changes, after
+// the view is on screen. The view registers it each time it draws.
+var paramsHandlers = {};
+
+export function onParams(viewKey, handler) {
+  paramsHandlers[viewKey] = handler;
+}
+
+export function paramsChanged(viewKey, params) {
+  var handler = paramsHandlers[viewKey];
+  if (handler) handler(params || {});
 }
 
 // -- linked highlight ------------------------------------------------------

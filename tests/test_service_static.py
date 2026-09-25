@@ -26,6 +26,7 @@ Three things are checked here:
 
 from __future__ import annotations
 
+import ast
 import http.server
 import json
 import re
@@ -243,6 +244,16 @@ def test_all_three_static_files_exist() -> None:
     for name in STATIC_FILES:
         path = STATIC_DIR / name
         assert path.is_file(), f"missing {path}"
+
+
+def test_first_party_files_hold_no_control_characters() -> None:
+    """A tab, newline or carriage return is text; any other C0 control
+    character (a backspace from a mangled regex escape, a NUL) is a
+    broken edit that a browser reads without complaint."""
+    for path in FIRST_PARTY_FILES:
+        text = (STATIC_DIR / path).read_text(encoding="utf-8")
+        bad = sorted({hex(ord(ch)) for ch in text if ord(ch) < 32 and ch not in "\t\n\r"})
+        assert not bad, (path, bad)
 
 
 def test_first_party_glob_finds_every_module() -> None:
@@ -1470,9 +1481,11 @@ def test_recommendation_severity_is_a_chip_with_an_icon_and_a_label() -> None:
     app_js = _app_js()
     chip = _function_source(app_js, "severityChip")
     assert "icon(" in chip and "SEVERITY_LABELS" in chip
-    card = _function_source(app_js, "renderRecommendationCard")
+    card = _function_source(app_js, "renderRecommendationDetail")
     # Inside the heading, so moving by headings reads the severity first.
-    assert re.search(r'el\("h\d", \{ class: "rec-head" \}, \[\s*severityChip\(rec\.severity\)', card)
+    assert re.search(
+        r'el\("h\d", \{ class: "rec-head", tabIndex: -1 \}, \[\s*severityChip\(group\.severity\)', card
+    )
     assert "visually-hidden" in card
     app_css = _static_text("app.css")
     for severity, token in (("action", "serious"), ("advice", "warn")):
@@ -1587,8 +1600,8 @@ def test_empty_state_helper_exists_and_is_used_for_not_enough_data_states() -> N
     helper = _function_source(app_js, "emptyState")
     assert "gate.have" in helper and "gate.need" in helper
 
-    quick_card = _function_source(app_js, "renderQuickCard")
-    assert "emptyState(check.summary)" in quick_card
+    check_detail = _function_source(app_js, "renderCheckDetail")
+    assert "emptyState(check.summary)" in check_detail
 
     impact = _function_source(app_js, "renderImpact")
     assert "emptyState(item.verdict, item.gate)" in impact
@@ -1648,7 +1661,11 @@ def test_evidence_row_pulse_moves_only_opacity_and_holds_under_reduced_motion() 
     assert re.search(r"tr\.row-target > td::before \{[^}]*animation: row-pulse", app_css)
     reduced = app_css[app_css.index("@media (prefers-reduced-motion: reduce)") :]
     assert re.search(r"tr\.row-target > td::before \{\s*opacity: 1;\s*animation: none;", reduced)
-    pulse = _function_source(_app_js(), "pulseRow")
+    # pulseRow finds the row; pulseNode (shared with the scorecard's
+    # block pulse) runs the glow.
+    assert 'pulseNode(row, "row-target")' in _function_source(_app_js(), "pulseRow")
+    assert re.search(r"\.block-target::after \{\s*opacity: 1;\s*animation: none;", reduced)
+    pulse = _function_source(_app_js(), "pulseNode")
     assert "if (motionOK())" in pulse
     assert 'addEventListener("pointerdown", clearTarget, true)' in pulse
     assert 'addEventListener("keydown", clearTarget, true)' in pulse
@@ -1795,3 +1812,126 @@ def test_chart_colours_follow_the_entity_not_the_window() -> None:
         assert mapping.get("other") == "var(--chart-other)" or kind == "agent", kind
         for value in mapping.values():
             assert re.fullmatch(r"var\(--chart-(?:[1-8]|other)\)", value), (kind, value)
+
+
+# -- Actions: areas, evidence links and deep links ---------------------------
+
+SRC_DIR = REPO_ROOT / "src" / "claude_token_lens"
+
+
+def _js_hyphen_map(app_js: str, var_name: str) -> dict[str, str]:
+    """A declaration's "key": "value" pairs whose keys may hold hyphens
+    (rule ids)."""
+    source = _declaration_source(app_js, var_name)
+    return dict(re.findall(r'^\s*"?([a-z0-9_./-]+)"?\s*:\s*"([^"]*)"', source, re.MULTILINE))
+
+
+def _recommendation_ids() -> set[str]:
+    """Every literal ``id="..."`` a ``Recommendation(...)`` call passes in
+    the package. quick_actions.py builds one only to render a fix, never
+    to send, so its placeholder id is left out."""
+    ids: set[str] = set()
+    for path in SRC_DIR.rglob("*.py"):
+        if path.name == "quick_actions.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Recommendation":
+                for kw in node.keywords:
+                    if kw.arg == "id" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                        ids.add(kw.value.value)
+    return ids
+
+
+def _evidence_sources() -> set[tuple[str, str]]:
+    """Every (section, table) an ``_evidence(label, value, section,
+    table, row)`` call names. Each must be a literal, so this scan sees
+    every place a recommendation can point."""
+    sources: set[tuple[str, str]] = set()
+    for path in SRC_DIR.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "_evidence":
+                section, table = node.args[2], node.args[3]
+                assert isinstance(section, ast.Constant) and isinstance(table, ast.Constant), (
+                    f"{path.name}:{node.lineno} names its evidence table indirectly"
+                )
+                sources.add((section.value, table.value))
+    return sources
+
+
+def test_every_recommendation_rule_has_an_area_on_the_actions_page() -> None:
+    """The area chips (Models, Cache, Context, Agents, Habits, Data and
+    settings) come from page-actions.js's RULE_AREA, since a
+    recommendation's category only says settings, workflow or data. A
+    new rule id with no area would fall into "Data and settings"
+    silently; every one is placed on purpose, and only on an area the
+    filter row has."""
+    app_js = _app_js()
+    areas = _js_hyphen_map(app_js, "RULE_AREA")
+    ids = _recommendation_ids()
+    assert len(ids) > 30, ids
+    assert sorted(ids - set(areas)) == []
+    assert sorted(set(areas) - ids) == [], "RULE_AREA names a rule no module sends"
+    area_ids = set(re.findall(r'\{ id: "([a-z]+)", label: "', _declaration_source(app_js, "AREAS")))
+    assert set(areas.values()) <= area_ids
+    # Every rule with a "what the change does" sentence has an area too.
+    mechanisms = _js_hyphen_map(app_js, "RULE_MECHANISM")
+    assert set(mechanisms) <= set(areas)
+
+
+def test_every_evidence_source_resolves_to_a_page_or_the_table_drawer() -> None:
+    """Each evidence entry names a report table; its link opens the page
+    that shows it (TABLE_PAGE_MAP, then SECTION_PAGE_MAP) or, for a
+    section no page shows, the table drawer. None may point at a
+    section that would fall through to Data quality by accident."""
+    from claude_token_lens.report import _SECTION_ORDER
+
+    app_js = _app_js()
+    sections = _js_string_map(app_js, "SECTION_PAGE_MAP")
+    tables = _js_string_map(app_js, "TABLE_PAGE_MAP")
+    sources = _evidence_sources()
+    assert len(sources) > 20, sources
+    package = "".join(path.read_text(encoding="utf-8") for path in SRC_DIR.rglob("*.py"))
+    for section, table in sorted(sources):
+        # The table is a real one: its name is written somewhere.
+        assert '"' + table + '"' in package, (section, table)
+        if section + "." + table in tables or section in sections:
+            continue
+        # Only a section the report doesn't list (a dormant one) may
+        # rely on the drawer alone.
+        assert section not in _SECTION_ORDER, (section, table)
+    evidence = _function_source(app_js, "evidenceView")
+    assert "TABLE_PAGE_MAP[sourceTable]" in evidence and "SECTION_PAGE_MAP[parts.section]" in evidence
+    assert 'dashboard === "report"' in evidence
+    opener = _function_source(app_js, "openEvidence")
+    assert "tableDrawer(sourceTable, rowKey)" in opener
+    # A page that doesn't draw the table (not for this window) hands the
+    # link to the drawer too.
+    assert "tableDrawer(sourceTable, rowKey)" in _function_source(app_js, "revealEvidence")
+    # Tables and the scorecard carry the name and row the links look for.
+    assert '"data-table-name": table.name || null' in _function_source(app_js, "renderTable")
+    scorecard = _function_source(app_js, "renderScorecard")
+    assert '"data-table-name": "dimensions"' in scorecard and '"data-row-key": String(dimension)' in scorecard
+
+
+def test_recommendations_and_checks_open_from_the_address() -> None:
+    """#/actions/recommendations?id=<key> opens that recommendation (a
+    member's key opens its group), and #/actions/checks?id=<check> that
+    check. The address follows what is picked, the router hands a new
+    id to the open page, and links from the Overview and between checks
+    and recommendations carry the id."""
+    app_js = _app_js()
+    for view in ("actions/recommendations", "actions/checks"):
+        assert 'onParams("' + view + '"' in app_js, view
+    inbox_source = _function_source(app_js, "inbox")
+    assert "replaceParams({ id: memberKey || item.key })" in inbox_source
+    assert "formatHash(spec.viewKey, { w: state.window, id: item.key })" in inbox_source
+    assert "paramsChanged(key, extra)" in _function_source(app_js, "resolveRoute")
+    assert "params" in _function_source(app_js, "pageLink")
+    assert "history.replaceState" in _function_source(app_js, "replaceParams")
+    overview = _function_source(app_js, "renderActions")
+    assert '{ id: rec.key || rec.id }' in overview
+    assert 'pageLink("actions/checks", check.question, { id: check.id })' in _function_source(app_js, "renderRecommendationDetail")
+    assert 'pageLink("actions/recommendations", groupTitle(group), { id: group.key })' in _function_source(app_js, "renderCheckDetail")
+    # An id this window doesn't have says so, instead of opening nothing.
+    assert "missingNote(" in _function_source(app_js, "renderRecommendations")
+    assert "missingNote(" in _function_source(app_js, "renderQuickActions")

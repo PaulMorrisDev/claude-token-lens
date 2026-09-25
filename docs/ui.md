@@ -330,7 +330,34 @@ names no view opens the last one shown (`tls:view`); on the first visit
 after the tab bar was replaced, that is the view the old tab bar last
 had selected (`tls:activeTab`, read once and removed). Each view keeps
 its scroll position: Back and Forward return to it, and a link to
-another view opens at the top. A "Skip to the page" link before the
+another view opens at the top. Two more parameters say what to open on
+a view. `id` picks an item in an inbox
+(`#/actions/recommendations?id=<key>`, where `key` is the
+recommendation's `key`: its id, plus the agent type for a rule that
+fires per agent, so a member's key opens its group on that agent; and
+`#/actions/checks?id=<check id>`). Picking another item rewrites `id`
+in place (`replaceParams`), so the address always names what is on
+screen without adding history. An id the window doesn't have opens the
+first item with a note saying so. `t=<section.table>&row=<row key>`
+names the row behind a number: the view opens at it, opens the "More
+tables" or Details that hides it, scrolls it into view and pulses it
+(`evidence.js`'s `revealEvidence`, which waits for the table to be
+drawn). Changing the window keeps `id` and drops `t` and `row`. A
+view's module hears a new `id` through `onParams` (`core.js`), so a
+link to the view already open selects without redrawing it.
+
+**Evidence links** (`evidence.js`). A recommendation's evidence names a
+report table and a row (`[label, value, "section.table", row_key]`).
+The link opens the view `TABLE_PAGE_MAP` names for that table, else the
+one `SECTION_PAGE_MAP` names for its section, and pulses the row there;
+the scorecard strip on the Overview is tagged like a table
+(`data-table-name="dimensions"`, a `data-row-key` per area), so its
+items pulse the same way. A table no page shows (one placed `report`, a
+section no page shows such as `savers`, or a table the page didn't
+draw for this window) opens in the **table drawer** instead: the table
+as a grid, the row pulsed, and a line saying where else it appears. A
+test checks every evidence table the rules can name resolves one of
+these ways. A "Skip to the page" link before the
 sidebar moves focus to the page title (`#page-title`, the one `h1`).
 
 **The sidebar** lists the seven main pages, with a count of "Do this"
@@ -465,36 +492,62 @@ Glossary has no figures and shows neither.
    Every load starts at once; the drawing waits for the report, which
    sets the billing mode. A newer draw (a new window) drops the answers
    of an older one, and the chart is held dimmed while new figures load.
-2. **Actions › Recommendations** — `/api/recommendations`: one card per
-   `Recommendation`, grouped by `severity` under "Do this" (action),
-   "Worth considering" (advice) and "For your information" (info).
-   Every card shows `why`, "For: <agent>", the estimated saving
-   (phrased for the billing mode), "What to do", and a collapsed "Show
-   the numbers behind this" with its evidence line(s) (`label:
-   formatted value (from <table title>, <row label>)`, same value
-   formatting `render/tables.py::format_evidence_value` gives the CLI's
-   Markdown/HTML output). Per entry in `fixes` (each collapsed when
-   there are several) it shows "What you're changing" (the six-part
-   explainer), "Ask Claude to do it" (the prompt, with a Copy button)
-   and, for a plain setting, "Or run this command" (the
-   `apply --set ... --dry-run` line), then the reminder to restart
-   Claude Code to pick up the change (`fixes.RESTART_NOTE`), which
-   every fix on every page ends with. A card with a
-   `lever` but no `fixes` names the setting and where it lives in plain
-   words; a `scope: "managed"` card instead shows "managed by policy,
-   raise with your administrator" (plan "Enterprise use") and no fix.
-   The same "capture window open: provisional" notice as Setup ›
-   Settings' baseline panel appears above the list while a capture window is
-   in progress (`/api/baseline`'s `capture_status`).
-3. **Actions › Checks** — `/api/quick-actions`: one card per check, each a
-   question (for example "Is a cheaper model enough for any of your
-   agents?") with a status badge (Worth a look / Nothing to do / Not
-   enough data) and its one-line answer. "Show the evidence" (with the
-   number of fixes and tips, for example "Show the evidence, 2 fixes
-   and 1 tip"; no button when there is not enough data) loads
-   `/api/quick-actions/<id>`: the evidence table, fix cards rendered by
-   the same `renderFix` Actions › Recommendations uses, and habit tips.
-   The same checks run in the terminal as `claude-token-lens check`.
+2. **Actions › Recommendations** — `/api/recommendations` as an
+   inbox: the list to pick from on the left (360px, and it stays in view
+   while the detail scrolls), the one picked on the right. Filter chips
+   above the list narrow it by importance (Do this, Worth considering,
+   For your information) and by area (Models, Cache, Context, Agents,
+   Habits, Data and settings), each with its count. The area comes from
+   `RULE_AREA` in `page-actions.js`, since a recommendation's `category`
+   only says settings, workflow or data; a test keeps it in step with
+   every rule id the service can send. A rule that fires once per agent
+   type (`ttl-switch`, `spawn-*` and the rest) is one list item for all
+   of them, titled for all of them ("7 agent types are sent your
+   CLAUDE.md files every time they start"), most important first and
+   in the service's order (by saving) within. Each item shows its
+   severity as an icon, its title, "severity · area · N agent types"
+   and its saving.
+   The detail opens with the severity chip inside the `h2` and the
+   title, then chips for who it's for, its area and where the change
+   lands. **How this saves you money** follows, in three rows: what it
+   costs you now (`why`), what the change does to the price (one or two
+   sentences with the multiplier from your pricing, `report.meta.rates`
+   through `fraction()`: "Reading from the cache costs a tenth of the
+   input price...", "Sonnet 5 costs 40% of Opus 5's price, and Haiku 4.5
+   a fifth of it"), and what
+   you could save, with its basis chip (At most, Estimate, Simulated,
+   Calibrated, from `saving_basis`) and how it was worked out. **What to
+   do** gives the action, then, when there is more than one change (the
+   model changes for six agent types, or a group), one table of them:
+   the agent, the value it sets ("Set model to", with the model's
+   name; a switch as On or Off), the saving and a Copy button per row.
+   The value now is said once above the table when every agent shares
+   it, else under each agent's name. In a
+   group, picking a row shows that agent's change, and the address
+   follows. Then the fixes: one command block, or several collapsed
+   with the first open, each with the prompt, the `--dry-run` command,
+   the six-part explainer and the reminder to restart Claude Code
+   (`fixes.RESTART_NOTE`). A card with a `lever` but no `fixes` names the
+   setting and where it lives; a `scope: "managed"` one says your
+   organisation's policy sets it and shows no fix. **The numbers behind
+   this** lists each report row the recommendation cites, as a link
+   ("Cost of each agent type on other models, revixo-reviewer on Spend ›
+   Savings") with the values taken from it, formatted as the CLI's
+   `format_evidence_value` does. **The check this answers** links to the
+   checks whose `rule_ids` name it. The same "capture window open"
+   notice as Setup › Settings' baseline panel appears above the inbox
+   while a capture window is in progress (`/api/baseline`'s
+   `capture_status`).
+3. **Actions › Checks** — `/api/quick-actions` in the same inbox: each
+   check is a question with its status (Worth a look, Nothing to do, Not
+   enough data, in that order), filtered by status. The detail gives the
+   status, why it matters and the answer, then loads
+   `/api/quick-actions/<id>`: **The numbers** (its table), the fixes
+   (the same command blocks as Recommendations) and **Habits that
+   help**. A check with not enough data says why instead. **The
+   recommendation it leads to** links to each recommendation whose id is
+   in its `rule_ids`. The same checks run in the terminal as
+   `claude-token-lens check`.
 4. **Spend › Usage** — cost by model (the overview section's `by_model`
    table, placed here by `TABLE_PAGE_MAP`), the
    `usage`/`elasticity`/`compactions`/`phases` report sections plus a raw
