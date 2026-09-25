@@ -206,8 +206,11 @@ size. No text is kept (`context_files.py`).
   change straight away; they hold few sessions, so read them as a quick
   signal, not a verdict.
 - **Since my last change**: starts at the latest change point: an
-  `apply`, its undo, a settings change the snapshot hook saw, or a
-  change to metrics capture (`change_points.py`).
+  `apply`, its undo, a settings change the snapshot hook saw, a change
+  to metrics capture, or a model, effort or CLAUDE.md size change your
+  sessions show (`change_points.py`). With at least 3 sessions started
+  since, the Overview adds what those sessions would have cost without
+  it (see "Without this change" below).
 - **What-if estimate** (`whatif.py`): what a change would have saved
   over the window, looked up in the report's own simulations rather
   than computed afresh: the model-swap repricing for a model change, the
@@ -229,6 +232,16 @@ size. No text is kept (`context_files.py`).
   result always notes that other things (the work itself, Claude Code
   updates) change too. [Profiles](profiles.md#on-the-dashboard) has the
   full rules.
+- **Without this change** (`counterfactual.py`): the sessions after a
+  change, priced as if it hadn't been made. A model or fast mode change
+  is repriced reply by reply; a cache lifetime change, or a compaction
+  window the change raised, is replayed under the old setting; context
+  a change took off or added (CLAUDE.md, MCP servers, plugins, skills)
+  is priced as carried on every reply. Anything else, and a change to
+  several settings at once, uses the sessions before it: their cost per
+  reply for each kind of work, times the replies after. Repricing keeps
+  the replies Claude actually wrote, so read it as the price of the same
+  work. [The API reference](api.md#get-apiimpact) has each method.
 
 ## 7. Quality signals
 

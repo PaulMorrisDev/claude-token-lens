@@ -2175,6 +2175,8 @@ def test_impact_is_empty_without_changes_and_lists_an_apply(server):
     from claude_token_lens import impact as impact_mod
 
     assert change["gate"] == {"reason": "min_sessions", "have": 0, "need": impact_mod.MIN_SESSIONS}
+    # Too few sessions since the change to say what it would have cost without it.
+    assert change["without"] is None
     resp, payload = server.get_json("/api/summary?window=change")
     assert resp.status == 200
 

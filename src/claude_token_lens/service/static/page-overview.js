@@ -7,7 +7,7 @@
  */
 
 import { clear, el, goTo, state, WINDOW_OPTIONS } from "./core.js";
-import { formatCell, fraction, money, moneyParts, projectName, thousands } from "./format.js";
+import { formatCell, fraction, money, moneyParts, projectName, shortTs, thousands } from "./format.js";
 import { fetchJson, findSection, loadRecommendations, loadReport, prefetchActions, withProject, withWindow } from "./api.js";
 import {
   button,
@@ -48,6 +48,23 @@ var shownFigures = null;
 // -- the period before -----------------------------------------------------------
 
 var DAY_MS = 24 * 3600 * 1000;
+
+// The "Since my last change" window's counterfactual (counterfactual.py):
+// the newest change /api/impact judges is the one the window starts at.
+// Nothing when too few sessions have started since it to say.
+function lastChangeLine(impactBody) {
+  var first = impactBody && impactBody.ok === true && impactBody.data && (impactBody.data.changes || [])[0];
+  var without = first && first.without;
+  if (!without || !without.since_text) return null;
+  var change = first.change || {};
+  var when = [shortTs(change.ts)];
+  if (change.project) when.push("in " + (change.project_name || "one project") + " only");
+  return el("p", { class: "notes last-change-without" }, [
+    el("span", { text: "Without your last change (" }),
+    pageLink("setup/settings", change.label || "a settings change", { day: String(change.ts || "").slice(0, 10) }),
+    el("span", { text: ", " + when.join(", ") + "), " + without.since_text }),
+  ]);
+}
 
 // The period of the same length just before this window, for the
 // deltas: its bounds, and how the sentence names it. None for "all" and
@@ -710,6 +727,15 @@ export function renderOverview(panel) {
     );
     chartDrawn = true;
     fitChart();
+  });
+
+  // "Since my last change": what the sessions started since would have
+  // cost without it, under the headline. All projects only: the figure
+  // isn't split by project.
+  Promise.all([impactLoad, figuresDone]).then(function (loaded) {
+    if (!current() || body.hidden || state.window !== "change" || state.project) return;
+    var line = lastChangeLine(loaded[0].body);
+    if (line) sentence.appendChild(line);
   });
 
   // Once the page has settled, Actions' figures load while it is idle.

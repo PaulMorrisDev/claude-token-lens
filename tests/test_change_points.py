@@ -231,6 +231,45 @@ def test_a_dominant_model_shift_between_sessions_is_a_change_point(tmp_path):
     assert point.label == "Model changed"
 
 
+def test_a_transcript_change_a_recorded_change_explains_is_not_a_second_point(tmp_path):
+    """A model setting changed between two sessions, and the second one
+    shows it: one change, not two (a second would cut the first one's
+    after sessions short). What the setting doesn't explain stays."""
+    from claude_token_lens.corpus import load_corpus
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    _session_file(project_dir, "s1", claude_md_chars=1000, model="claude-sonnet-5", ts_prefix="2026-09-10")
+    _session_file(project_dir, "s2", claude_md_chars=2000, model="claude-opus-5", ts_prefix="2026-09-17")
+    _snapshot(tmp_path, "20260912T000000Z", {"model": "sonnet"})
+    _snapshot(tmp_path, "20260913T000000Z", {"model": "opus"})
+    corpus = load_corpus([project_dir])
+    config, seen = change_points.change_points(tmp_path, corpus)
+    assert config.source == "config"
+    assert seen.source == "transcript" and seen.keys == ["claude_md_chars"]
+    assert [c["key"] for c in seen.changes] == ["claude_md_chars"]
+    assert seen.label == "CLAUDE.md size changed"
+
+
+def test_a_change_in_another_project_or_outside_the_gap_explains_nothing(tmp_path):
+    from claude_token_lens.corpus import load_corpus
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    _session_file(project_dir, "s1", claude_md_chars=0, model="claude-sonnet-5", ts_prefix="2026-09-10")
+    _session_file(project_dir, "s2", claude_md_chars=0, model="claude-opus-5", ts_prefix="2026-09-17")
+    # Before the first session: the change the second one shows came later.
+    _snapshot(tmp_path, "20260901T000000Z", {"model": "sonnet"})
+    _snapshot(tmp_path, "20260902T000000Z", {"model": "opus"})
+    # In the gap, but in another project's own settings.
+    project_layer = {"model": "project_local"}
+    _snapshot(tmp_path, "20260912T000000Z", {"model": "opus"}, project_layer)
+    _snapshot(tmp_path, "20260913T000000Z", {"model": "haiku"}, project_layer)
+    corpus = load_corpus([project_dir])
+    sources = [p.source for p in change_points.change_points(tmp_path, corpus)]
+    assert sources == ["config", "config", "transcript"]
+
+
 def test_without_a_corpus_transcript_points_are_left_out(tmp_path):
     """change_points(config_dir) with no corpus is the "since my last
     change" caller's path -- it can't classify transcript signatures

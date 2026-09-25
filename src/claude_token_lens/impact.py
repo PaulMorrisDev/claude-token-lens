@@ -452,7 +452,11 @@ def compare(
     previous: ChangePoint | None = None,
     following: ChangePoint | None = None,
     now: datetime | None = None,
+    without=None,
 ) -> dict:
+    """``without``, when given, is called with ``(point, before, after)``
+    for what the sessions after the change would have cost without it
+    (``counterfactual.for_impact``); its answer is ``"without"``."""
     before, after = sides(point, sessions, previous=previous, following=following, now=now)
     enough = len(before) >= MIN_SESSIONS and len(after) >= MIN_SESSIONS
     rows = [_measure_row(measure, before, after, units) for measure in measures_for(point)]
@@ -465,6 +469,7 @@ def compare(
         "verdict": _verdict(rows, len(before), len(after), enough),
         "measures": rows,
         "quality": _quality(point, before, after, units),
+        "without": without(point, before, after) if without is not None else None,
     }
 
 
@@ -557,13 +562,16 @@ def _verdict(rows: list[dict], before: int, after: int, enough: bool) -> str:
     )
 
 
-def impact(points: list[ChangePoint], sessions: list[SessionFacts], units: Units, *, limit: int = 10) -> list[dict]:
+def impact(
+    points: list[ChangePoint], sessions: list[SessionFacts], units: Units, *, limit: int = 10, without=None
+) -> list[dict]:
     """Newest change first, at most ``limit``. A change made within
-    :data:`TOGETHER` of another doesn't bound its before or after."""
+    :data:`TOGETHER` of another doesn't bound its before or after.
+    ``without`` is passed to :func:`compare`."""
     out = []
     for point in reversed(points):
         previous, following = neighbours(points, point)
-        out.append(compare(point, sessions, units, previous=previous, following=following))
+        out.append(compare(point, sessions, units, previous=previous, following=following, without=without))
         if len(out) >= limit:
             break
     return out

@@ -2446,7 +2446,7 @@ def make_handler(
         return _ok(data)
 
     def _compute_impact(key):
-        from .. import change_points
+        from .. import change_points, counterfactual
         from .. import impact as impact_mod
         from ..discovery import redact_slug
         from ..snapshots import snapshot_project_key
@@ -2470,7 +2470,9 @@ def make_handler(
             rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
             sessions = impact_mod.session_facts(corpus, rates)
             units = _report_units(_get_report_model(_DEFAULT_WINDOW_DAYS))
-            changes = impact_mod.impact(points, sessions, units)
+            changes = impact_mod.impact(
+                points, sessions, units, without=counterfactual.for_impact(corpus, rates, units)
+            )
             # A project change names its project as the dashboard's
             # project filter does (redacted), never by its snapshot key.
             names = {snapshot_project_key(b.slug): redact_slug(b.slug) for b in corpus.sessions if b.slug}

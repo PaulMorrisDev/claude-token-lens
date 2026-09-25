@@ -59,7 +59,14 @@ number can never compound (see "Calibration" below).
    totals `whatif.estimate` itself reprices from. Its before/after
    estimate is `impact._measure_row`'s own ratio-of-sums,
    stratum-reweighted, Holm-tested row (unchanged from EST-P3), called
-   for this one measure instead of a change point's whole table.
+   for this one measure instead of a change point's whole table. When
+   `counterfactual.py` can undo the predicted setting on the sessions
+   after the change themselves (repriced, simulated or approximate, see
+   [concepts](concepts.md#6-windows-what-if-estimates-and-beforeafter-comparisons)),
+   that figure is the measured total instead: it prices the same
+   sessions both ways, so nothing else that differs between the two
+   sides counts. It has no noise to test, so any difference of a cent
+   or more reads as real.
 4. **Measured total.** `impact._measure_row` gives a *rate* (dollars
    per session, or per spawn) before and after. `(before_rate -
    after_rate) * after_n` turns the rate's drop (or rise) into a dollar

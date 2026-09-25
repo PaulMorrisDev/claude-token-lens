@@ -2127,6 +2127,29 @@ def test_an_impact_card_says_what_changed_where_and_each_measures_reading() -> N
     assert '{ label: "Reading" }' in impact and 'm.label_text || ""' in impact
 
 
+def test_an_impact_card_leads_with_what_the_sessions_since_would_have_cost_without_it() -> None:
+    source = _app_js()
+    impact = _function_source(source, "renderImpact")
+    assert "renderWithout(item.without, card);" in impact
+    assert impact.index("renderWithout(") < impact.index("item.gate")
+    without = _function_source(source, "renderWithout")
+    assert "if (!without) return;" in without
+    assert "without.text" in without and "without.fidelity_text" in without
+    # A row per setting only when the headline fell back to the sessions before.
+    assert 'without.fidelity === "before" ? without.per_key' in without
+
+
+def test_the_last_change_window_says_what_it_would_have_cost_without_that_change() -> None:
+    source = _app_js()
+    line = _function_source(source, "lastChangeLine")
+    assert "(impactBody.data.changes || [])[0]" in line
+    assert "without.since_text" in line and '"Without your last change ("' in line
+    assert 'pageLink("setup/settings"' in line
+    overview = _function_source(source, "renderOverview")
+    assert 'state.window !== "change" || state.project' in overview
+    assert "lastChangeLine(loaded[0].body)" in overview
+
+
 def test_an_estimate_is_logged_when_a_change_is_saved_or_its_command_copied() -> None:
     """EST-P5: the dashboard logs a prediction (``"log": true``) for a
     change you mean to make, never while you tick or explore."""

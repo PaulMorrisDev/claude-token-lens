@@ -13,7 +13,9 @@ CLAUDE.md or memory size change of :data:`CLAUDE_MD_CHANGE_PCT` percent
 or more, or the dominant model or effort level shifting -- between one
 session and the next in the same project. These are ``source
 "transcript"`` points, timestamped at the first session that shows the
-new value.
+new value. A setting an apply, undo or settings change recorded between
+the two sessions isn't one: the sessions showing it is that change seen
+again, and a second point would cut the first one's after sessions short.
 
 Each point names the project it applies to (``project``), as the
 config hook's snapshot key (``snapshots.snapshot_project_key``), or
@@ -32,7 +34,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -486,12 +488,14 @@ def _transcript_label(keys: list[str]) -> str:
     return f"{_join(bits)} changed" if bits else "Your setup changed"  # pragma: no cover
 
 
-def _transcript_points(corpus) -> list[ChangePoint]:
+def _transcript_points(corpus) -> list[tuple[datetime, ChangePoint]]:
     """A change point wherever one project's sessions show a CLAUDE.md or
     memory size change of :data:`CLAUDE_MD_CHANGE_PCT` percent or more,
     or the dominant model or effort level used differs from the previous
     session in the same project (EST-P9). Consecutive sessions only, so a
-    slow drift across many small sessions doesn't fire repeatedly."""
+    slow drift across many small sessions doesn't fire repeatedly. Each
+    comes with the previous session's start: the change happened between
+    the two."""
     signatures = sorted(
         (sig for sig in (_session_signature(bundle) for bundle in corpus.sessions) if sig is not None),
         key=lambda s: s.start,
@@ -521,21 +525,46 @@ def _transcript_points(corpus) -> list[ChangePoint]:
         if not keys:
             continue
         points.append(
-            ChangePoint(
-                ts=sig.start,
-                source="transcript",
-                label=_transcript_label(keys),
-                keys=keys,
-                changes=changes,
-                project=sig.key,
+            (
+                before.start,
+                ChangePoint(
+                    ts=sig.start,
+                    source="transcript",
+                    label=_transcript_label(keys),
+                    keys=keys,
+                    changes=changes,
+                    project=sig.key,
+                ),
             )
         )
     return points
 
 
+def _explained(since: datetime, point: ChangePoint, recorded: list[ChangePoint]) -> ChangePoint | None:
+    """``point`` without the keys a recorded change (an apply, undo or
+    settings change) made between the two sessions it compares, in its
+    project: the sessions showing that change is the same change seen
+    again. ``None`` when every key is explained."""
+    made = {
+        label.rpartition(": ")[2].split(".")[-1]
+        for other in recorded
+        if since <= other.ts <= point.ts and applies_to(other, point.project)
+        for label in other.keys
+        if not label.startswith("agents.")
+    }
+    keys = [key for key in point.keys if key not in made]
+    if len(keys) == len(point.keys):
+        return point
+    if not keys:
+        return None
+    changes = [c for c in point.changes if c.get("key") in keys]
+    return replace(point, label=_transcript_label(keys), keys=keys, changes=changes)
+
+
 def change_points(config_dir: Path | str, corpus=None) -> list[ChangePoint]:
     """Every change point, oldest first. A snapshot difference that spans
-    an apply or revert is that change seen again, not a second one.
+    an apply or revert is that change seen again, not a second one, and
+    so is a transcript change a recorded one explains (:func:`_explained`).
     ``corpus``, when given, adds transcript-derived points too (EST-P9,
     see the module docstring) -- opt-in, since building a corpus is more
     than ``config_dir`` alone can do, and most callers (the "since my
@@ -549,7 +578,11 @@ def change_points(config_dir: Path | str, corpus=None) -> list[ChangePoint]:
         points.append(point)
     points.extend(_capture_points(config_dir))
     if corpus is not None:
-        points.extend(_transcript_points(corpus))
+        recorded = list(points)
+        for since, point in _transcript_points(corpus):
+            point = _explained(since, point, recorded)
+            if point is not None:
+                points.append(point)
     points.sort(key=lambda p: p.ts)
     return points
 

@@ -113,6 +113,23 @@ def test_changes_made_together_share_their_before_and_after():
         assert result["enough"]
 
 
+def test_without_is_asked_about_each_change_with_its_own_sides():
+    """``without`` (counterfactual.for_impact) gets each change point and
+    the sessions on each side of it; its answer is the row's "without"."""
+    sessions = [_session(-d, 2.0) for d in (1, 2, 3)] + [_session(d, 1.0) for d in (0.1, 0.2, 0.3)]
+    point = ChangePoint(CHANGE, "apply", "x")
+    seen = []
+
+    def without(p, before, after):
+        seen.append((p, len(before), len(after)))
+        return {"text": "Without this change: about 6.00 USD."}
+
+    [result] = impact.impact([point], sessions, UNITS, without=without)
+    assert seen == [(point, 3, 3)]
+    assert result["without"] == {"text": "Without this change: about 6.00 USD."}
+    assert impact.compare(point, sessions, UNITS)["without"] is None
+
+
 def test_quality_compares_the_changed_agents_runs_before_and_after():
     from claude_token_lens import quality
 

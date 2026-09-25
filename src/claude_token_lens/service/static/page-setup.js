@@ -1052,6 +1052,7 @@ function renderImpact(data, container) {
     var what = change.summary || (change.keys || []).join(", ");
     var where = change.project ? "In " + (change.project_name || "one project") + " only" : "";
     card.appendChild(el("p", { class: "profile-card-meta", text: [shortTs(change.ts), where, what].filter(Boolean).join(" · ") }));
+    renderWithout(item.without, card);
     if (item.gate) {
       card.appendChild(emptyState(item.verdict, item.gate));
     } else {
@@ -1121,6 +1122,26 @@ function renderImpact(data, container) {
     }
     container.appendChild(card);
   });
+}
+
+// What the sessions after a change would have cost without it
+// (counterfactual.py). One line, how it was worked out, and a row per
+// setting when the change made several at once (their figures overlap,
+// so the headline uses the sessions before instead).
+function renderWithout(without, card) {
+  if (!without) return;
+  card.appendChild(el("p", { class: "quick-summary" }, [el("strong", { text: without.text })]));
+  card.appendChild(el("p", { class: "notes", text: [without.fidelity_text, without.basis].filter(Boolean).join(" ") }));
+  var rows = without.fidelity === "before" ? without.per_key || [] : [];
+  if (!rows.length) return;
+  card.appendChild(
+    simpleTable(
+      [{ label: "Setting" }, { label: "Without it" }, { label: "How" }],
+      rows.map(function (row) {
+        return [(row.agent ? row.agent + ": " : "") + row.key, row.saved_text, row.fidelity_text];
+      })
+    )
+  );
 }
 
 // EST-P4/P8: did a saving estimate come true? Rows are

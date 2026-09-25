@@ -7,10 +7,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from claude_token_lens import backtest, impact
 from claude_token_lens.change_points import ChangePoint
 from claude_token_lens.corpus import load_corpus
-from claude_token_lens.pricing import load_pricing
+from claude_token_lens.pricing import load_pricing, price_turn
 from claude_token_lens.profiles import apply as apply_mod
 from claude_token_lens.profiles.schema import load_dict
 from claude_token_lens.service.store import Store
@@ -210,24 +212,27 @@ def _apply(tmp_path: Path, settings: dict):
     return config_dir, apply_mod.execute(plan, config_dir=config_dir)
 
 
-def _session_file(project_dir: Path, session_id: str, ts: datetime, *, input_tokens: int) -> None:
+def _session_file(
+    project_dir: Path, session_id: str, ts: datetime, *, input_tokens: int, model: str = "claude-sonnet-5"
+) -> None:
     stamp = ts.strftime("%Y-%m-%dT%H:%M:%S.000Z")
     lines = [
-        turn_line(timestamp=stamp, input_tokens=input_tokens, output_tokens=50),
-        turn_line(timestamp=stamp, input_tokens=input_tokens, output_tokens=50),
+        turn_line(timestamp=stamp, input_tokens=input_tokens, output_tokens=50, model=model),
+        turn_line(timestamp=stamp, input_tokens=input_tokens, output_tokens=50, model=model),
     ]
     write_jsonl(project_dir / f"{session_id}.jsonl", lines)
 
 
 def test_judge_predictions_matches_windows_and_persists_a_verdict(tmp_path):
     t0 = datetime.now(timezone.utc)
-    config_dir, result = _apply(tmp_path, {"model": "sonnet"})
+    config_dir, result = _apply(tmp_path, {"effortLevel": "medium"})
     point_ts = backtest.change_points_mod._parse_backup_ts(result.ts)
     assert point_ts is not None
 
     project_dir = tmp_path / "projects" / "proj"
     project_dir.mkdir(parents=True)
-    # Identical token counts within each side -> zero variance -> the
+    # effortLevel has no exact counterfactual, so this is judged on the
+    # before/after measure. Identical token counts within each side -> zero variance -> the
     # ratio test is maximally significant, so the verdict never comes
     # down to noise in this test.
     for i, hours_before in enumerate((2, 1.5, 1), start=1):
@@ -244,7 +249,7 @@ def test_judge_predictions_matches_windows_and_persists_a_verdict(tmp_path):
         prediction_id="pred-1",
         ts=(t0 - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         source="whatif",
-        measure_key="model",
+        measure_key="effortLevel",
         agent=None,
         predicted_usd=0.01,
         predicted_pct=None,
@@ -263,6 +268,48 @@ def test_judge_predictions_matches_windows_and_persists_a_verdict(tmp_path):
     # the tiny $0.01 prediction reads as "larger" than what showed up.
     assert row["measured_usd"] > 0
     assert row["verdict"] == "larger"
+
+
+def test_a_model_prediction_is_judged_on_the_same_sessions_repriced(tmp_path):
+    """The model the sessions before ran on (the apply set it from
+    unset) is priced on the sessions after, so their fewer input tokens,
+    which the model change didn't cause, don't count as its saving."""
+    t0 = datetime.now(timezone.utc)
+    config_dir, result = _apply(tmp_path, {"model": "sonnet"})
+    point_ts = backtest.change_points_mod._parse_backup_ts(result.ts)
+    project_dir = tmp_path / "projects" / "proj"
+    project_dir.mkdir(parents=True)
+    for i, hours_before in enumerate((2, 1.5, 1), start=1):
+        _session_file(
+            project_dir, f"before-{i}", point_ts - timedelta(hours=hours_before), input_tokens=100_000, model="claude-opus-5-5"
+        )
+    for i, hours_after in enumerate((1, 2, 3), start=1):
+        _session_file(project_dir, f"after-{i}", point_ts + timedelta(hours=hours_after), input_tokens=10_000)
+    corpus = load_corpus([project_dir])
+    pricing = load_pricing()
+    store = Store(":memory:")
+    store.open()
+    store.upsert_prediction(
+        prediction_id="pred-1",
+        ts=(t0 - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        source="whatif",
+        measure_key="model",
+        agent=None,
+        predicted_usd=0.05,
+        predicted_pct=None,
+        fidelity="ceiling",
+    )
+
+    backtest.judge_predictions(store, corpus, pricing, UNITS, config_dir, now=point_ts + timedelta(hours=10))
+
+    [row] = store.predictions(judged=True)
+    opus, sonnet = pricing.resolve_model("claude-opus-5-5"), pricing.resolve_model("claude-sonnet-5")
+    after_turns = [
+        turn for bundle in corpus.sessions if bundle.session_id.startswith("after") for turn in bundle.top.turns if turn.turn_index > 0
+    ]
+    expected = sum(price_turn(t, opus).total - price_turn(t, sonnet).total for t in after_turns)
+    assert row["measured_usd"] == pytest.approx(expected, abs=1e-6)
+    assert row["measured_pct"] < 0
 
 
 def test_judge_predictions_leaves_an_unmatched_prediction_alone(tmp_path):
