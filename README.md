@@ -90,8 +90,8 @@ offers these, and asks before each:
 
 Go to **http://127.0.0.1:8765** in your browser. On the first start a
 banner shows its progress while it reads your history (seconds to a few
-minutes), and figures fill in as it goes. Start with **Start here** on the
-Overview page, then **Actions › Checks**, which answers one question per
+minutes), and figures fill in as it goes. Start with **Next best actions**
+on the Overview page, then **Actions › Checks**, which answers one question per
 way of saving, such as "Is each agent on the cheapest model that does the
 job?". The bottom of the sidebar shows the version that is running.
 

@@ -315,8 +315,9 @@ calls, for instance — agree on exactly the same window.
 `data`: `{"window_days": int|null, "sessions": int, "transcripts": int, "total_cost": float, "total_tokens": int, "cache_read_tokens": int, "cache_saved": float}`.
 `total_cost` is at list price, whatever the billing mode. Additive:
 `cache_read_tokens` is `turns_agg.cache_read_tokens` summed across every
-model in the window (day-bounded, the same granularity `/api/daily-usage`
-reads at); `cache_saved` is what those cache reads actually saved against
+model over the sessions the window counts, whole (the same rule as
+`sessions` and `total_cost` below, so a bound inside a day never pulls
+in another session's reads); `cache_saved` is what those cache reads actually saved against
 sending the same tokens fresh as input instead — per model,
 `cache_read_tokens × (input_price − cache_read_price)`, summed, in USD at
 list price (a model the rate card doesn't price is left out, the same
@@ -431,12 +432,11 @@ Corpus-wide RE-CACHE breakdown — `Store.recache`.
 A signature with no rebuilds is absent, not zero. Always all history:
 this route takes no window.
 
-### Daily usage: `GET /api/daily-usage`
+### `GET /api/daily-usage`
 
 Per-day, per-model token and cost totals — `Store.daily_usage`. The
-dashboard does not call this route (so its heading is not in the
-`GET /api/...` form `tests/test_service_static.py` checks against
-the dashboard's modules); it is here for other clients.
+dashboard's Overview draws its daily spend chart from it, with the
+window and `split=agent`.
 
 Query: `days` (int, default 30, at least 1; unchanged for existing
 callers). Days are UTC calendar days. Additive: the same `window`/
@@ -467,7 +467,8 @@ then model. `cost` is at list price.
 `/api/report.md`/`.html`/`.json` (below) all accept the same windowing
 query params, mirroring the CLI `report` subcommand's own
 `--days`/`--since`/`--until` (`discovery._resolve_window`'s exact
-resolution). `/api/summary` accepts `window` and `window_days` only.
+resolution). `/api/summary` takes the same four params, but with no
+params it means all time rather than a 30-day default.
 `/api/sessions` and `/api/compactions` accept them all but, unlike the
 report routes, list everything when none is given. Every other route
 (`/api/health`, `/api/session/<id>`, `/api/recache`, `/api/baseline`,

@@ -41,7 +41,7 @@ export var CHART_SPECS = {
   },
   "savings-levers": {
     n: 2,
-    source: ["carry.carry_truncation_savings", "compaction_sim.compaction_sim_by_window", "model_swap.model_swap_summary", "waste.waste_summary"],
+    source: ["carry.carry_truncation_savings", "compaction_sim.compaction_sim_by_window", "model_swap.model_swap_by_agent_type", "waste.waste_summary"],
     form: "bars",
     title: "Which change saves the most, and how sure is it?",
     summary: "{top} saves the most: {topAmount}, {topBasis}.",
@@ -716,6 +716,17 @@ export function holdChart(container, key, opts) {
   }
   frame.node.classList.add("is-refreshing");
   return true;
+}
+
+// A drawn chart at a new height, redrawn in place with no morph: the
+// Overview lines its chart up with the panel beside it.
+export function setChartHeight(key, opts, height) {
+  var frame = framesBySlot[slotName(key, opts)];
+  if (!frame || !frame.drawn || !frame.opts || frame.opts.height === height) return;
+  frame.opts = Object.assign({}, frame.opts, { height: height });
+  // A draw-in still running would finish at the old height.
+  frame.svg.selectAll("*").interrupt();
+  drawFrame(frame, { first: false, resize: true });
 }
 
 // A chart whose figures couldn't load: the frame and its question stay,

@@ -888,6 +888,16 @@ def test_cache_read_tokens_by_model(store: Store) -> None:
     assert store.cache_read_tokens_by_model(since="2026-09-19T00:00:00Z") == {}
 
 
+def test_cache_read_tokens_by_model_counts_the_windows_sessions_whole(store: Store) -> None:
+    """A bound inside the seed's day doesn't pull its reads in when the
+    session's last reply (13:00) is outside the window, and a window that
+    holds that last reply counts the whole session, as summary() does."""
+    _seed(store)  # one session, last reply 2026-09-18T13:00:00Z
+    assert store.cache_read_tokens_by_model(since="2026-09-18T14:00:00Z", until="2026-09-18T23:00:00Z") == {}
+    assert store.cache_read_tokens_by_model(since="2026-09-18T12:30:00Z", until="2026-09-18T13:30:00Z") == {"claude-sonnet-5": 2400}
+    assert store.summary(since="2026-09-18T14:00:00Z", until="2026-09-18T23:00:00Z")["sessions"] == 0
+
+
 def test_compactions_listing(store: Store) -> None:
     _seed(store)
     rows = store.compactions()

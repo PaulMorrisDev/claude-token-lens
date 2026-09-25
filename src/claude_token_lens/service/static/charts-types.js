@@ -471,16 +471,34 @@ export function savingsLevers(tables) {
       });
     }
   }
-  var swap = tableObjects(tables.model_swap_summary)[0];
-  if (swap) {
+  // Each agent type's cheapest alternative, added up: the most any
+  // model change could save, so the model-tier action (a subset of these
+  // agent types) never shows a bigger figure than its lever.
+  var movable = tableObjects(tables.model_swap_by_agent_type).filter(function (row) {
+    return num(row.saving_usd) > 0;
+  });
+  if (movable.length) {
+    var biggest = movable.reduce(function (best, row) {
+      return num(row.saving_usd) > num(best.saving_usd) ? row : best;
+    }, movable[0]);
+    var subagentTypes = movable.filter(function (row) {
+      return row.agent_type !== "top-level";
+    }).length;
+    var mainToo = subagentTypes < movable.length;
     levers.push({
       key: "model_swap",
-      label: "Move subagents to a cheaper model",
-      usd: num(swap.saving_usd),
-      basis: "estimate",
-      detail: thousands(swap.agent_types) + " subagent types could move",
-      source: "model_swap.model_swap_summary",
-      row: String(swap.scope),
+      label: "Move work to a cheaper model",
+      usd: movable.reduce(function (sum, row) {
+        return sum + num(row.saving_usd);
+      }, 0),
+      basis: "ceiling",
+      detail:
+        (mainToo ? "Your main session and " : "") +
+        thousands(subagentTypes) +
+        (subagentTypes === 1 ? " subagent type" : " subagent types") +
+        " could move",
+      source: "model_swap.model_swap_by_agent_type",
+      row: String(biggest.agent_type),
     });
   }
   var waste = tableObjects(tables.waste_summary)[0];

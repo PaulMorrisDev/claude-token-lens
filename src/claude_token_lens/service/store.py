@@ -1490,24 +1490,30 @@ class Store:
     def cache_read_tokens_by_model(
         self, *, days: int | None = 30, since: str | None = None, until: str | None = None
     ) -> dict[str, int]:
-        """``cache_read_tokens`` summed per model within a window (the
-        same ``since``/``until``/``days`` precedence as ``daily_usage``,
-        which this mirrors at day granularity), for ``/api/summary``'s
-        additive ``cache_saved`` figure."""
+        """``cache_read_tokens`` summed per model over the sessions a
+        window counts, for ``/api/summary``'s additive ``cache_saved``
+        figure. It uses the same rule as :meth:`summary`'s ``sessions``
+        and ``total_cost``: a session counts when its last reply falls in
+        the window, and then every turn of it (main and subagents) does.
+        Day buckets would pull in other sessions' reads whenever a bound
+        falls mid-day (a 1-hour window, or "the same hours yesterday").
+        With no window at all, every turn counts."""
         since_dt, until_dt = _resolve_window(days, since, until)
-        conditions = []
-        params: list = []
-        if since_dt is not None:
-            conditions.append("day >= ?")
-            params.append(since_dt.strftime("%Y-%m-%d"))
-        if until_dt is not None:
-            conditions.append("day <= ?")
-            params.append(until_dt.strftime("%Y-%m-%d"))
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        rows = self._connection().execute(
-            f"SELECT model, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens "
-            f"FROM turns_agg {where} GROUP BY model",
-            params,
+        conn = self._connection()
+        if since_dt is None and until_dt is None:
+            rows = conn.execute(
+                "SELECT model, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens FROM turns_agg GROUP BY model"
+            ).fetchall()
+            return {row["model"]: row["cache_read_tokens"] for row in rows}
+        session_ids = self._session_ids_in_window(since_dt, until_dt)
+        if not session_ids:
+            return {}
+        placeholders = ",".join("?" * len(session_ids))
+        rows = conn.execute(
+            f"SELECT ta.model AS model, COALESCE(SUM(ta.cache_read_tokens), 0) AS cache_read_tokens "
+            f"FROM turns_agg ta JOIN transcripts t ON t.id = ta.transcript_id "
+            f"WHERE t.session_id IN ({placeholders}) GROUP BY ta.model",
+            session_ids,
         ).fetchall()
         return {row["model"]: row["cache_read_tokens"] for row in rows}
 

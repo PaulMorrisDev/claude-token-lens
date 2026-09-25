@@ -139,7 +139,9 @@ data grid. Each has a loading, an empty, an error and a stale state.
   information: an icon and a label, never colour alone), `statusBadge`,
   `basisChip` (Estimate, At most, Simulated, Calibrated; a measured
   figure carries none) and `deltaChip` (a change on the previous period,
-  coloured by whether up is good, neutral within 1%).
+  coloured by whether up is good, neutral within 1%; three times or more
+  reads as a multiple, "3.2 times", and an empty earlier period as
+  "None before").
 - **Metric tile** (`tile`, `tileRow`): a sentence-case label, the value
   at 28px with its unit in the quieter ink, then an optional basis
   chip, delta chip and hint. Tiles sit in a row that fits as many as
@@ -410,18 +412,59 @@ health. Setup › Capture's figures don't depend on the window, so there
 the picker gives way to a note, "The window doesn't apply here"; the
 Glossary has no figures and shows neither.
 
-1. **Overview** — top to bottom: a line naming the billing mode and
-   why it was chosen (from `report.meta`); **Start here**; four stat
-   cards from `/api/summary` (sessions, transcripts, cost at list
-   price, tokens); the **Scorecard** tiles; the `totals` table from the
-   report's overview section (`/api/report.json`, same window; its
-   `by_model` table is on Spend › Usage); and **Service health** from `/api/health` (watcher status,
-   plus a warning when the service is not registered to start at
-   logon). **Start here** lists the three most important items from
-   `/api/recommendations` (most severe first, each with its severity in
-   plain words, `why` and estimated saving, and links to Actions ›
-   Recommendations and Actions › Checks), then every scorecard area
-   rated poor or worse, each as a sentence about its number.
+1. **Overview** — answers "What should I change next?". Top to bottom:
+   - the logon warning, only when `/api/health` says the service is not
+     registered to start at logon (`renderLogonNotice`; the full health
+     detail is on Data quality);
+   - **the summary sentence** (18px): what the window cost, the change
+     on the period of the same length before, and how many changes are
+     worth making and what the ways to save come to. It is built from
+     fixed wording and numbers only, in the billing mode ("you spent
+     $2,663" on the API, "you used about 38% of your weekly usage limit"
+     on a plan). "All time" and "Since my last change" have no earlier
+     period. The previous period is the N days before a last-N-days
+     window, the hour or 24 hours before, or the same hours yesterday
+     for Today (from local midnight), fetched as
+     `/api/summary?since=&until=`: deltas compare a summary with a
+     summary, never with a report figure. Its other forms: no sessions in
+     the window ("No sessions in the last 7 days. Pick a longer window to
+     see older ones."), no change recorded for "Since my last change",
+     and, before any session is read, "What Token Lens does for you" in
+     three lines (saying the first scan is running while `/api/health`'s
+     `scan.scanning` is true, otherwise linking to Data quality);
+   - **four tiles**: Spend (with its change and a daily sparkline from 3
+     days), Available saving (the four ways to save from Spend ›
+     Savings added up, plus any priced action no lever counts, such as
+     lower effort, marked "At most" because they overlap; the model lever
+     is every agent type's cheapest alternative added up, so no action
+     shows more than the tile), Saved by
+     the cache (`/api/summary`'s `cache_saved`, marked Estimate, with
+     what a cache read costs against fresh input on the model that read
+     most from the cache, from `report.meta.rates`) and Sessions (with
+     the subagent runs: transcripts less sessions). Each links to its
+     page;
+   - **daily spend** (chart 1, `/api/daily-usage` with the window and
+     `split=agent`), with your settings changes from `/api/impact` as
+     labelled rules; a day opens Spend › Sessions and a change Setup ›
+     Profiles. Beside it from 1440px (under it at 1280), **Next best
+     actions**: the top five of `/api/recommendations`, most important
+     first, then biggest `saving_usd`, each with its severity, title
+     (a link to Actions › Recommendations), estimated saving and a Copy
+     prompt button. Side by side, the chart grows (300px to 560px) to
+     the actions' height, redrawn in place with no morph
+     (`setChartHeight`), so neither panel ends in a blank band;
+   - **How your setup scores**: the overall level, set by the lowest
+     area, then the five scorecard areas as segmented meters (level 5-4
+     good, 3 fair, 2 poor, 1 very poor, 0 not measured), each with a
+     sentence about its number, which way is better, a link to where to
+     look, and "What moves it:" naming a matching recommendation from
+     this window when the area is below 5;
+   - **Totals, and how amounts are counted** (collapsed): the billing
+     mode and why it was chosen (`report.meta`), and the report's
+     `overview.totals` table (its `by_model` table is on Spend › Usage).
+   Every load starts at once; the drawing waits for the report, which
+   sets the billing mode. A newer draw (a new window) drops the answers
+   of an older one, and the chart is held dimmed while new figures load.
 2. **Actions › Recommendations** — `/api/recommendations`: one card per
    `Recommendation`, grouped by `severity` under "Do this" (action),
    "Worth considering" (advice) and "For your information" (info).
@@ -651,6 +694,9 @@ Glossary has no figures and shows neither.
     takes a while, nothing changes until you apply it), then each thing
     installed with where it is, what it does, its token cost and how to
     undo it, and the uninstall command under "Remove everything". Then
+    **Service health** (`/api/health`): the logon warning when it
+    applies, then the status, version, last scan, the watcher's counts
+    and any recent errors. Then
     any report section no other view claims (the fallback in
     `SECTION_PAGE_MAP`, below). Then `/api/diagnostics`: whether the
     snapshot hook and the statusline are working, then the parse-quality
@@ -718,14 +764,14 @@ stdlib-only test suite.
 |---|---|
 | `app.js` | the entry point: the router (`resolveRoute`, `showView`, `VIEW_RENDERERS`), the sidebar, the page header, the window picker and the theme toggle |
 | `core.js` | `el`/`clear`, `localStorage` helpers, the shared `state`, `WINDOW_OPTIONS`, `renderedViews`, the `goTo` hook and the linked-highlight bus (`highlight`, `listenHighlight`) |
-| `format.js` | the one number format: `formatCell`, `money`/`moneyText`/`moneyNode`/`moneyParts` (the `Units.money` mirror), `currencyAmount`, `moneyUnit`, `readableAmounts`, `compactNumber`, `signedPercent`, `shortTs`/`relativeTime`, `projectName` |
+| `format.js` | the one number format: `formatCell`, `money`/`moneyText`/`moneyNode`/`moneyParts` (the `Units.money` mirror), `currencyAmount`, `moneyUnit`, `readableAmounts`, `compactNumber`, `signedPercent`, `fraction` (a price ratio in words: "a tenth of"), `shortTs`/`relativeTime`, `projectName` |
 | `api.js` | `fetchJson`, `loadInto`, `postJson`, `withWindow`, `loadReport` (cached per window), the figures-as-of stamp, and the connection state behind "Service unreachable" |
 | `ui.js` | the components (see "Components"): buttons, chips, tiles, panels, callouts, empty states, skeletons, command blocks and `RESTART_NOTE`, popovers, tooltips, drawers, toasts and the confirm dialog |
 | `grid.js` | the data grid (`dataGrid`, with `link` and `swatch` for linked highlight), report tables (`renderTable`, `renderPlacedTables`), `renderMappedSections`, `simpleTable`, `pulseRow` |
 | `charts.js` | the chart frame: `CHART_SPECS`, `fillSummary`, `ENTITY_COLOURS`/`entityColour`, axes, the tooltip, keyboard reading, the table view, resize, `drawChart`/`holdChart`/`chartError` |
 | `charts-types.js` | the chart forms and `renderChart`, `sessionContextChart`, `savingsLevers`, and the micro-forms `sparkline`, `meter`, `habitSparkline` |
 | `links.js` | `PAGES` (pages, segments, intros), `SECTION_PAGE_MAP`/`TABLE_PAGE_MAP`, `parseHash`/`formatHash`, `viewIntro`, `pageLink`/`captureLink` |
-| `shell.js` | what is on every view: the health banner, the sidebar's status line, the capture banner |
+| `shell.js` | what is on every view: the health banner, the sidebar's status line, the capture banner; the health detail (`renderHealth`) and logon warning (`renderLogonNotice`) the Overview and Data quality show |
 | `icons.js` | the icon set: `icon(name, opts)` returns an inline 16px SVG |
 | `d3.js` | the one door to the vendored d3 (`import d3 from "./d3.js"`) |
 | `theme-boot.js` | a classic script, not a module: sets `data-theme` before the first paint |

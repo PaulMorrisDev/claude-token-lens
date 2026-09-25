@@ -176,6 +176,12 @@ export function basisChip(basis) {
   return chip(info.label, { class: "basis-chip basis-" + basis, tip: info.tip });
 }
 
+// A multiple in words: "3.2 times", "12 times".
+export function timesText(ratio) {
+  var rounded = ratio >= 10 ? Math.round(ratio) : Math.round(ratio * 10) / 10;
+  return rounded + " times";
+}
+
 // A change against the previous period of the same length: "+12%" with
 // an arrow, coloured by whether that direction is good (opts.upIsGood),
 // and neutral within 1%. opts.period names the comparison ("the 30 days
@@ -183,8 +189,11 @@ export function basisChip(basis) {
 export function deltaChip(current, previous, opts) {
   opts = opts || {};
   var period = opts.period || "the period before";
-  if (typeof current !== "number" || typeof previous !== "number" || !isFinite(current) || !isFinite(previous) || previous <= 0) {
+  if (typeof current !== "number" || typeof previous !== "number" || !isFinite(current) || !isFinite(previous) || previous < 0) {
     return chip("No earlier period", { class: "delta-chip delta-none" });
+  }
+  if (previous === 0) {
+    return chip(current > 0 ? "None before" : "None", { class: "delta-chip delta-none", tip: "Nothing in " + period + "." });
   }
   var change = ((current - previous) / previous) * 100;
   if (Math.abs(change) < 1) {
@@ -193,10 +202,12 @@ export function deltaChip(current, previous, opts) {
   var up = change > 0;
   var good = opts.upIsGood ? up : !up;
   var rounded = Math.abs(change) >= 10 ? Math.round(Math.abs(change)) : Math.round(Math.abs(change) * 10) / 10;
+  // Three times or more reads better as a multiple than as "+412%".
+  var times = current / previous >= 3 ? timesText(current / previous) : "";
   var node = el("span", { class: "chip delta-chip " + (good ? "delta-good" : "delta-bad") });
   node.appendChild(icon(up ? "arrow-up" : "arrow-down", { size: 12 }));
-  node.appendChild(el("span", { text: (up ? "+" : "−") + rounded + "%" }));
-  attachTooltip(node, (up ? "Up " : "Down ") + rounded + "% on " + period + ".");
+  node.appendChild(el("span", { text: times || (up ? "+" : "−") + rounded + "%" }));
+  attachTooltip(node, times ? times + " as much as " + period + "." : (up ? "Up " : "Down ") + rounded + "% on " + period + ".");
   return node;
 }
 

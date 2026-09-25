@@ -733,6 +733,7 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
             "capture": {**capture_view.config_block(CaptureConfig()), "hooks_ok": None},
         },
         "/api/summary": store.summary(),
+        "/api/daily-usage": store.daily_usage(split="agent"),
         "/api/sessions": store.sessions(),
         "/api/recache": store.recache(),
         "/api/compactions": store.compactions(),
@@ -1137,22 +1138,95 @@ def test_loadinto_render_callbacks_take_data_first_container_second() -> None:
         )
 
 
-def test_render_health_shows_a_logon_banner_when_service_not_registered() -> None:
+def test_the_logon_notice_shows_when_the_service_is_not_registered() -> None:
     """v3: ``/api/health``'s ``service_registered`` field (see
-    ``docs/api.md``) drives a warning banner in the Overview tab's
-    "Service health" panel -- someone who skipped ``install-service``
-    (or whose registration was later removed) needs to see this in the
-    UI, not just find it by reading a JSON field. Regression-style
-    source check rather than a DOM test, matching this file's other
-    ``renderHealth``/``renderBaseline``-style assertions -- there is no
-    browser in this test process.
+    ``docs/api.md``) drives a warning -- someone who skipped
+    ``install-service`` (or whose registration was later removed) needs
+    to see this in the UI, not just find it by reading a JSON field. The
+    redesign says it at the top of the Overview, where it will be seen,
+    and again with the full health detail on Data quality: both go
+    through ``renderLogonNotice``. Source check: there is no browser in
+    this test process.
     """
-    render_health_src = _function_source(_app_js(), "renderHealth")
+    app_js = _app_js()
+    notice_src = _function_source(app_js, "renderLogonNotice")
+    assert "service_registered" in notice_src, "renderLogonNotice never reads health.service_registered"
+    assert "!== false" in notice_src, "the notice must show only when service_registered === false"
+    assert "install-service" in notice_src, "the notice must tell the operator what command to run"
+    assert "cleanupPeriodDays" in notice_src, "the notice must explain why registration matters (retention)"
 
-    assert "service_registered" in render_health_src, "renderHealth never reads health.service_registered"
-    assert "=== false" in render_health_src, "the banner must be conditional on service_registered === false"
-    assert "install-service" in render_health_src, "the banner text must tell the operator what command to run"
-    assert "cleanupPeriodDays" in render_health_src, "the banner must explain why registration matters (retention)"
+    assert "renderLogonNotice(" in _function_source(app_js, "renderHealth"), "Data quality's health detail lost the notice"
+    assert "renderLogonNotice(" in _function_source(app_js, "renderOverview"), "the Overview lost the notice"
+    assert '"/api/health", renderHealth' in _function_source(app_js, "renderDataQuality"), (
+        "Data quality no longer shows the service's health in full"
+    )
+
+
+def test_the_overview_compares_like_with_like() -> None:
+    """The Overview's deltas compare /api/summary with /api/summary for
+    the period of the same length just before (docs/api.md: store and
+    report price differently, so a summary is never compared with a
+    report figure), and there is no earlier period for "all time" or
+    "since my last change"."""
+    app_js = _app_js()
+    overview = _function_source(app_js, "renderOverview")
+    assert 'fetchJson(withWindow("/api/summary"))' in overview
+    assert '"/api/summary?since="' in overview and '"&until="' in overview
+    assert 'withWindow("/api/daily-usage") + "&split=agent"' in overview, "chart 1 on the Overview splits main and subagents"
+    assert 'renderChart(' in overview and '"daily-spend"' in overview
+
+    previous = _function_source(app_js, "previousPeriod")
+    for phrase in ("the hour before", "the 24 hours before", "the same hours yesterday", "days before"):
+        assert phrase in previous, f"previousPeriod never names {phrase!r}"
+    assert '"all"' not in previous and '"change"' not in previous, "all time and since-last-change have no earlier period"
+
+
+def test_the_overview_leaves_the_health_detail_to_data_quality() -> None:
+    """The Overview shows only the logon warning; the full service health
+    moved to Data quality (docs/ui.md)."""
+    overview = _function_source(_app_js(), "renderOverview")
+    assert "renderHealth(" not in overview
+    assert "Service health" not in overview
+
+
+def test_the_overview_chart_lines_up_with_the_actions() -> None:
+    """Side by side, the Overview's chart grows to the actions' height,
+    redrawn without a morph; a running draw-in is stopped first so it
+    can't finish at the old height (docs/ui.md)."""
+    overview = _function_source(_app_js(), "renderOverview")
+    assert "fittedChartHeight(main, chartHost, actionsPanel)" in overview
+    assert 'setChartHeight("daily-spend", { slot: "overview" }' in overview
+    assert "height: chartHeight" in overview
+    fit = _function_source(_app_js(), "setChartHeight")
+    assert ".interrupt()" in fit
+    assert "resize: true" in fit
+
+
+def test_the_first_run_tells_a_running_scan_from_an_empty_one() -> None:
+    """`scan.running` only says the scanner thread is alive; a scan in
+    progress is `scan.scanning` (docs/api.md)."""
+    first = _function_source(_app_js(), "firstRun")
+    assert "health.scan.scanning" in first
+    assert "scan.running" not in first
+    assert 'pageLink("data"' in first
+
+
+def test_available_saving_is_never_below_an_action_it_lists() -> None:
+    """The model lever adds up every agent type's cheapest alternative
+    (the model-tier action prices a subset of them), and a priced action
+    no lever counts is added on top, so "At most" holds (docs/ui.md)."""
+    levers = _function_source(_app_js(), "savingsLevers")
+    assert "tables.model_swap_by_agent_type" in levers
+    assert "model_swap_summary" not in levers
+    available = _function_source(_app_js(), "availableSaving")
+    assert "rec.saving_usd" in available
+    assert "!LEVER_RULES[rec.id]" in available
+    assert '"model-tier": "model_swap"' in _app_js()
+
+
+def test_a_delta_of_three_times_or_more_reads_as_a_sentence() -> None:
+    chip = _function_source(_app_js(), "deltaChip")
+    assert 'times + " as much as " + period' in chip
 
 
 def test_fixture_server_serves_session_detail(fixture_server: str) -> None:

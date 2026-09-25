@@ -11,40 +11,45 @@ import { connection, fetchJson, figures, resetFiguresAsOf, runReconnectRetries }
 import { captureLink, pageLink } from "./links.js";
 import { button, callout, toast } from "./ui.js";
 
+// A service that doesn't start at logon loses history to Claude Code's
+// cleanup: said on the Overview, where it will be seen, and again with
+// the rest of the health detail on Data quality.
+export function renderLogonNotice(health, container) {
+  if (!health || health.service_registered !== false) return;
+  container.appendChild(
+    callout({
+      tone: "critical",
+      title: "The service doesn't start when you log on.",
+      text: "After a restart, history older than Claude Code's cleanup period (cleanupPeriodDays) is lost. To fix it, run: claude-token-lens install-service",
+    })
+  );
+}
+
 export function renderHealth(health, container) {
   var watcher = health.watcher || {};
-  if (health.service_registered === false) {
-    container.appendChild(
-      callout({
-        tone: "critical",
-        title: "The service doesn't start when you log on.",
-        text: "After a restart, history older than Claude Code's cleanup period (cleanupPeriodDays) is lost. To fix it, run: claude-token-lens install-service",
-      })
-    );
-  }
+  renderLogonNotice(health, container);
   var scan = health.scan || {};
   if (health.message) {
     container.appendChild(callout({ tone: health.status === "starting" ? "info" : "critical", text: health.message }));
   }
-  var lines = [
-    "status: " + (health.status || "unknown"),
-    "version: " + (health.version || "-"),
-    "schema version: " + (health.schema_version === undefined ? "-" : health.schema_version),
-    "last scan finished: " + (scan.last_success_at ? shortTs(scan.last_success_at) : watcher.finished_at ? shortTs(watcher.finished_at) : "never"),
-    "files scanned / parsed: " + thousands(watcher.files_scanned || 0) + " / " + thousands(watcher.files_parsed || 0),
-    "sessions upserted: " + thousands(watcher.sessions_upserted || 0),
-    "errors this tick: " + (watcher.errors || 0),
+  var facts = [
+    ["Status", HEALTH_LABELS[health.status] || health.status || "Unknown"],
+    ["Version", health.version || "-"],
+    ["Database version", health.schema_version === undefined ? "-" : String(health.schema_version)],
+    ["Last scan finished", scan.last_success_at ? shortTs(scan.last_success_at) : watcher.finished_at ? shortTs(watcher.finished_at) : "Not yet"],
+    ["Transcript files checked", thousands(watcher.files_scanned || 0)],
+    ["Changed files read", thousands(watcher.files_parsed || 0)],
+    ["Sessions updated", thousands(watcher.sessions_upserted || 0)],
+    ["Errors in the last scan", thousands(watcher.errors || 0)],
   ];
-  var list = el(
-    "ul",
-    { class: "notes" },
-    lines.map(function (line) {
-      return el("li", { text: line });
-    })
-  );
+  var list = el("dl", { class: "fact-list" });
+  facts.forEach(function (pair) {
+    list.appendChild(el("dt", { text: pair[0] }));
+    list.appendChild(el("dd", { text: pair[1] }));
+  });
   container.appendChild(list);
   if (watcher.error_messages && watcher.error_messages.length) {
-    container.appendChild(el("p", { text: "Recent errors:" }));
+    container.appendChild(el("p", { text: "Recent errors" }));
     container.appendChild(
       el(
         "ul",

@@ -1,7 +1,7 @@
 /* claude-token-lens service UI: page-data.js
  *
- * The Data quality page: parse diagnostics, what this tool installed,
- * and any report section no other page shows.
+ * The Data quality page: the service's health, parse diagnostics, what
+ * this tool installed, and any report section no other page shows.
  */
 
 import { clear, el, state } from "./core.js";
@@ -9,6 +9,7 @@ import { loadInto, loadReport, withWindow } from "./api.js";
 import { codeBlockWithCopy, errorNotice, loadingNode } from "./ui.js";
 import { headRow, renderMappedSections, renderTable } from "./grid.js";
 import { viewIntro } from "./links.js";
+import { renderHealth } from "./shell.js";
 
 // ======================================================================
 // Data quality (unmapped sections + the parse-quality counters)
@@ -23,6 +24,15 @@ export function renderDataQuality(panel) {
   setupBlock.appendChild(setupContainer);
   panel.appendChild(setupBlock);
   loadInto(setupContainer, "/api/setup", renderSetup, { skeleton: "lines" });
+
+  // The service's health in full; the sidebar's status line and the
+  // banner under the header say when something needs a look.
+  var healthBlock = el("section", { class: "report-section", id: "data-health" });
+  healthBlock.appendChild(el("h2", { class: "section-title", text: "Service health" }));
+  var healthContainer = el("div");
+  healthBlock.appendChild(healthContainer);
+  panel.appendChild(healthBlock);
+  loadInto(healthContainer, "/api/health", renderHealth, { skeleton: "lines" });
   var sectionContainer = el("div", { id: "diagnostics-sections" });
   panel.appendChild(sectionContainer);
   sectionContainer.appendChild(loadingNode("Loading the report", "rows"));

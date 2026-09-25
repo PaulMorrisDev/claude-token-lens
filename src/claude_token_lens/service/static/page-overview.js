@@ -1,324 +1,714 @@
 /* claude-token-lens service UI: page-overview.js
  *
- * The Overview page: summary, scorecard and where to start.
+ * The Overview page answers "What should I change next?": a sentence
+ * saying how this window went, four headline numbers against the period
+ * before, daily spend beside the next best actions, how the setup
+ * scores, and the totals behind a disclosure.
  */
 
-import { clear, el, state } from "./core.js";
-import { compactNumber, formatCell, fullValue, moneyParts, thousands } from "./format.js";
-import { fetchJson, findSection, loadInto, loadReport, withWindow } from "./api.js";
-import { emptyState, errorNotice, loadingNode, SEVERITY_ORDER, severityChip, tile, tileRow } from "./ui.js";
+import { clear, el, goTo, state, WINDOW_OPTIONS } from "./core.js";
+import { formatCell, fraction, money, moneyParts, thousands } from "./format.js";
+import { fetchJson, findSection, loadReport, withWindow } from "./api.js";
+import {
+  button,
+  copyToClipboard,
+  deltaChip,
+  emptyState,
+  errorNotice,
+  loadingNode,
+  SEVERITY_ORDER,
+  severityChip,
+  tile,
+  tileRow,
+  timesText,
+  toast,
+} from "./ui.js";
 import { renderTable } from "./grid.js";
 import { pageLink, viewIntro } from "./links.js";
-import { renderHealth } from "./shell.js";
+import { renderLogonNotice } from "./shell.js";
+import { chartError, holdChart, setChartHeight } from "./charts.js";
+import { meter, renderChart, savingsLevers, sparkline } from "./charts-types.js";
 
-var LEVEL_LABELS = { 5: "excellent", 4: "good", 3: "fair", 2: "poor", 1: "very poor" };
+// A page draw that a newer one (a new window) has replaced: its late
+// answers are dropped, so they can't take the chart back.
+var overviewRun = 0;
 
-// Each scorecard area as a sentence about its number, plus which way is
-// better and why (scorecard.py's metrics; helptext.py's "dimensions").
-var DIMENSION_TEXT = {
-  cache_efficiency: {
-    sentence: function (v) {
-      return formatCell(v, "pct") + " of cache writes rebuilt context that had expired or changed.";
-    },
-    better: "Lower is better: a rebuild pays again for context you already had. Usage-limit pauses are left out.",
-  },
-  context_hygiene: {
-    sentence: function (v) {
-      return "9 in 10 main session replies carried less than " + formatCell(v, "tokens") + " tokens of context.";
-    },
-    better: "Lower is better: every reply pays to re-read its whole context.",
-  },
-  agent_efficiency: {
-    sentence: function (v) {
-      return "Your costliest agent type costs " + formatCell(v, "str") + " times as much per run as a typical one.";
-    },
-    better: "Lower is better: a big gap points to one agent type worth trimming.",
-  },
-  config_fit: {
-    sentence: function (v) {
-      return formatCell(v, "int") + (v === 1 ? " setting" : " settings") + " changed during this window.";
-    },
-    better: "Fewer is better: frequent changes make before-and-after comparisons unreliable.",
-  },
-  data_quality: {
-    sentence: function (v) {
-      return formatCell(v, "pct") + " of tokens have a known price.";
-    },
-    better: "Higher is better: tokens without a price count as free, so costs read low.",
-  },
-};
+// -- the period before -----------------------------------------------------------
 
-// "<= 5.0%" -> "at most 5.0%", "> 3.00x" -> "over 3.00 times".
-function boundInWords(bound) {
-  return String(bound)
-    .replace(/^<=\s*/, "at most ")
-    .replace(/^>=\s*/, "at least ")
-    .replace(/^>\s*/, "over ")
-    .replace(/^<\s*/, "under ")
-    .replace(/(\d)x$/, "$1 times");
+var DAY_MS = 24 * 3600 * 1000;
+
+// The period of the same length just before this window, for the
+// deltas: its bounds, and how the sentence names it. None for "all" and
+// "since my last change", which have nothing the same length before them.
+function previousPeriod(windowValue, now) {
+  var end;
+  var length;
+  if (/^[0-9]+$/.test(windowValue)) {
+    var days = Number(windowValue);
+    length = days * DAY_MS;
+    end = now - length;
+    return { since: end - length, until: end, phrase: days === 1 ? "the day before" : "the " + days + " days before" };
+  }
+  if (windowValue === "1h") return { since: now - 2 * 3600 * 1000, until: now - 3600 * 1000, phrase: "the hour before" };
+  if (windowValue === "24h") return { since: now - 2 * DAY_MS, until: now - DAY_MS, phrase: "the 24 hours before" };
+  if (windowValue === "today") {
+    // The same hours yesterday: local midnight to this time, a day back.
+    var midnight = new Date(now);
+    midnight.setHours(0, 0, 0, 0);
+    return { since: midnight.getTime() - DAY_MS, until: now - DAY_MS, phrase: "the same hours yesterday" };
+  }
+  return null;
 }
 
-function renderScorecardTiles(container, scorecardSection) {
-  var tiles = el("div", { class: "tiles" });
-  if (!scorecardSection) {
-    container.appendChild(emptyState("No scorecard for this window: it had no sessions to rate.", null, "Pick a longer window."));
-    return;
-  }
-  var dimTable = (scorecardSection.tables || []).filter(function (t) {
-    return t.name === "dimensions";
-  })[0];
-  var overallTable = (scorecardSection.tables || []).filter(function (t) {
-    return t.name === "overall";
-  })[0];
+function isoMinute(ms) {
+  return new Date(ms).toISOString().slice(0, 16) + ":00Z";
+}
 
-  var labels = (dimTable && dimTable.value_labels) || {};
-  function plain(raw) {
-    return labels[raw] || String(raw).replace(/_/g, " ");
+// -- the summary sentence ----------------------------------------------------------
+
+function windowLabel(value) {
+  for (var i = 0; i < WINDOW_OPTIONS.length; i++) {
+    if (WINDOW_OPTIONS[i].value === value) return WINDOW_OPTIONS[i].label;
   }
-  var scored = [];
-  (dimTable ? dimTable.rows : []).forEach(function (row) {
-    // [dimension, level, label, metric, value, threshold]
-    var dimension = row[0], level = row[1], label = row[2], metric = row[3], value = row[4], threshold = row[5];
-    var tile = el("div", { class: "tile" });
-    tile.appendChild(el("div", { class: "tile-dimension", text: plain(dimension) }));
-    tile.appendChild(
-      el("div", { class: "tile-level level-" + level }, [
-        document.createTextNode(String(level)),
-        el("span", { class: "tile-max", text: " / 5" }),
-      ])
-    );
-    tile.appendChild(el("div", { class: "tile-label", text: plain(label) }));
-    var copy = DIMENSION_TEXT[dimension];
-    var sentence = copy && typeof value === "number" && threshold !== "no config snapshot available" ? copy.sentence(value) : plain(threshold || metric);
-    tile.appendChild(el("div", { class: "tile-metric", text: sentence }));
-    if (copy) tile.appendChild(el("div", { class: "tile-threshold", text: copy.better }));
-    if (threshold && threshold !== "no config snapshot available") {
-      tile.appendChild(
-        el("div", { class: "tile-threshold", text: (level === 1 ? "Rated 1 because it is " : "Needed for this rating: ") + boundInWords(threshold) })
-      );
-    }
-    scored.push({ dimension: dimension, level: level });
-    tiles.appendChild(tile);
+  return /^[0-9]+$/.test(value) ? "Last " + value + " days" : "This window";
+}
+
+// "No sessions <when>."
+function windowWhen(value) {
+  if (/^[0-9]+$/.test(value)) return value === "1" ? "in the last day" : "in the last " + value + " days";
+  return { "1h": "in the last hour", today: "today", "24h": "in the last 24 hours", change: "since your last change" }[value] || "yet";
+}
+
+// What the window cost, as a clause: dollars on the API, a share of the
+// weekly limit on a Pro or Max plan.
+function spendClause(usd) {
+  var amount = money(usd);
+  if (!amount) return "nothing was spent";
+  var units = state.units || {};
+  if (units.mode !== "subscription") return "you spent " + amount.primary;
+  if (units.share_per_usd === null || units.share_per_usd === undefined) return "your tokens came to " + amount.primary;
+  return "you used " + amount.primary;
+}
+
+function changeClause(current, previous, phrase) {
+  if (!phrase || typeof previous !== "number" || previous < 0 || typeof current !== "number") return "";
+  if (previous === 0) return current > 0 ? ", with nothing in " + phrase : "";
+  if (current / previous >= 3) return ", " + timesText(current / previous) + " as much as " + phrase;
+  var change = ((current - previous) / previous) * 100;
+  if (Math.abs(change) < 1) return ", about the same as " + phrase;
+  var rounded = Math.abs(change) >= 10 ? Math.round(Math.abs(change)) : Math.round(Math.abs(change) * 10) / 10;
+  return ", " + rounded + "% " + (change > 0 ? "more" : "less") + " than " + phrase;
+}
+
+// Built from fixed wording and numbers only (docs/writing-help.md).
+function summarySentence(facts) {
+  var first = windowLabel(state.window) + ": " + spendClause(facts.cost) + changeClause(facts.cost, facts.previousCost, facts.phrase) + ".";
+  var saving = money(facts.saving);
+  var worth = facts.worth;
+  var second;
+  if (worth && saving) {
+    second = (worth === 1 ? "1 change is" : thousands(worth) + " changes are") + " worth making, and the ways to save come to at most " + saving.primary + ".";
+  } else if (worth) {
+    second = worth === 1 ? "1 change is worth making." : thousands(worth) + " changes are worth making.";
+  } else if (saving) {
+    second = "Nothing needs changing now, but the ways to save come to at most " + saving.primary + ".";
+  } else {
+    second = "Nothing stands out to change.";
+  }
+  return first + " " + second;
+}
+
+// Before any session is read: what the tool does, in three lines.
+function firstRun(container, health) {
+  var scanning = health && (health.status === "starting" || (health.scan && health.scan.scanning));
+  container.appendChild(
+    el("div", { class: "overview-first-run" }, [
+      scanning
+        ? el("p", { class: "overview-summary", text: "Your Claude Code history is being read now. Figures appear here as soon as it finishes." })
+        : el("p", { class: "overview-summary" }, [
+            "No Claude Code sessions have been read yet. They appear here soon after you use Claude Code. ",
+            pageLink("data", "Data quality"),
+            " shows how many transcript files the last scan checked.",
+          ]),
+      el("h2", { text: "What Token Lens does for you" }),
+      el("ul", { class: "overview-promise" }, [
+        el("li", { text: "Reads the Claude Code transcripts on this computer and works out what each session cost. Nothing leaves your machine." }),
+        el("li", { text: "Shows where the tokens went: the cache, subagents, long tool output and conversation summaries." }),
+        el("li", { text: "Suggests changes as prompts and commands you copy and run yourself. It never changes your settings." }),
+      ]),
+    ])
+  );
+}
+
+// -- the four tiles --------------------------------------------------------------------
+
+// The price of a cache read against fresh input on the model that read
+// the most from the cache in this window (report.meta.rates; the daily
+// rows say which model read what).
+function cacheReadRatio(meta, dailyRows) {
+  var rates = (meta && meta.rates) || {};
+  var reads = {};
+  (dailyRows || []).forEach(function (row) {
+    if (row.model) reads[row.model] = (reads[row.model] || 0) + (Number(row.cache_read_tokens) || 0);
   });
-
-  if (overallTable && overallTable.rows.length) {
-    var overallRow = overallTable.rows[0]; // [metric, level, label]
-    var overallLevel = overallRow[1];
-    var overallTile = el("div", { class: "tile tile-overall" });
-    overallTile.appendChild(el("div", { class: "tile-dimension", text: "Overall" }));
-    overallTile.appendChild(
-      el("div", { class: "tile-level level-" + overallLevel }, [
-        document.createTextNode(String(overallLevel)),
-        el("span", { class: "tile-max", text: " / 5" }),
-      ])
-    );
-    overallTile.appendChild(el("div", { class: "tile-label", text: plain(overallRow[2] || LEVEL_LABELS[overallLevel] || "unmeasured") }));
-    // Overall is the lowest rated area, data quality aside (scorecard.py).
-    var lowest = scored.filter(function (d) {
-      return d.dimension !== "data_quality" && d.level === overallLevel;
-    });
-    if (lowest.length) {
-      overallTile.appendChild(
-        el("div", {
-          class: "tile-metric",
-          text: "Your lowest area: " + lowest.map(function (d) { return plain(d.dimension); }).join(", ") + ". Start there.",
-        })
-      );
-    }
-    tiles.appendChild(overallTile);
-  }
-
-  container.appendChild(tiles);
-  if (dimTable && dimTable.notes && dimTable.notes.length) {
-    container.appendChild(
-      el(
-        "ul",
-        { class: "notes" },
-        dimTable.notes.map(function (note) {
-          return el("li", { text: note });
-        })
-      )
-    );
-  }
+  var top = Object.keys(reads).sort(function (a, b) {
+    return reads[b] - reads[a];
+  })[0];
+  var ratio = top && rates[top] && rates[top].cache_read_ratio;
+  return typeof ratio === "number" && ratio > 0 ? ratio : null;
 }
+
+function moneyTile(label, usd, opts) {
+  var parts = moneyParts(usd);
+  return tile({
+    label: label,
+    value: parts.value,
+    unit: parts.unit,
+    basis: opts.basis,
+    delta: opts.delta,
+    hint: opts.hint || parts.secondary || null,
+    note: opts.note,
+    link: opts.link,
+    class: opts.class,
+  });
+}
+
+// Actions whose saving a Savings lever already counts.
+var LEVER_RULES = { "model-tier": "model_swap" };
+
+// The most the ways to save could come to: the four Savings levers, plus
+// any priced action no lever counts (lower effort, say). Every action's
+// own saving is then at or below it.
+function availableSaving(levers, recs) {
+  var total = levers.reduce(function (sum, lever) {
+    return sum + (lever.usd > 0 ? lever.usd : 0);
+  }, 0);
+  recs.forEach(function (rec) {
+    if (typeof rec.saving_usd === "number" && rec.saving_usd > 0 && !LEVER_RULES[rec.id]) total += rec.saving_usd;
+  });
+  return total;
+}
+
+function renderTiles(container, facts, meta, dailyRows) {
+  var period = facts.phrase;
+  var hasPrevious = !!period;
+  var saving = facts.available;
+  var ratio = cacheReadRatio(meta, dailyRows);
+  var ratioWords = ratio ? fraction(ratio) : "";
+  var subagentRuns = Math.max(0, (facts.summary.transcripts || 0) - (facts.summary.sessions || 0));
+
+  var spend = moneyTile("Spend", facts.cost, {
+    delta: hasPrevious ? deltaChip(facts.cost, facts.previousCost, { period: period }) : null,
+    class: "overview-spend",
+  });
+  var available = saving > 0
+    ? moneyTile("Available saving", saving, {
+        basis: "ceiling",
+        note: "The ways to save overlap, so together they save less than this.",
+        link: pageLink("spend/savings", "See the ways to save"),
+      })
+    : tile({ label: "Available saving", value: "None found", note: "Nothing in this window stands out as a saving.", link: pageLink("spend/savings", "See the ways to save") });
+  var cache = moneyTile("Saved by the cache", facts.summary.cache_saved || 0, {
+    basis: "estimate",
+    delta: hasPrevious ? deltaChip(facts.summary.cache_saved, facts.previousSummary && facts.previousSummary.cache_saved, { period: period, upIsGood: true }) : null,
+    note: ratioWords
+      ? "On the model you use most, a cache read costs " + ratioWords + " the input price. This is what those reads would have cost sent fresh."
+      : "What your cache reads would have cost sent fresh.",
+    link: pageLink("cache/rebuilds", "See how the cache is doing"),
+  });
+  var sessions = tile({
+    label: "Sessions",
+    value: thousands(facts.summary.sessions || 0),
+    hint: subagentRuns ? "and " + thousands(subagentRuns) + (subagentRuns === 1 ? " subagent run" : " subagent runs") : "No subagent runs",
+    link: pageLink("spend/sessions", "See the sessions"),
+  });
+  container.appendChild(tileRow([spend, available, cache, sessions], { class: "overview-tiles" }));
+  return { spend: spend, saving: saving };
+}
+
+// The Spend tile's trend: one point a day, from 3 days up.
+function addSpendTrend(spendTile, rows) {
+  if (!spendTile) return;
+  var byDay = {};
+  rows.forEach(function (row) {
+    if (row.day) byDay[row.day] = (byDay[row.day] || 0) + (Number(row.cost) || 0);
+  });
+  var days = Object.keys(byDay).sort();
+  if (days.length < 3) return;
+  var line = sparkline(
+    days.map(function (day) {
+      return byDay[day];
+    }),
+    { width: 120, height: 24 }
+  );
+  if (line) spendTile.appendChild(el("div", { class: "metric-spark", title: "Daily spend, " + thousands(days.length) + " days" }, [line]));
+}
+
+// -- the next best actions ---------------------------------------------------------------
 
 function severityRank(severity) {
   var rank = SEVERITY_ORDER.indexOf(severity);
   return rank === -1 ? SEVERITY_ORDER.length : rank;
 }
 
-function renderStartHereRecommendations(container) {
-  clear(container);
-  container.appendChild(loadingNode("Loading recommendations"));
-  fetchJson(withWindow("/api/recommendations")).then(function (result) {
-    clear(container);
-    var body = result.body;
-    if (!body || body.ok !== true) {
-      container.appendChild(errorNotice(body && body.error));
-      return;
-    }
-    var all = body.data || [];
-    if (!all.length) {
-      container.appendChild(el("p", { class: "notes", text: "Nothing stands out: there are no recommendations for this window." }));
-      return;
-    }
-    var top = all
-      .map(function (rec, i) {
-        return { rec: rec, i: i };
-      })
-      .sort(function (a, b) {
-        return severityRank(a.rec.severity) - severityRank(b.rec.severity) || a.i - b.i;
-      })
-      .slice(0, 3);
-    container.appendChild(el("p", { class: "notes", text: "The most important changes for this window, from your own sessions." }));
-    var list = el("ol", { class: "start-list" });
-    top.forEach(function (item) {
-      var rec = item.rec;
-      var li = el("li", null, [
-        severityChip(rec.severity),
-        el("strong", { text: rec.title }),
-      ]);
-      if (rec.why) li.appendChild(el("p", { class: "start-why", text: rec.why }));
-      if (rec.estimated_saving) li.appendChild(el("p", { class: "rec-saving", text: "Estimated saving: " + rec.estimated_saving }));
-      list.appendChild(li);
+// Most important first; among equals, the biggest saving; then the
+// service's own order.
+function rankActions(recs) {
+  return recs
+    .map(function (rec, i) {
+      return { rec: rec, i: i };
+    })
+    .sort(function (a, b) {
+      var saving = (Number(b.rec.saving_usd) || 0) - (Number(a.rec.saving_usd) || 0);
+      return severityRank(a.rec.severity) - severityRank(b.rec.severity) || saving || a.i - b.i;
+    })
+    .map(function (item) {
+      return item.rec;
     });
-    container.appendChild(list);
-    container.appendChild(el("p", null, [pageLink("actions/recommendations", "See every recommendation, with what to change and how")]));
-    container.appendChild(
-      el("p", null, [el("span", { text: "Or check one area at a time: " }), pageLink("actions/checks")])
-    );
-  });
 }
 
-function renderStartHereWeakAreas(container, scorecardSection) {
+function copyPromptButton(prompt) {
+  var node = button("Copy prompt", { variant: "quiet", icon: "prompt", class: "action-copy" });
+  node.addEventListener("click", function () {
+    copyToClipboard(prompt).then(function (ok) {
+      toast(ok ? "Prompt copied. Paste it into Claude Code." : "Couldn't copy. Open the action and copy the prompt from there.", {
+        tone: ok ? "success" : "warning",
+      });
+    });
+  });
+  return node;
+}
+
+function renderActions(container, recs) {
   clear(container);
-  var dimTable = scorecardSection
-    ? (scorecardSection.tables || []).filter(function (t) {
-        return t.name === "dimensions";
-      })[0]
-    : null;
-  if (!dimTable) return;
-  var labels = dimTable.value_labels || {};
-  // [dimension, level, label, metric, value, threshold]; level 0 is unmeasured.
-  var weak = dimTable.rows.filter(function (row) {
-    return typeof row[1] === "number" && row[1] >= 1 && row[1] <= 2;
+  var ranked = rankActions(recs);
+  if (!ranked.length) {
+    container.appendChild(emptyState("Nothing stands out to change in this window.", null, "Pick a longer window, or check back after more sessions."));
+    return;
+  }
+  var list = el("ol", { class: "next-actions" });
+  ranked.slice(0, 5).forEach(function (rec) {
+    var fix = (rec.fixes || [])[0];
+    var text = el("div", { class: "next-action-text" }, [el("p", { class: "next-action-title" }, [pageLink("actions/recommendations", rec.title)])]);
+    if (rec.estimated_saving) text.appendChild(el("p", { class: "next-action-saving", text: rec.estimated_saving }));
+    var item = el("li", { class: "next-action" }, [el("div", { class: "next-action-severity" }, [severityChip(rec.severity)]), text]);
+    if (fix && fix.prompt) item.appendChild(el("div", { class: "next-action-copy" }, [copyPromptButton(fix.prompt)]));
+    list.appendChild(item);
   });
-  if (!weak.length) return;
-  container.appendChild(el("p", { class: "start-weak-title", text: "Scorecard areas rated poor or worse" }));
+  container.appendChild(list);
   container.appendChild(
-    el(
-      "ul",
-      { class: "notes" },
-      weak.map(function (row) {
-        var copy = DIMENSION_TEXT[row[0]];
-        var name = labels[row[0]] || String(row[0]).replace(/_/g, " ");
-        var detail = copy && typeof row[4] === "number" ? " " + copy.sentence(row[4]) + " " + copy.better : "";
-        return el("li", { text: name + " (" + (LEVEL_LABELS[row[1]] || row[2]) + ")." + detail });
-      })
-    )
-  );
-}
-
-function renderSummaryCards(summary, container) {
-  var cost = moneyParts(summary.total_cost);
-  var tokens = el("span", { text: compactNumber(summary.total_tokens || 0), title: fullValue(summary.total_tokens, "tokens") || null });
-  container.appendChild(
-    tileRow([
-      tile({ label: "Sessions", value: thousands(summary.sessions || 0), hint: "Conversations you started." }),
-      tile({ label: "Transcripts", value: thousands(summary.transcripts || 0), hint: "One per session and one per subagent run." }),
-      tile({
-        label: "Cost",
-        value: cost.value,
-        unit: cost.unit,
-        hint: cost.secondary || "At list price for the tokens used.",
-      }),
-      tile({ label: "Tokens", value: tokens, hint: "Every token, including cheap cache reads." }),
+    el("p", { class: "next-actions-more" }, [
+      pageLink("actions/recommendations", ranked.length > 5 ? "See all " + thousands(ranked.length) + " recommendations" : "See the recommendations in full"),
     ])
   );
 }
 
-function renderOverviewSummary(container) {
-  return loadInto(container, withWindow("/api/summary"), renderSummaryCards, { skeleton: "tiles" });
+// -- how the setup scores ----------------------------------------------------------------
+
+// Each area as a sentence about its number, and which way is better
+// (scorecard.py's metrics; helptext.py's "dimensions").
+var DIMENSION_TEXT = {
+  cache_efficiency: {
+    sentence: function (v) {
+      return formatCell(v, "pct") + " of cache writes rebuilt context that had expired or changed.";
+    },
+    better: "Lower is better: a rebuild pays again for context you already had.",
+    area: "cache/rebuilds",
+  },
+  context_hygiene: {
+    sentence: function (v) {
+      return "9 in 10 main session replies carried less than " + formatCell(v, "tokens") + " tokens of context.";
+    },
+    better: "Lower is better: every reply pays to re-read its whole context.",
+    area: "spend/usage",
+  },
+  agent_efficiency: {
+    sentence: function (v) {
+      return "Your costliest agent type costs " + formatCell(v, "float") + " times as much per run as a typical one.";
+    },
+    better: "Lower is better: a big gap points to one agent type worth trimming.",
+    area: "agents/subagents",
+  },
+  config_fit: {
+    sentence: function (v) {
+      return formatCell(v, "int") + (v === 1 ? " setting" : " settings") + " changed during this window.";
+    },
+    better: "Fewer is better: frequent changes make before-and-after comparisons unreliable.",
+    area: "setup/settings",
+  },
+  data_quality: {
+    sentence: function (v) {
+      return formatCell(v, "pct") + " of tokens have a known price.";
+    },
+    better: "Higher is better: tokens without a price count as free, so costs read low.",
+    area: "data",
+  },
+};
+
+// The recommendations that move each area, most direct first.
+var DIMENSION_ACTIONS = {
+  cache_efficiency: ["ttl-switch", "notification-invalidation", "cache-read-dominance", "env-disable-prompt-caching", "baseline-bloat"],
+  context_hygiene: ["compaction-churn", "long-context-share", "agent-report-size"],
+  agent_efficiency: [
+    "model-tier",
+    "spawn-cost",
+    "spawn-claude-md",
+    "spawn-shared-claude-md",
+    "spawn-unused-mcp",
+    "spawn-unused-skills",
+    "spawn-read-only-tools",
+    "spawn-task-prompt",
+    "effort-mismatch",
+    "subagent-volume",
+  ],
+  data_quality: ["data-quality", "pricing-coverage"],
+};
+
+// Level 5-4 good, 3 fair, 2 poor, 1 very poor; 0 is not measured.
+function levelStatus(level) {
+  if (level >= 4) return "good";
+  if (level === 3) return "warn";
+  if (level === 2) return "serious";
+  if (level === 1) return "critical";
+  return "";
 }
 
+function tableNamed(section, name) {
+  return ((section && section.tables) || []).filter(function (t) {
+    return t.name === name;
+  })[0];
+}
+
+function renderScorecard(container, section, recs) {
+  var dimTable = tableNamed(section, "dimensions");
+  if (!dimTable || !dimTable.rows.length) {
+    container.appendChild(emptyState("No scores for this window: it had no sessions to rate.", null, "Pick a longer window."));
+    return;
+  }
+  var labels = dimTable.value_labels || {};
+  function plain(raw) {
+    return labels[raw] || String(raw).replace(/_/g, " ");
+  }
+  var overall = tableNamed(section, "overall");
+  var overallRow = overall && overall.rows[0]; // [metric, level, label]
+  if (overallRow) {
+    var lowest = dimTable.rows.filter(function (row) {
+      return row[0] !== "data_quality" && row[1] === overallRow[1];
+    });
+    var line = el("p", { class: "scorecard-overall" }, [
+      el("span", { text: "Overall: " }),
+      meter(overallRow[1], { label: "Overall score", status: levelStatus(overallRow[1]), text: overallRow[1] ? plain(overallRow[2]) + ", " + overallRow[1] + " of 5" : "Not measured" }),
+    ]);
+    if (lowest.length && overallRow[1]) {
+      line.appendChild(
+        el("span", {
+          class: "scorecard-overall-why",
+          text:
+            "Set by your lowest area" +
+            (lowest.length === 1 ? ", " : "s, ") +
+            lowest
+              .map(function (row) {
+                return plain(row[0]).toLowerCase();
+              })
+              .join(" and ") +
+            ".",
+        })
+      );
+    }
+    container.appendChild(line);
+  }
+  var byId = {};
+  recs.forEach(function (rec) {
+    if (!byId[rec.id]) byId[rec.id] = rec;
+  });
+  var strip = el("ul", { class: "scorecard-strip" });
+  dimTable.rows.forEach(function (row) {
+    // [dimension, level, label, metric, value, threshold]
+    var dimension = row[0], level = row[1], value = row[4], threshold = row[5];
+    var copy = DIMENSION_TEXT[dimension];
+    var measured = typeof level === "number" && level > 0;
+    var item = el("li", { class: "score-item" }, [
+      el("h3", { class: "score-name", text: plain(dimension) }),
+      meter(level, { label: plain(dimension), status: levelStatus(level), text: measured ? plain(row[2]) : "Not measured" }),
+    ]);
+    var noSnapshot = threshold === "no config snapshot available";
+    item.appendChild(
+      el("p", {
+        class: "score-sentence",
+        text: copy && typeof value === "number" && !noSnapshot ? copy.sentence(value) : plain(threshold || row[3]),
+      })
+    );
+    if (copy) item.appendChild(el("p", { class: "score-better", text: copy.better }));
+    var links = el("p", { class: "score-links" });
+    if (copy) links.appendChild(pageLink(copy.area));
+    var mover = (DIMENSION_ACTIONS[dimension] || [])
+      .map(function (id) {
+        return byId[id];
+      })
+      .filter(Boolean)[0];
+    if (mover && level < 5) {
+      links.appendChild(el("span", { class: "score-mover" }, [el("span", { text: "What moves it: " }), pageLink("actions/recommendations", mover.title)]));
+    }
+    if (links.childNodes.length) item.appendChild(links);
+    strip.appendChild(item);
+  });
+  container.appendChild(strip);
+}
+
+// -- the page ------------------------------------------------------------------------------------
+
 export function renderOverview(panel) {
+  var run = ++overviewRun;
+  function current() {
+    return run === overviewRun;
+  }
   clear(panel);
   viewIntro(panel, "overview");
 
-  // Which billing mode the amounts follow, and why (config.toml's
-  // billing, or the automatic choice from usage-limit readings).
-  var billingLine = el("p", { class: "notes", id: "overview-billing" });
-  panel.appendChild(billingLine);
+  var notices = el("div", { class: "overview-notices" });
+  var sentence = el("div", { class: "overview-lead", "aria-live": "polite" }, [loadingNode("Loading this window", "lines")]);
+  var tilesHost = el("div", { class: "overview-tiles-host" }, [loadingNode("Loading the headline numbers", "tiles")]);
+  var chartHost = el("div", { class: "overview-chart" });
+  var actionsHost = el("div", { class: "panel-body" }, [loadingNode("Loading the next best actions", "rows")]);
+  var actionsPanel = el("section", { class: "panel overview-actions", "aria-labelledby": "overview-actions-title" }, [
+    el("header", { class: "panel-head" }, [
+      el("div", { class: "panel-title-row" }, [el("h2", { class: "panel-title", id: "overview-actions-title", text: "Next best actions" })]),
+      el("p", { class: "panel-intro", text: "The changes that matter most for this window, from your own sessions." }),
+    ]),
+    actionsHost,
+  ]);
+  var scoreHost = el("div", null, [loadingNode("Loading the scores", "tiles")]);
+  var scoreSection = el("section", { class: "overview-scores", "aria-labelledby": "overview-scores-title" }, [
+    el("h2", { id: "overview-scores-title", text: "How your setup scores" }),
+    el("p", { class: "section-intro", text: "Five areas rated 1 to 5 for this window. Each links to where to look and to the change that would help most." }),
+    scoreHost,
+  ]);
+  var details = el("details", { class: "disclosure overview-details", id: "overview-details" });
+  details.appendChild(el("summary", { text: "Totals, and how amounts are counted" }));
+  var detailsBody = el("div", { class: "overview-details-body" });
+  details.appendChild(detailsBody);
 
-  // "Start here": the three most important recommendations, then any
-  // scorecard area rated poor or worse (filled in with the report).
-  var startHere = el("section", { class: "start-here", id: "overview-start-here" });
-  startHere.appendChild(el("h2", { text: "Start here" }));
-  var startRecs = el("div", null, [loadingNode("Loading recommendations")]);
-  var startWeak = el("div");
-  startHere.appendChild(startRecs);
-  startHere.appendChild(startWeak);
-  panel.appendChild(startHere);
+  var main = el("div", { class: "overview-main" }, [chartHost, actionsPanel]);
+  var body = el("div", { class: "overview-body" }, [
+    tilesHost,
+    main,
+    scoreSection,
+    details,
+  ]);
+  panel.appendChild(notices);
+  panel.appendChild(sentence);
+  panel.appendChild(body);
 
-  var summaryContainer = el("div", { id: "overview-summary" });
-  panel.appendChild(summaryContainer);
-  renderOverviewSummary(summaryContainer);
-
-  var scorecardContainer = el("div", { id: "overview-scorecard" });
-  panel.appendChild(el("h2", { text: "Scorecard" }));
-  panel.appendChild(scorecardContainer);
-  scorecardContainer.appendChild(loadingNode());
-
-  var totalsContainer = el("div", { id: "overview-totals" });
-  panel.appendChild(totalsContainer);
-  totalsContainer.appendChild(loadingNode());
-
-  function renderOverviewReportSections() {
-    clear(scorecardContainer);
-    clear(totalsContainer);
-    scorecardContainer.appendChild(loadingNode());
-    totalsContainer.appendChild(loadingNode());
-    loadReport().then(function (result) {
-      clear(scorecardContainer);
-      clear(totalsContainer);
-      if (result.error) {
-        scorecardContainer.appendChild(errorNotice(result.error));
-        totalsContainer.appendChild(errorNotice(result.error));
-        return;
-      }
-      var report = result.report;
-      var meta = report.meta || {};
-      // meta.amounts_basis says whether amounts are shares of the
-      // weekly limit or list-price equivalents (older reports lack it).
-      var basis = meta.amounts_basis ||
-        (meta.billing_mode === "subscription"
-          ? "Amounts are list-price equivalents, not what you are charged."
-          : "Amounts are what the tokens cost at list price.");
-      billingLine.textContent =
-        (meta.billing_mode === "subscription" ? "Billing: Pro or Max plan" : "Billing: pay per token (API)") +
-        (meta.billing_source ? " (" + meta.billing_source + "). " : ". ") +
-        basis;
-      renderScorecardTiles(scorecardContainer, findSection(report, "scorecard"));
-      renderStartHereWeakAreas(startWeak, findSection(report, "scorecard"));
-      // After the report, which the recommendations are built from.
-      renderStartHereRecommendations(startRecs);
-      var overviewSection = findSection(report, "overview");
-      if (overviewSection) {
-        var totalsTable = (overviewSection.tables || []).filter(function (t) {
-          return t.name === "totals";
-        })[0];
-        // Cost by model is on Spend, Usage (links.js's TABLE_PAGE_MAP).
-        if (totalsTable) totalsContainer.appendChild(renderTable(totalsTable, "overview-totals-table", state.currency));
-      } else {
-        totalsContainer.appendChild(emptyState("No totals for this window: it had no sessions.", null, "Pick a longer window."));
-      }
-    });
+  // Every load starts at once; the drawing waits for the report, which
+  // sets the billing mode every amount is written in.
+  var reportLoad = loadReport();
+  var healthLoad = fetchJson("/api/health");
+  var summaryLoad = fetchJson(withWindow("/api/summary"));
+  var previous = previousPeriod(state.window, Date.now());
+  var previousLoad = previous
+    ? fetchJson("/api/summary?since=" + encodeURIComponent(isoMinute(previous.since)) + "&until=" + encodeURIComponent(isoMinute(previous.until)))
+    : Promise.resolve(null);
+  var dailyLoad = fetchJson(withWindow("/api/daily-usage") + "&split=agent");
+  var impactLoad = fetchJson("/api/impact");
+  // Recommendations are built from the report, so they follow it.
+  var recsLoad = reportLoad.then(function () {
+    return fetchJson(withWindow("/api/recommendations"));
+  });
+  if (!holdChart(chartHost, "daily-spend", { slot: "overview" })) chartHost.appendChild(loadingNode("Loading daily spend", "chart"));
+  // Refit once both the chart and the actions are drawn, whichever lands last.
+  var actionsDrawn = false;
+  var chartDrawn = false;
+  function fitChart() {
+    if (!current() || !actionsDrawn || !chartDrawn) return;
+    chartHeight = fittedChartHeight(main, chartHost, actionsPanel);
+    setChartHeight("daily-spend", { slot: "overview" }, chartHeight);
   }
 
-  renderOverviewReportSections();
+  healthLoad.then(function (result) {
+    if (!current()) return;
+    var health = result.body && result.body.ok ? result.body.data : null;
+    renderLogonNotice(health, notices);
+  });
 
-  var healthContainer = el("div", { id: "overview-health" });
-  panel.appendChild(el("h2", { text: "Service health" }));
-  panel.appendChild(healthContainer);
-  loadInto(healthContainer, "/api/health", renderHealth);
+  Promise.all([reportLoad, summaryLoad, previousLoad, recsLoad, healthLoad, dailyLoad]).then(function (loaded) {
+    if (!current()) return;
+    var reportResult = loaded[0];
+    var summaryBody = loaded[1].body;
+    var previousBody = loaded[2] && loaded[2].body;
+    var recsBody = loaded[3].body;
+    var healthBody = loaded[4].body;
+    var dailyBody = loaded[5].body;
+    var dailyRows = dailyBody && dailyBody.ok === true ? dailyBody.data || [] : [];
+    clear(sentence);
+    clear(tilesHost);
+    if (summaryBody && summaryBody.ok !== true && state.window === "change" && summaryBody.error && summaryBody.error.code === "bad_request") {
+      // "Since my last change" with no change recorded has nowhere to start.
+      sentence.appendChild(
+        el("p", { class: "overview-summary", text: "No change recorded yet, so this window has nowhere to start. Pick another window, or come back after you change a setting." })
+      );
+      body.hidden = true;
+      return;
+    }
+    if (!summaryBody || summaryBody.ok !== true) {
+      sentence.appendChild(errorNotice(summaryBody && summaryBody.error, function () {
+        goTo("overview", { force: true });
+      }));
+      body.hidden = true;
+      return;
+    }
+    var summary = summaryBody.data || {};
+    var report = reportResult && reportResult.report;
+    var meta = (report && report.meta) || {};
+    var recs = recsBody && recsBody.ok === true ? recsBody.data || [] : [];
+
+    if (!summary.sessions) {
+      body.hidden = true;
+      if (state.window === "all") {
+        firstRun(sentence, healthBody && healthBody.ok ? healthBody.data : null);
+      } else {
+        sentence.appendChild(el("p", { class: "overview-summary", text: "No sessions " + windowWhen(state.window) + ". Pick a longer window to see older ones." }));
+      }
+      return;
+    }
+
+    var levers = report ? savingsLevers(tablesOf(report)) : [];
+    var facts = {
+      summary: summary,
+      previousSummary: previousBody && previousBody.ok === true ? previousBody.data : null,
+      cost: summary.total_cost || 0,
+      phrase: previous ? previous.phrase : null,
+    };
+    facts.previousCost = facts.previousSummary ? facts.previousSummary.total_cost || 0 : null;
+    facts.available = availableSaving(levers, recs);
+    var tiles = renderTiles(tilesHost, facts, meta, dailyRows);
+    addSpendTrend(tiles.spend, dailyRows);
+    facts.saving = tiles.saving;
+    facts.worth = recs.filter(function (rec) {
+      return rec.severity === "action" || rec.severity === "advice";
+    }).length;
+    sentence.appendChild(el("p", { class: "overview-summary", text: summarySentence(facts) }));
+
+    if (recsBody && recsBody.ok === true) renderActions(actionsHost, recs);
+    else {
+      clear(actionsHost);
+      actionsHost.appendChild(errorNotice(recsBody && recsBody.error));
+    }
+    actionsDrawn = true;
+    fitChart();
+
+    clear(scoreHost);
+    clear(detailsBody);
+    if (reportResult.error) {
+      scoreHost.appendChild(errorNotice(reportResult.error));
+      detailsBody.appendChild(errorNotice(reportResult.error));
+      return;
+    }
+    renderScorecard(scoreHost, findSection(report, "scorecard"), recs);
+    renderDetails(detailsBody, report);
+
+  });
+
+  Promise.all([dailyLoad, impactLoad, reportLoad]).then(function (loaded) {
+    if (!current() || body.hidden) return;
+    var daily = loaded[0].body;
+    if (!daily || daily.ok !== true) {
+      chartError(chartHost, "daily-spend", daily && daily.error, function () {
+        goTo("overview", { force: true });
+      }, { slot: "overview", titleTag: "h2" });
+      return;
+    }
+    var impact = loaded[1].body;
+    var changes = ((impact && impact.ok === true && impact.data && impact.data.changes) || []).map(function (row) {
+      var change = row.change || {};
+      return {
+        day: String(change.ts || "").slice(0, 10),
+        label: change.label || "A settings change",
+        // What the change did: its row in "Your changes and what they did".
+        open: function () {
+          goTo("setup/profiles");
+        },
+      };
+    });
+    renderChart(
+      chartHost,
+      "daily-spend",
+      { rows: daily.data || [], split: "agent", changes: changes },
+      {
+        slot: "overview",
+        titleTag: "h2",
+        height: chartHeight,
+        open: function () {
+          goTo("spend/sessions");
+        },
+      }
+    );
+    chartDrawn = true;
+    fitChart();
+  });
+}
+
+// -- lining the chart up with the actions ------------------------------------------------
+
+var CHART_HEIGHT = 300;
+var CHART_MAX_HEIGHT = 560;
+// The height the chart last fitted to: a window change redraws at it, so
+// the morph doesn't shrink the chart and grow it again.
+var chartHeight = CHART_HEIGHT;
+
+// How tall a panel's content is, whatever height the grid stretched it to.
+function contentHeight(node) {
+  var top = node.getBoundingClientRect().top;
+  var bottom = top;
+  Array.prototype.forEach.call(node.children, function (child) {
+    var rect = child.getBoundingClientRect();
+    if (rect.height > 0) bottom = Math.max(bottom, rect.bottom);
+  });
+  var style = getComputedStyle(node);
+  return bottom - top + parseFloat(style.paddingBottom) + parseFloat(style.borderBottomWidth);
+}
+
+// From 1440 up the chart and the actions sit side by side. The chart
+// grows to the actions' height, so neither panel ends in a blank band.
+function fittedChartHeight(main, chartHost, actionsPanel) {
+  var chart = chartHost.querySelector(".chart");
+  var svg = chart && chart.querySelector(".chart-plot > svg");
+  if (!svg || getComputedStyle(main).gridTemplateColumns.split(" ").length < 2) return CHART_HEIGHT;
+  var drawn = Number(svg.getAttribute("height")) || CHART_HEIGHT;
+  var target = drawn + contentHeight(actionsPanel) - contentHeight(chart);
+  return Math.round(Math.max(CHART_HEIGHT, Math.min(CHART_MAX_HEIGHT, target)));
+}
+
+// The report's tables by name, across sections, for the savings levers.
+function tablesOf(report) {
+  var tables = {};
+  (report.sections || []).forEach(function (section) {
+    (section.tables || []).forEach(function (table) {
+      tables[table.name] = table;
+    });
+  });
+  return tables;
+}
+
+// Details: which billing mode the amounts follow and why, and the totals.
+function renderDetails(container, report) {
+  var meta = report.meta || {};
+  // meta.amounts_basis says whether amounts are shares of the weekly
+  // limit or list-price equivalents (older reports lack it).
+  var basis =
+    meta.amounts_basis ||
+    (meta.billing_mode === "subscription" ? "Amounts are list-price equivalents, not what you are charged." : "Amounts are what the tokens cost at list price.");
+  container.appendChild(
+    el("p", {
+      class: "notes",
+      id: "overview-billing",
+      text:
+        (meta.billing_mode === "subscription" ? "Billing: Pro or Max plan" : "Billing: pay per token (API)") +
+        (meta.billing_source ? " (" + meta.billing_source + "). " : ". ") +
+        basis,
+    })
+  );
+  var totals = tableNamed(findSection(report, "overview"), "totals");
+  // Cost by model is on Spend, Usage (links.js's TABLE_PAGE_MAP).
+  if (totals) container.appendChild(renderTable(totals, "overview-totals-table", state.currency));
+  else container.appendChild(emptyState("No totals for this window: it had no sessions.", null, "Pick a longer window."));
 }

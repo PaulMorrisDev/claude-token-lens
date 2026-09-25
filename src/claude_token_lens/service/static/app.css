@@ -451,7 +451,6 @@ pre {
    slashed zero. */
 table,
 .num,
-.tile-level,
 .capture-cost,
 .pager {
   font-feature-settings: "cv11", "ss01", "tnum", "zero";
@@ -1360,77 +1359,9 @@ tr.row-group th {
   background: var(--good-soft);
 }
 
-/* -- scorecard tiles ---------------------------------------------------------- */
-
-.tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: var(--space-5);
-  margin: var(--space-5) 0 var(--space-8);
-}
-
-.tile {
-  min-width: 0;
-  padding: var(--space-5) var(--space-6);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-panel);
-  box-shadow: var(--elev-1);
-}
-
-.tile.tile-overall {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-}
-
-.tile-dimension {
-  color: var(--ink-3);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-}
-
-.tile-level {
-  margin-top: var(--space-2);
-  font-size: var(--text-3xl);
-  font-weight: var(--weight-semibold);
-  line-height: 1.15;
-  letter-spacing: -0.011em;
-}
-
-.tile-level .tile-max {
-  color: var(--ink-3);
-  font-size: var(--text-lg);
-  font-weight: var(--weight-regular);
-}
-
-.tile-label {
-  margin-top: var(--space-1);
-  font-size: var(--text-md);
-  font-weight: var(--weight-medium);
-}
-
-.tile-metric {
-  margin-top: var(--space-3);
-  color: var(--ink-2);
-  font-size: var(--text-sm);
-}
-
-.tile-threshold {
-  margin-top: var(--space-3);
-  color: var(--ink-3);
-  font-size: var(--text-sm);
-}
-
-.level-5 { color: var(--good); }
-.level-4 { color: var(--accent-ink); }
-.level-3 { color: var(--warn); }
-.level-2 { color: var(--serious); }
-.level-1 { color: var(--critical); }
-.level-0 { color: var(--ink-3); }
-
 /* -- cards: recommendations, quick checks, impact, profiles, habits ---------- */
 
 .rec,
-.start-here,
 .profile-card,
 .habit-card,
 .capture-level,
@@ -1559,35 +1490,225 @@ details.disclosure[open] > summary {
   text-decoration-color: currentColor;
 }
 
-/* -- Overview: start here ---------------------------------------------------- */
+/* -- Overview ----------------------------------------------------------------- */
 
-.start-here {
-  margin: var(--space-5) 0 var(--space-8);
-  padding: var(--space-6) var(--space-7);
-  box-shadow: var(--elev-1);
+/* The page leads with a sentence, not a hero number. */
+.view .overview-summary,
+.overview-summary {
+  max-width: 72ch;
+  margin: 0 0 var(--space-7);
+  color: var(--ink-1);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-medium);
+  line-height: 1.45;
+  text-wrap: pretty;
 }
 
-.start-here h2 {
+.overview-notices > .callout {
+  margin: 0 0 var(--space-6);
+}
+
+.metric-tiles.overview-tiles {
   margin-top: 0;
 }
 
-.start-list {
-  margin: 0 0 var(--space-4);
-  padding-left: var(--space-7);
+.metric-spark {
+  margin-top: var(--space-2);
 }
 
-.start-list li {
-  margin-bottom: var(--space-4);
+/* Daily spend beside the next best actions from 1440 up; stacked below. */
+.overview-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-8);
 }
 
-.start-why {
-  margin: var(--space-1) 0 0;
+@media (min-width: 1440px) {
+  .overview-main {
+    grid-template-columns: minmax(0, 8fr) minmax(0, 4fr);
+  }
+}
+
+/* Side by side, the two panels share one height. */
+.overview-main > .panel,
+.overview-chart > .chart {
+  margin: 0;
+}
+
+.overview-chart > .chart {
+  height: 100%;
+}
+
+.view .next-actions,
+.next-actions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Narrow (beside the chart): the severity and Copy on one line, the
+   title under them. Wide (stacked under the chart): one line each. */
+.overview-actions {
+  container-type: inline-size;
+}
+
+.next-action {
+  display: grid;
+  grid-template-areas:
+    "severity copy"
+    "text text";
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0 var(--space-4);
+  padding: var(--space-5) 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.next-action:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.next-action-severity {
+  grid-area: severity;
+}
+
+.next-action-text {
+  grid-area: text;
+  min-width: 0;
+}
+
+.next-action-copy {
+  grid-area: copy;
+}
+
+@container (min-width: 640px) {
+  .next-action {
+    grid-template-areas: "severity text copy";
+    grid-template-columns: 11rem minmax(0, 1fr) auto;
+    padding: var(--space-4) 0;
+  }
+
+  .next-action-severity {
+    align-self: start;
+    padding-top: var(--space-1);
+  }
+
+  .view .next-action-text .next-action-title {
+    margin-top: 0;
+  }
+}
+
+.view .next-action-title,
+.next-action-title {
+  margin: var(--space-3) 0 0;
+  font-weight: var(--weight-medium);
+  line-height: 1.4;
+}
+
+.view .next-action-saving,
+.next-action-saving {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+}
+
+.view .next-actions-more,
+.next-actions-more {
+  margin: var(--space-5) 0 0;
+  font-size: var(--text-md);
+}
+
+.view .overview-scores > h2 {
+  margin-top: var(--space-10);
+}
+
+.view .scorecard-overall,
+.scorecard-overall {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-4);
+  margin: 0 0 var(--space-5);
+  color: var(--ink-2);
+  font-size: var(--text-md);
+}
+
+.view .scorecard-strip,
+.scorecard-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.score-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-panel);
+  box-shadow: var(--elev-1);
+}
+
+.view .score-name,
+.score-name {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.view .score-sentence,
+.score-sentence {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.view .score-better,
+.score-better {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--text-sm);
+}
+
+.view .score-links,
+.score-links {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: auto 0 0;
+  padding-top: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.score-mover {
   color: var(--ink-2);
 }
 
-.start-weak-title {
-  margin: var(--space-5) 0 var(--space-2);
-  font-weight: var(--weight-semibold);
+.overview-details {
+  margin-top: var(--space-10);
+}
+
+.overview-details-body {
+  padding-top: var(--space-5);
+}
+
+.view .overview-first-run > h2 {
+  margin-top: var(--space-8);
+}
+
+.overview-promise {
+  max-width: 72ch;
+  margin: 0;
+  padding-left: var(--space-7);
+}
+
+.overview-promise li + li {
+  margin-top: var(--space-3);
 }
 
 /* -- sessions ---------------------------------------------------------------- */
@@ -3305,6 +3426,7 @@ td.nowrap,
   gap: var(--space-5);
 }
 
+.view .chart-title,
 .chart-title {
   margin: 0;
   color: var(--ink-1);
@@ -3678,8 +3800,8 @@ td.nowrap,
 
   .severity-badge,
   .chip,
-  .tile,
   .metric-tile,
+  .score-item,
   .panel,
   .callout,
   .rec {

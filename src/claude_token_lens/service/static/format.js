@@ -322,6 +322,31 @@ export function cellSortValue(value) {
   return String(value);
 }
 
+// A price ratio in words, to put before "the input price": 0.1 is "a
+// tenth of", 0.2 "a fifth of", 1.25 "1.25 times", 2 "twice". The ratios
+// come from the report's meta.rates (pricing.toml), never from here.
+var FRACTION_WORDS = [
+  [0.05, "a twentieth of"],
+  [0.1, "a tenth of"],
+  [0.125, "an eighth of"],
+  [0.2, "a fifth of"],
+  [0.25, "a quarter of"],
+  [1 / 3, "a third of"],
+  [0.5, "half"],
+  [1, "the same as"],
+  [2, "twice"],
+];
+
+export function fraction(ratio) {
+  var n = Number(ratio);
+  if (!isFinite(n) || n <= 0) return "";
+  for (var i = 0; i < FRACTION_WORDS.length; i++) {
+    if (Math.abs(n - FRACTION_WORDS[i][0]) < 0.005) return FRACTION_WORDS[i][1];
+  }
+  if (n < 1) return formatCell(n * 100, "pct") + " of";
+  return String(Math.round(n * 100) / 100) + " times";
+}
+
 // A change as a signed percentage: "+12%", "−3%" with a true minus
 // sign (U+2212, the width of the plus), "0%". Blank when there is none.
 export function signedPercent(value) {
