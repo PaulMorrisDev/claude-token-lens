@@ -465,7 +465,7 @@ weeks counts as **picked up**, and the saving that implies moves into
 the "Weekly pace" digest's `adopted` figure instead of still being
 suggested.
 
-**Cheaper-setup verdicts** (`habits_setups`, shown on the Profiles tab):
+**Cheaper-setup verdicts** (`habits_setups`, shown on Setup › Profiles):
 for a kind of task, the model and effort you used most (`usual`) against
 the cheapest setup that cost less, went at least as well within 5
 points, and has 5 or more messages (`cheaper`). "Went well" is your

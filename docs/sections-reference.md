@@ -73,7 +73,7 @@ respects.
   same coverage count behind `meta.pricing.coverage_pct`, and appended
   onto this section by `report.build_report` only when at least one
   reply was unpriced. The `pricing-coverage` recommendation names these
-  model ids. Shown under the Usage tab's advanced detail.
+  model ids. Shown under Spend › Usage's advanced detail.
 - `pricing_closest_match` — one row per model id that resolved only via
   `pricing.Pricing.resolve_model`'s longest-registered-id *prefix* step
   (`ResolvedRates.approximate`; not `"exact"`/`"alias"`/`"strip_1m"`, and
@@ -86,14 +86,14 @@ respects.
   `pricing.PricingCoverage.as_closest_match_table`, appended onto this
   section only when at least one reply matched this way, and named by
   the `pricing-coverage` recommendation alongside (or instead of) any
-  unpriced model ids. Shown under the Usage tab's advanced detail.
+  unpriced model ids. Shown under Spend › Usage's advanced detail.
 - `pricing_fast_priced_as_standard` — one row per model id seen with at
   least one reply flagged `usage.speed == "fast"` whose rate card entry
   has no `[models."<id>".fast]` table, so it was priced at that model's
   standard rate instead: `model_id`, `turns`, `tokens`. Built by
   `pricing.PricingCoverage.as_fast_priced_as_standard_table`, appended
   onto this section only when at least one such reply exists. Shown
-  under the Usage tab's advanced detail.
+  under Spend › Usage's advanced detail.
 - `pricing_fast_applied` (PROF-08) — the mirror image of the table
   above: one row per model id seen with at least one reply *actually*
   billed at its `[models."<id>".fast]` rate: `model_id`, `turns`,
@@ -624,7 +624,7 @@ answered it, `capture.prompt_cycles`) and per subagent run at any
 depth. It reads what metrics capture's tags reported where they are
 there, what the parser measures without asking (whether a message
 named a file or pasted an error, a command failing again and again, a
-skill loaded late), and your ratings from the Sessions tab. Every table
+skill loaded late), and your ratings from Spend › Sessions. Every table
 is always there, empty when there's nothing to show; the notes say when
 capture is off or no feedback has been given.
 
@@ -691,7 +691,7 @@ capture is off or no feedback has been given.
   level on the levels both ran, weighted by the usual setup's mix
   (`habits._like_for_like`), and only when those levels hold at least
   half the usual setup's messages; the per-message and went-well
-  columns stay as measured. Shown on the Profiles tab; the `tasks` profile
+  columns stay as measured. Shown on Setup › Profiles; the `tasks` profile
   goal drafts from its `all` rows.
 - `habits_agents_by_task` — `habits_agents`, split by the kind of task
   Claude reported for the message that spawned each run: per task and
@@ -699,7 +699,7 @@ capture is off or no feedback has been given.
   model (smaller would do, right, needed larger). Names a cheaper model
   only when at least `MIN_GROUP` runs support it, the saving clears
   `CHEAPER_MODEL_MIN_PCT`, and `habits.unfit_agents` doesn't veto the
-  agent type. Shown on the Profiles tab; the `tasks` profile goal drafts
+  agent type. Shown on Setup › Profiles; the `tasks` profile goal drafts
   agent candidates from it (vetoed again there by the quality check).
 - `habits_outcomes` — per outcome you gave (`met`, `partly`, `missed`,
   ...): pieces of work, messages, cost, per piece, the most common kind
@@ -1161,7 +1161,7 @@ Under subscription billing with rows in `<config-dir>/usage-log.csv`,
 after `usage`, and hands the same fit to `units.Units`, whose `money`
 phrases every amount as "about x% of your weekly usage limit"
 (`express_in_window`). Under API billing, or with no readings, the
-section is left out. On the dashboard it sits on the Usage tab:
+section is left out. On the dashboard it sits on Spend › Usage:
 `elasticity_budget` and `elasticity_recent_burn` are shown, and
 `elasticity_fit` is under the advanced detail.
 

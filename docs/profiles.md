@@ -64,7 +64,7 @@ that reprices more than that task's work. Save the
 profile, then launch Claude with it for that kind of work (its detail's
 "Or try it for one session" command).
 
-The same table is on the Profiles tab as **Best setup for each kind of
+The same table is on Setup › Profiles as **Best setup for each kind of
 task**, all levels together and then by how hard Claude said the work
 was. The agent candidates' own table, **Agents by kind of task**
 (`habits_agents_by_task`), is on the Work habits tab rather than
@@ -160,7 +160,7 @@ you before — their fidelity shows as "calibrated" instead of "ceiling",
 and the estimate itself is scaled by the mean ratio of what was
 measured to what was predicted across those judged points.
 
-The Profiles tab also shows one card per profile with the settings it
+Setup › Profiles also shows one card per profile with the settings it
 changes by their plain labels. Opening one shows a table of Setting /
 Now / After / Set in for the scope you pick, then three ways to use it:
 a prompt that asks Claude to make the changes and show you the diff

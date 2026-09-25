@@ -339,19 +339,36 @@ function stackedColumns(ctx, data) {
       return y(d.total) - 6;
     });
 
-  // Changes you made, as labelled rules that lead to what they did.
+  // Changes you made, as labelled rules that lead to what they did. A
+  // label that leads somewhere is a link in the one layer screen readers
+  // reach: a Tab stop that Enter or Space opens, like a click.
   var rules = ctx.layer("rules");
+  var ruleLinks = ctx.layer("rule-links", { links: true });
   rules.selectAll("*").remove();
+  ruleLinks.selectAll("*").remove();
   changes.forEach(function (change) {
     var cx = Math.round(x(change.day) + x.bandwidth() / 2) + 0.5;
     rules.append("line").attr("class", "chart-rule").attr("x1", cx).attr("x2", cx).attr("y1", -8).attr("y2", inner.h);
-    var label = rules
+    var label = (change.open ? ruleLinks : rules)
       .append("text")
       .attr("class", "chart-rule-label")
       .attr("x", cx + 4)
       .attr("y", -12)
       .text(fitLabel(change.label, 28));
-    if (change.open) label.classed("is-openable", true).on("click", change.open);
+    if (!change.open) return;
+    label
+      .classed("is-openable", true)
+      .attr("tabindex", 0)
+      .attr("role", "link")
+      .attr("aria-label", change.label + ", changed on " + dayLabel(change.day, true) + ": see what it did")
+      .on("click", change.open)
+      .on("keydown", function (event) {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        // The plot's own keys (Enter opens a day's sessions) stay out of it.
+        event.preventDefault();
+        event.stopPropagation();
+        change.open();
+      });
   });
 
   columns.forEach(function (column) {

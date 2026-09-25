@@ -362,7 +362,8 @@ function renderCaptureControls(data, container) {
 
 // Each group of metrics folds, so the page opens on the levels. A group
 // with a metric that needs something from you (a hook entry, an
-// install) starts open.
+// install) or that won't show (the status line isn't this tool's)
+// starts open.
 function renderCaptureMetrics(data, container) {
   var block = captureBlock(container, "Metrics");
   block.appendChild(el("p", { class: "notes", text: "What each one captures and what it costs. Open one for why it helps and what Claude writes for it. Ticking one here picks your own set (Custom)." }));
@@ -372,7 +373,7 @@ function renderCaptureMetrics(data, container) {
     }).length;
     var group = el("details", { class: "disclosure capture-group" });
     group.open = section.metrics.some(function (row) {
-      return row.needs_hook || row.needs_install;
+      return row.needs_hook || row.needs_install || row.statusline_note;
     });
     group.appendChild(el("summary", { text: section.title + " (" + on + " of " + section.metrics.length + " on)" }));
     var list = el("div", { class: "capture-metric-list" });

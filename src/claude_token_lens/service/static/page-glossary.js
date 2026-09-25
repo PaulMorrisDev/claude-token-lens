@@ -15,7 +15,7 @@ import { compactNumber, moneyText, thousands } from "./format.js";
 import { pulseNode } from "./grid.js";
 import { errorNotice, loadingNode, panel } from "./ui.js";
 import { cardLink, COST_CARDS, GLOSSARY, pageLink, termSlug, viewIntro } from "./links.js";
-import { cardRuleText, pricingFacts } from "./costs.js";
+import { avoidableRebuilds, cardRuleText, pricingFacts } from "./costs.js";
 
 // ======================================================================
 // Small table helpers (report.json's {columns, rows} shape, read by
@@ -203,12 +203,17 @@ var CARD_NUMBERS = {
     if (!stats || !stats.recache_turns) {
       return "No cache rebuilds happened in this window.";
     }
+    // Counted as Cache > Rebuilds counts them: the rebuilds the cost
+    // covers, without the ones after a usage-limit pause.
+    var times = avoidableRebuilds(ctx.report);
+    if (times === 0) {
+      return "Every cache rebuild in this window came after a usage-limit pause. You can't avoid those, so there's nothing to save.";
+    }
+    var cost = moneyText(stats.avoidable_cost_usd || 0, { prefix: "about" });
     return (
       "In this window, " +
-      thousands(stats.recache_turns) +
-      " replies rebuilt the cache, at " +
-      moneyText(stats.avoidable_cost_usd || 0, { prefix: "about" }) +
-      " more than reading the same tokens from the cache would have cost."
+      (times === null ? "cache rebuilds cost " + cost : thousands(times) + (times === 1 ? " reply" : " replies") + " rebuilt the cache, at " + cost) +
+      " more than reading the same tokens from the cache would have cost. Rebuilds after a usage-limit pause aren't counted."
     );
   },
   "model-choice": function (ctx) {
@@ -322,10 +327,14 @@ var CARD_NUMBERS = {
     );
   },
   "billing-mode": function () {
-    var mode = (state.units || {}).mode;
-    return mode === "subscription"
-      ? "You're on a Pro or Max plan, so amounts here show as a share of your weekly usage limit, with the list-price equivalent alongside."
-      : "You're on pay-per-token billing, so amounts here show in money.";
+    var units = state.units || {};
+    if (units.mode !== "subscription") return "You're on pay-per-token billing, so amounts here show in money.";
+    // format.js's money() falls back to list-price dollars until the
+    // usage-limit readings give a share of the weekly limit.
+    if (units.share_per_usd === null || units.share_per_usd === undefined) {
+      return "You're on a Pro or Max plan. Amounts here show as list-price equivalents until your usage-limit readings are logged, then as a share of your weekly limit.";
+    }
+    return "You're on a Pro or Max plan, so amounts here show as a share of your weekly usage limit, with the list-price equivalent alongside.";
   },
 };
 

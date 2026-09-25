@@ -440,7 +440,7 @@ function moveCursor(frame, index) {
   if (!point || !frame.svg) return;
   frame.cursor = index;
   var cursor = frame.svg.select("g.chart-cursor");
-  if (cursor.empty()) cursor = frame.svg.append("g").attr("class", "chart-cursor");
+  if (cursor.empty()) cursor = frame.svg.append("g").attr("class", "chart-cursor").attr("aria-hidden", "true");
   cursor.selectAll("*").remove();
   if (point.band) {
     cursor
@@ -484,8 +484,12 @@ function tipText(tip) {
 // points, table, legend, note, variant}, or {empty: "the reason"}.
 function drawContext(frame, how) {
   var opts = frame.opts;
+  // Screen readers skip the drawing (each layer is aria-hidden): the
+  // plot reads out mark by mark from the keyboard instead. The svg
+  // itself isn't hidden, so a layer of links (layer(name, {links:
+  // true})) keeps the names of the labels you can Tab to.
   if (!frame.svg) {
-    frame.svg = d3.select(frame.plot).append("svg").attr("class", "chart-svg").attr("aria-hidden", "true").attr("focusable", "false");
+    frame.svg = d3.select(frame.plot).append("svg").attr("class", "chart-svg").attr("role", "none").attr("focusable", "false");
     frame.svg.append("defs");
   }
   // A hidden tab never runs the frames a morph needs: draw it settled.
@@ -518,10 +522,14 @@ function drawContext(frame, how) {
       return how.first ? DRAW_IN_MS : MORPH_MS;
     },
     ease: how.first ? d3.easeExpOut : d3.easeCubicInOut,
-    // A named layer inside the plot area (drawn in the order first asked for).
-    layer: function (name) {
+    // A named layer inside the plot area (drawn in the order first asked
+    // for), hidden from screen readers unless layerOpts.links.
+    layer: function (name, layerOpts) {
       var g = frame.svg.select("g.layer-" + name);
-      if (g.empty()) g = frame.svg.append("g").attr("class", "layer-" + name);
+      if (g.empty()) {
+        g = frame.svg.append("g").attr("class", "layer-" + name);
+        if (!(layerOpts && layerOpts.links)) g.attr("aria-hidden", "true");
+      }
       g.attr("transform", "translate(" + ctx.margin.left + "," + ctx.margin.top + ")");
       return g;
     },

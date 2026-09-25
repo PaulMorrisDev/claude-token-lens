@@ -1180,7 +1180,8 @@ def build_section(runs: list[Run], units: "Units | None" = None) -> Section:
         f"Fewer than {MIN_RUNS} runs (or {MIN_DENOMINATOR} of what a rate counts) on either side is too little data. "
         f"A share that moved by less than {100 * MIN_SHARE_CHANGE:.1f} percentage points is not marked.",
         "Setups are compared across the whole window, so a setup used for different kinds of work, or in a different "
-        "week, can differ for that reason alone. Profiles compares before and after each change you made.",
+        "week, can differ for that reason alone. \"Your changes and what they did\" on {{page:setup/settings}} "
+        "compares before and after each change you made.",
         "Corrections are messages that start or contain a fixed phrase such as \"that's wrong\" or \"still "
         "broken\". Only the yes/no is kept, never the text.",
         "A run counts as retried on a larger model when a run of the same agent type on a larger model family "

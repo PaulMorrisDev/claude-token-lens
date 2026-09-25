@@ -195,15 +195,17 @@ _SETUPS = (
 def test_the_tasks_goal_drafts_the_cheaper_setup_for_the_first_task_that_has_one():
     out = goals.draft("tasks", _with_setups(*_SETUPS), UNITS, effective={"model": "opus", "effortLevel": "high"})
     assert out["tasks"] == ["chat", "bugfix"] and out["task"] == "bugfix"
+    # Phase 10 review: the picker and the notes use each task's plain name.
+    assert out["task_labels"] == {"chat": "Chat", "bugfix": "Bug fix"}
     by_key = {c["key"]: c for c in out["candidates"]}
     # The main session's model stays yours to decide; the effort is ticked.
     assert (by_key["model"]["value"], by_key["model"]["ticked"]) == ("sonnet", False)
     assert (by_key["effortLevel"]["value"], by_key["effortLevel"]["ticked"]) == ("medium", True)
     assert by_key["model"]["evidence"].startswith(
-        "For bugfix work, sonnet at medium effort cost 75% less a message than your usual opus at high effort"
+        "For bug fix work, sonnet at medium effort cost 75% less a message than your usual opus at high effort"
     )
     assert "went well 83% of the time against 80% (20 and 12 messages)" in by_key["model"]["evidence"]
-    assert out["note"].startswith("Save it, then launch Claude with it when you start bugfix work.")
+    assert out["note"].startswith("Save it, then launch Claude with it when you start bug fix work.")
     assert "implementation-heavy" in out["note"]
     assert out["profile"] == {"settings": {"effortLevel": "medium"}, "agents": {}}
 
@@ -245,7 +247,7 @@ def test_the_tasks_goal_drafts_the_tasks_own_compaction_window():
     out = goals.draft("tasks", _with_task_compaction(("bugfix", 20, "200,000", -25.0)), UNITS, task="bugfix")
     [candidate] = [c for c in out["candidates"] if c["key"] == "autoCompactWindow"]
     assert (candidate["value"], candidate["ticked"]) == (200000, True)
-    assert candidate["evidence"] == "Your 20 bugfix sessions replayed with summaries at 200,000 tokens cost 25% less."
+    assert candidate["evidence"] == "Your 20 bug fix sessions replayed with summaries at 200,000 tokens cost 25% less."
     few = goals.draft("tasks", _with_task_compaction(("bugfix", 6, "200,000", -25.0)), UNITS, task="bugfix")
     assert [c["ticked"] for c in few["candidates"] if c["key"] == "autoCompactWindow"] == [False]
 
@@ -276,7 +278,7 @@ def test_the_tasks_goal_without_capture_says_how_to_get_the_data():
     assert "metrics capture" in out["note"]
     # Other goals carry no task.
     other = goals.draft("cache", _report(), UNITS)
-    assert (other["tasks"], other["task"], other["note"]) == ([], None, None)
+    assert (other["tasks"], other["task_labels"], other["task"], other["note"]) == ([], {}, None, None)
 
 
 def test_an_unknown_task_falls_back_to_the_first_with_a_cheaper_setup():
@@ -431,7 +433,7 @@ def test_the_tasks_goal_drafts_a_cheaper_model_for_the_agent_that_ran_the_task_m
     explore = next(c for c in out["candidates"] if c["agent"] == "Explore")
     assert (explore["key"], explore["value"], explore["ticked"]) == ("model", "haiku", True)
     # F8: the saving percentage is Explore's corpus-wide verdict (every task it ran), not bugfix-only -- said plainly.
-    assert explore["evidence"] == "Explore runs 25% cheaper on haiku across every task it did; bugfix was 8 of its runs in this window."
+    assert explore["evidence"] == "Explore runs 25% cheaper on haiku across every task it did; bug fix work was 8 of its runs in this window."
     # model_swap's Explore row reprices ALL of its work (raw saving 8.0); bugfix is 80% of its cost (8 of 10).
     assert explore["estimate"]["saving_usd"] == pytest.approx(6.4)
 

@@ -4102,6 +4102,13 @@ td.nowrap,
   text-decoration: underline;
 }
 
+/* A change label is a link the keyboard reaches: the same ring as
+   every other control, drawn around the SVG text. */
+.chart-rule-label.is-openable:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 .chart-hit {
   fill: transparent;
 }

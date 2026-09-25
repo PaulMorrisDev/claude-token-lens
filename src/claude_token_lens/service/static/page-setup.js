@@ -42,8 +42,9 @@ export function renderConfig(panel) {
     renderMappedSections(result.report, "setup/settings", sectionContainer, ["config"]);
   });
 
-  // ?day=: a change marker on the daily spend chart. Its change (the
-  // first made that day) is brought into view and pulsed.
+  // ?day=: a change marker on the daily spend chart. That day's change
+  // (the first listed, so the latest that day) is brought into view and
+  // pulsed.
   onParams("setup/settings", function (params) {
     if (!/^\d{4}-\d\d-\d\d$/.test(params.day || "")) return;
     impactLoaded.then(function () {
@@ -429,7 +430,7 @@ function renderProfileDiff(data, container) {
   if (rows.length) {
     container.appendChild(renderDiffRowsTable(rows));
   } else {
-    container.appendChild(emptyState("This profile doesn't change any setting.", null, "Edit it below to add some."));
+    container.appendChild(emptyState("This profile doesn't change any setting.", null, "To add some, open Edit settings directly on this page."));
   }
 
   container.appendChild(el("h3", { text: "How to use it" }));
@@ -782,12 +783,18 @@ function renderTaskSetups(container) {
   });
 }
 
+// A kind of task by its plain name ("Bug fix"), from the server's
+// labels for capture's task words.
+function taskName(draft, task) {
+  return (draft.task_labels && draft.task_labels[task]) || task;
+}
+
 function renderGoalDraft(draft, container, onSaved) {
   container.appendChild(el("h3", { text: draft.goal.title }));
   if (draft.tasks && draft.tasks.length > 1) {
     var taskPick = el("select", { id: "goal-task-pick" });
     draft.tasks.forEach(function (task) {
-      taskPick.appendChild(el("option", { value: task, text: task, selected: task === draft.task }));
+      taskPick.appendChild(el("option", { value: task, text: taskName(draft, task), selected: task === draft.task }));
     });
     taskPick.addEventListener("change", function () {
       var url = "/api/profile-goals?goal=" + encodeURIComponent(draft.goal.id) + "&task=" + encodeURIComponent(taskPick.value);
@@ -917,7 +924,7 @@ function renderGoalDraft(draft, container, onSaved) {
   refreshTotal();
 
   var form = el("div", { class: "profile-actions" });
-  var name = el("input", { type: "text", id: "goal-profile-name", value: draft.task ? draft.task + " tasks" : draft.goal.title });
+  var name = el("input", { type: "text", id: "goal-profile-name", value: draft.task ? taskName(draft, draft.task) + " tasks" : draft.goal.title });
   form.appendChild(el("label", { for: "goal-profile-name", text: "Name" }));
   form.appendChild(name);
   var save = button("Save as a profile", { variant: "primary" });
@@ -948,7 +955,7 @@ function renderGoalDraft(draft, container, onSaved) {
         status.textContent = (body && body.error && body.error.message) || "Could not save the profile.";
         return;
       }
-      status.textContent = "Saved. It's in the list above: pick \"Show what it changes\" for the prompt and the command that make the change.";
+      status.textContent = "Saved. It's under Your profiles and the built-in ones: pick \"Show what it changes\" for the prompt and the command that make the change.";
       toast("Profile saved.");
       if (onSaved) onSaved(body.data.id);
     });
