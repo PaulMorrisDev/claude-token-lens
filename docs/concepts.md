@@ -175,9 +175,9 @@ size. No text is kept (`context_files.py`).
   transcript, plus written again on each reply that rebuilt the cache.
   Sizes use the same four-characters-per-token approximation as the rest
   of the tool, so the cost is an estimate.
-- **Which file is which**: the Context files tab reads the files on disk
-  when you open it and matches them to the transcript records by the
-  same salted hash. A file on disk that no transcript in the window
+- **Which file is which**: Agents & context › Context reads the files on
+  disk when you open it and matches them to the transcript records by
+  the same salted hash. A file on disk that no transcript in the window
   mentions is listed as "not seen".
 - **Unused skills**: a skill counts as used when Claude invoked it, or
   a reply was attributed to it, in the window. It counts as unused once
@@ -187,7 +187,7 @@ size. No text is kept (`context_files.py`).
   trims it: `name-only` keeps just the name, and `user-invocable-only`
   or `off` drops the line.
 - **Invoked skills**: a skill's full text, once invoked, is sent again
-  after each conversation summary; the tab counts that separately from
+  after each conversation summary; the page counts that separately from
   the listing line.
 
 ## 6. Windows, what-if estimates and before/after comparisons
@@ -336,11 +336,11 @@ subagent start — never a permanent CLAUDE.md addition, and nothing at
 all while capture is off. See [`docs/capture.md`](capture.md) for the
 full catalogue. The old CLAUDE.md lines still parse exactly as above if
 you already added them, or if Claude keeps writing the markers on its
-own after capture is off. The Quick actions check "Is any agent
-struggling?" (`quick_actions._capture_fix`) reflects this: when agents
-ran in the window, none wrote a `[result: ...]` marker, capture is off
-and CLAUDE.md doesn't already have the section, it offers to turn on
-metrics capture at Essentials instead of adding the old lines; once
+own after capture is off. The check "Is any agent struggling?" on
+Actions › Checks (`quick_actions._capture_fix`) reflects this: when
+agents ran in the window, none wrote a `[result: ...]` marker, capture
+is off and CLAUDE.md doesn't already have the section, it offers to turn
+on metrics capture at Essentials instead of adding the old lines; once
 capture is on, it instead offers to remove the CLAUDE.md section if it
 is still there (`quick_actions._remove_markers_fix`), since capture
 already asks for the same markers and the section would otherwise be
@@ -363,15 +363,15 @@ moved by less than half a percentage point is **No clear change** even
 when the test says it is real: over thousands of tool calls, 0.04%
 against none is not worth acting on.
 
-**Where it shows.** The Agents tab's "Is the work going well?" section
-has every signal per agent type, then per model and effort, with each
-setup compared against the one that agent used most (across the whole
-window, so a setup used for other work or in another week can differ for
-that reason), then each agent and model whose runs were retried on a
-larger model. Setup › Settings' "Your changes and what they did" compares the
-runs of the agent a change touched (or the main session) before and
-after it. The Quick actions check "Is any agent struggling?" turns both
-into fixes.
+**Where it shows.** Agents & context › Quality's "Is the work going
+well?" section has every signal per agent type, then per model and
+effort, with each setup compared against the one that agent used most
+(across the whole window, so a setup used for other work or in another
+week can differ for that reason), then each agent and model whose runs
+were retried on a larger model. Setup › Settings' "Your changes and what
+they did" compares the runs of the agent a change touched (or the main
+session) before and after it. The check "Is any agent struggling?" on
+Actions › Checks turns both into fixes.
 
 **Privacy.** Only counts and flags are kept. Whether a message looks
 like a correction is a yes/no from a fixed phrase list; the text is
@@ -403,8 +403,8 @@ again whenever the cache rebuilds. A tag Claude writes back is priced at
 that turn's own effective output rate — fast mode and data residency
 included (`pricing.effective_rates`) — not a flat rate. `capture.usage`
 totals both, per metric and per scope, as list-price USD phrased for
-your billing mode (`units.Units.money`), and that is what the Capture
-tab and the report's `capture` section show; the levels table in
+your billing mode (`units.Units.money`), and that is what Setup ›
+Capture and the report's `capture` section show; the levels table in
 `docs/capture.md` gives only a rough size (characters / 4) for before
 you turn a level on.
 
@@ -425,7 +425,7 @@ suggestions are treated as settled rather than early (`capture.ENOUGH`):
 ...), 25 for a subagent metric (`result`, `fit`, `rules`, `agent_brief`),
 20 for a brief-start marker (`retry`, `spawn`), 15 for a tool-note metric
 (`big_output`, `web`), 20 for a free signal, 10 for a feedback answer.
-The Capture tab uses this to suggest lowering a level once a metric has
+Setup › Capture uses this to suggest lowering a level once a metric has
 collected enough.
 
 **What the tags feed directly.** `classify.classify_purpose` uses the
@@ -440,8 +440,8 @@ into tables.
 
 Turn capture on, change its level, or remove it with
 `claude-token-lens capture ...`; `docs/capture.md` lists every command,
-and the dashboard's Capture page and banner offer the same choices with
-the measured cost attached.
+and the dashboard's Setup › Capture and capture banner offer the same
+choices with the measured cost attached.
 
 ## 9. Work habits
 
@@ -452,7 +452,7 @@ loaded late...), and your own `/tl-feedback` answers and dashboard
 ratings — into ranked habits: an estimated saving, how sure it is, and
 whether you've already picked it up. Every table is always present in a
 report, empty (with a note saying why) when capture is off or nothing's
-been collected yet — the tab never disappears out from under you.
+been collected yet — a table never disappears out from under you.
 
 **Evidence and confidence.** Each habit is labelled by where its
 evidence came from: **reported** (a capture tag), **inferred** (measured

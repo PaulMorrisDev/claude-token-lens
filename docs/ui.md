@@ -1,338 +1,847 @@
-# v0.2 web UI
+# The dashboard
 
-The service's UI is `static/index.html`, `app.css` and a set of native
-ES modules with `app.js` as the entry point (see "Modules" below), served
-by the same `http.server` process as the JSON API described in
-[`docs/api.md`](api.md). Plan Milestone v0.2: "no framework, no CDN,
-inline SVG charts, `prefers-color-scheme` dark."
+The dashboard is the service's web page: `static/index.html`, `app.css`
+and a set of native ES modules with `app.js` as the entry point. The
+same `http.server` process serves it and the JSON API in
+[`docs/api.md`](api.md), on `http://localhost:8765` by default.
 
-## Constraints (binding on every file under `static/`)
+This document says what the dashboard is for, the rules every file under
+`static/` keeps, and how each part works. The code is the final word:
+where this page and the code disagree, fix this page.
 
-- **No framework.** Plain DOM APIs (`document.createElement`,
-  `fetch`, `addEventListener`). No React/Vue/htmx/jQuery, no build
-  step, no bundler — `static/` is served as-is.
-- **Native ES modules.** `index.html` loads
-  `<script type="module" src="/static/app.js">`, which imports the
-  other first-party modules with static `import` statements only (no
-  `import()`, which the forbidden-substring scan rejects). The module
-  graph has no cycles: a module that needs to open another view calls
-  `core.js`'s `goTo`, which `app.js` wires to its router, and `api.js`
-  redraws the sidebar's status line through `figures.notify` rather
-  than importing `shell.js`. `tests/test_service_static.py` checks every
-  module imports what it uses from another module, that every import
-  names a real export, and that there is no cycle. The service serves
-  `.js` as `text/javascript` (pinned in `api.py`, not left to
-  `mimetypes`), because a module script with the wrong type fails to
-  load under `X-Content-Type-Options: nosniff`.
-- **No CDN, no external reference of any kind.** Same rule
-  `render/html.py`'s module docstring already enforces for the CLI's
-  standalone HTML report: no `<script src>`/`<link href>` pointing
-  off-origin, no `@import`, no bare `http://`/`https://` literal in any
-  first-party file, and `url(...)` only for a vendored font
-  (`/static/fonts/`) or an in-page `#` fill. Everything the page needs
-  ships in the repo and is served by the same process. A test mirroring
-  `tests/test_render.py::test_html_has_no_external_references` greps
-  every first-party file directly in `static/` for those substrings.
-- **Vendored, pinned third-party files.** `static/vendor/` holds d3
-  7.9.0 and `static/fonts/` holds Inter and JetBrains Mono, each with
-  its licence. `static/THIRD_PARTY.sha256` pins every one of them, and
-  each name carries its release, so a new release is a new URL.
-  `tests/test_static_vendor.py` checks the hashes and that nothing
-  unlisted is there. It also checks that `.gitattributes` keeps git
-  from rewriting them, and that the wheel ships them. Nothing is
-  fetched at runtime. Chart code reaches d3 only through `d3.js` (`import d3 from "./d3.js"`), and
-  never calls d3's CSV/TSV parsers, which build code with
-  `new Function` and so fail under `script-src 'self'`.
-- **Inline SVG charts.** Every chart is `<svg>` built in the page by
-  d3 from the JSON the API already returns, through `renderChart` in
-  `charts-types.js` (see "Charts"); the grid's inline bars stay plain
-  elements. Colours come from the `--chart-*`, `--div-*` and ink
-  tokens, so each has a dark-mode value.
-- **Design tokens, light and dark.** `app.css` opens with every
-  colour, type size, space, radius, shadow, layer and motion value as
-  a custom property on `:root`. Dark values are declared twice with the
-  same content: under `@media (prefers-color-scheme: dark)` guarded by
-  `:root:not([data-theme="light"])`, and under
-  `:root[data-theme="dark"]`. `theme-boot.js`, a classic script in
-  `<head>`, sets `data-theme` from `localStorage` before the first
-  paint, so a chosen theme never flashes the other one first.
-  `tests/test_ui_tokens.py` checks that the two dark blocks declare
-  the same values, shadows included.
-  It checks that every text/surface pair reaches 4.5:1 in both themes,
-  and every focus ring and control outline 3:1. It also checks that
-  motion has a `prefers-reduced-motion` alternative, and that no card
-  uses a thick side stripe as a colour cue, in any spelling: a side
-  border, a logical border or an inset shadow. The CLI's standalone HTML
-  report keeps its own palette (`render/html.py`'s `_STYLE`).
-- **One focus ring.** A global `:focus-visible` rule draws a 2px ring
-  in `--focus` on every focusable element; nothing removes it.
-- **Forced colours.** Under Windows High Contrast
-  (`@media (forced-colors: active)`) the system's colours replace the
-  theme, and app.css keeps the dashboard readable in them. Charts keep
-  their own colours (`forced-color-adjust: none` on `.chart-svg`,
-  `.sparkline` and `.swatch`): a mark's colour and hatching are what
-  the legend names, and the system's few colours can't keep the series
-  apart. Axis text, labels and rules take CanvasText, gridlines
-  GrayText, a linked rule label LinkText, and the chart's keyboard
-  cursor and brush Highlight. Focus rings are Highlight. Chips, tiles,
-  panels, menus, popovers, the drawer, tooltips and toasts keep a
-  CanvasText border, the status dot is CanvasText, and a meter's lit
-  segments are filled while the rest are outlined.
-- **Icons are inline SVG.** `icons.js` draws every icon on a 16px grid
-  in `currentColor`. The static scans ban emoji, arrow and check-mark
-  characters, so those glyphs are icons too. Status is always an icon
-  and a label, never colour alone, and each icon keeps one meaning:
-  the octagon (`critical`) means act on this ("Do this", a check's
-  "Worth a look"), the triangle (`warning`) means worth considering,
-  the circled check (`success`) means nothing to do, and the circled i
-  (`info`) is for your information. A recommendation's severity chip
-  sits inside its heading, so a screen reader moving by headings hears
-  the severity before the title.
-- **One number format.** `format.js` owns every rule, so the same
-  value reads the same on every page:
-  - money: 2 decimals under 10, 1 under 100, none above ("$12.34",
-    "$56.7", "$1,962"), and "<$0.01" for a positive amount that rounds
-    to nothing;
-  - shares: 1 decimal ("12.4%");
-  - tokens: 3 significant figures, compacted ("1.24M"), with the full
-    count in the cell's tooltip;
-  - durations: "2h 14m";
-  - times: one absolute form ("2026-09-23 10:44 UTC", `shortTs`), and
-    "5 min ago" (`relativeTime`) where freshness is the point, with the
-    absolute time on hover;
-  - a signed percentage goes through `signedPercent`: "+12%", or a true
-    minus sign (U+2212), which is as wide as the plus, so signed
-    columns line up.
-- **Amounts follow the billing mode.** Every amount outside a grid goes
-  through `money`, `moneyText`, `moneyNode` or `moneyParts` (the
-  `units.Units.money` mirror): dollars on the API, a share of the
-  weekly limit on Pro or Max when the service can work one out, and the
-  list-price equivalent otherwise. A grid's money column stays a plain
-  number, sortable, with its unit once in the header (`moneyUnit`: "$",
-  or "list-price $" on a plan). The service writes an amount the CLI's
-  way ("1,962.05 USD"); `fetchJson` runs every response through
-  `readableAmounts`, so its text reads "$1,962.05" like the
-  dashboard's own, and a unit in a label reads "($)". Another pricing
-  currency reads the same both ways ("12.34 EUR"). No page writes
-  "USD" itself (`tests/test_ui_copy.py`).
-- **Readable names.** A project slug (`C--Dev-claude-token-lens`) reads
-  as its folder (`projectName`: "claude-token-lens"). It drops the
-  drive, a Windows home folder and the one parent folder your projects
-  share, and names a worktree after its project ("claude-token-lens /
-  ui-redesign"). The full slug stays in the tooltip. A slug can't tell
-  a folder's hyphen from a path separator, so the name is a best guess.
-  A long name ends in an ellipsis rather than wrapping inside a grid
-  cell.
-- **No inline secrets, no auth token in the DOM or a cookie.** The
-  service has no login — it binds to localhost and relies on that for
-  access control (plan: "port bound to localhost only"), so there is
-  nothing to store client-side beyond per-viewer UI state, never data
-  the server should be the source of truth for. The `localStorage`
-  keys are `tls:view` (the last view shown), `tls:window` (chosen
-  window), `tls:sort:<table>` (a table's sort), `tls:cols:<table>` (the
-  columns chosen for a wide table), `tls:theme` (`light` or
-  `dark`; anything else follows the system), `tls:sidebar` (`rail` or
-  `full`) and the capture banner's `tls:captureNotesHidden`. Two older
-  keys are read once: `tls:activeTab` (the old tab bar's last tab,
-  opened as its view and then removed) and `tls:overviewWindow`, when
-  `tls:window` is unset. The picked project is never stored: it lives in
-  the address only (`?project=`), so a filter never outlives the visit
-  that chose it and quietly narrows the next one.
+## Purpose and constraints
+
+The dashboard answers one question first: what should I change next to
+spend fewer tokens? Every page after the Overview is the evidence behind
+that answer. It reads your Claude Code history on this machine and never
+changes Claude Code itself.
+
+### Constraints (binding on every file under `static/`)
+
+- **No framework and no build step.** Plain DOM APIs
+  (`document.createElement`, `fetch`, `addEventListener`), no bundler or
+  transpiler. `static/` is served as it is in the repo.
+- **Native ES modules.** `index.html` loads the classic `theme-boot.js`
+  in `<head>`, then `<script type="module" src="/static/app.js">`.
+  Imports are static only (the scan rejects `import()`) and never form a
+  cycle: a module opens another view through `core.js`'s `goTo`, which
+  `app.js` wires to its router. `.js` is sent as `text/javascript`, as a
+  module needs under `nosniff`.
+- **A strict Content Security Policy.** Every response carries
+  `default-src 'self'; img-src 'self' data:; style-src 'self'
+  'unsafe-inline'; script-src 'self'`. So there are no inline script
+  bodies and no code built from strings.
+- **No external reference.** No off-origin `<script src>` or
+  `<link href>`, no `@import`, and no bare `http://` or `https://`
+  literal in a first-party file. `url(...)` names only a vendored font
+  or an in-page `#` fill. The CLI's HTML report keeps the same rule
+  (`render/html.py`).
+- **Vendored, pinned third-party files.** `static/vendor/` holds
+  `d3-7.9.0.min.js`; `static/fonts/` holds `InterVariable-4.1.woff2` and
+  JetBrains Mono 2.304 Regular and Medium, each with its licence.
+  `static/THIRD_PARTY.sha256` pins them all, and each name carries its
+  release, so a new release is a new address. They are sent with
+  `Cache-Control: public, max-age=31536000, immutable`; every other
+  response is `no-store`. `.gitattributes` keeps git from rewriting their
+  bytes, and the wheel ships them. Nothing is fetched at runtime.
+- **One door to d3.** Chart code reaches d3 only through `d3.js`
+  (`import d3 from "./d3.js"`), a small shim over the vendored file.
+  Nothing calls d3's CSV or TSV parsers: they build code with
+  `new Function`, which `script-src 'self'` refuses.
+- **No Apply button.** Every fix is a prompt to paste into Claude Code or
+  an `apply ... --dry-run` command to run yourself, each with a Copy
+  button. `button()` refuses a label that starts with "Apply". The
+  dashboard writes only this tool's own things: profile files, session
+  tags and ratings in its store, and the `[capture]` table in its
+  `config.toml` (Setup › Capture).
+- **Amounts follow the billing mode.** Dollars on the API. On Pro or Max,
+  a share of the weekly usage limit when the service can work one out,
+  else the list-price equivalent. See "One number format" and
+  [`docs/writing-help.md`](writing-help.md), "Amounts".
+- **Privacy.** The service binds to localhost and has no login, so the
+  page stores no token and sets no cookie. File text (CLAUDE.md sections,
+  skill descriptions) is fetched when a drawer asks and never stored. No
+  page shows a transcript path.
+
+### Browser storage
+
+`localStorage` holds per-viewer choices only, never data the server
+owns. The helpers in `core.js` catch every error, so a private window or
+blocked storage still works.
+
+| Key | Holds |
+|---|---|
+| `tls:view` | the last view shown, opened when the address names none |
+| `tls:window` | the chosen window |
+| `tls:theme` | `light` or `dark`; missing means follow the system |
+| `tls:sidebar` | `rail` or `full` |
+| `tls:sort:<table>` | a table's sort |
+| `tls:cols:<table>` | the columns chosen for a wide table |
+| `tls:captureNotesHidden` | when the capture banner's notes were dismissed, and which |
+
+Two older keys are read once: `tls:activeTab` (the old tab bar's last
+tab, removed after) and `tls:overviewWindow` when `tls:window` is unset.
+The picked project is never stored. It lives in the address only
+(`?project=`), so a filter never quietly narrows the next visit.
+
+## The design system
+
+`app.css` opens with every colour, type size, space, radius, shadow,
+layer and motion value as a custom property on `:root`. Nothing below
+the token blocks uses a raw colour.
+
+### Colour
+
+Light values are on `:root`. Dark values are declared twice with the
+same content: under `@media (prefers-color-scheme: dark)` guarded by
+`:root:not([data-theme="light"])`, and under `:root[data-theme="dark"]`.
+`color-scheme: light dark` lets form controls and scrollbars follow.
+
+| Token | Light | Dark | Used for |
+|---|---|---|---|
+| `--surface-canvas` | `#fbfbfc` | `#121316` | the page behind everything |
+| `--surface-sidebar` | `#f3f4f6` | `#0e0f12` | the sidebar |
+| `--surface-panel` | `#ffffff` | `#18191d` | panels, tiles, the grid |
+| `--surface-raised` | `#ffffff` | `#1f2025` | menus, popovers, tooltips, toasts, the drawer, search |
+| `--surface-sunken` | `#f3f4f6` | `#0c0d10` | code, command blocks and other wells |
+| `--surface-hover` | `#f1f2f5` | `#202127` | a row or item under the pointer |
+| `--border-subtle` / `--border` | `#e8e9ed` / `#dcdee3` | `#23252b` / `#2e3037` | hairlines and panel edges |
+| `--border-control` | `#858b97` | `#6a707c` | inputs and checkboxes (3:1) |
+| `--ink-1` / `-2` / `-3` | `#16181d` / `#4a4f5a` / `#626875` | `#ecedf0` / `#b3b7c1` / `#8d929e` | text, strongest to quietest |
+| `--accent` / `--accent-ink` | `#5e6ad2` / `#4b53c4` | `#7c86ee` / `#9aa2f6` | the one accent, and links |
+| `--accent-soft` / `--on-accent` | `#eef0fc` / `#ffffff` | `#23264a` / `#0e0f12` | the selected item; text on the accent |
+| `--focus` | `#5e6ad2` | `#7c86ee` | the focus ring |
+| `--good`, `--warn`, `--serious`, `--critical` | `#16734a`, `#8a5a00`, `#b4461c`, `#b42323` | `#4cc38a`, `#e6b04a`, `#f08a5d`, `#f07070` | status, always with an icon and a word |
+| `--*-soft` | pale tints | dark tints | status backgrounds for callouts and chips |
+| `--chart-1` to `--chart-8` | `#2a78d6` ... `#e34948` | `#3987e5` ... `#e66767` | chart series, fixed per entity |
+| `--chart-other` | `#8d929e` | `#6a707c` | anything without its own slot |
+| `--seq-100` to `--seq-700` | pale to deep blue | deep to pale blue | a heat grid's tint |
+| `--div-neg`, `--div-mid`, `--div-pos` | red, grey, blue | the same, darker | the diverging chart |
+| `--grid-line`, `--axis-line` | `#eceef1`, `#c9ccd3` | `#26282e`, `#3a3d45` | chart gridlines and axes |
+| `--backdrop` | ink at 32% | black at 50% | behind the drawer and search |
+
+Every text and surface pair reaches 4.5:1 in both themes, and every
+focus ring and control outline 3:1 (`tests/test_ui_tokens.py`).
+
+### Themes
+
+`theme-boot.js`, a classic script in `<head>`, reads `tls:theme` before
+the first paint and sets `data-theme` on `<html>` to `light`, `dark` or
+`system`. So a chosen theme never flashes the other one first. The
+header's toggle cycles system, light, dark; picking system removes the
+key. Search has the same three as commands. The CLI's HTML report keeps
+its own palette (`render/html.py`'s `_STYLE`).
+
+### Type
+
+Inter is the sans face and JetBrains Mono the mono face, both vendored.
+Each has a local fallback with metric overrides ("Inter Fallback" is
+Arial at 107.12%), so the swap on load doesn't move the layout. Body
+text is 14px on 1.55, with Inter's `cv11` and `ss01` and optical sizing.
+Table numbers use `tnum` and `zero`, so digits line up. Titles use
+`text-wrap: balance`, prose `pretty`, and prose stops at 72 characters
+(`--measure`). Weights are 400, 500 and 600 only.
+
+| Token | Size | Where |
+|---|---|---|
+| `--text-xs` | 11px | chart axis text, the Actions count, search's group labels |
+| `--text-sm` | 12px | chips, table headers, notes, legends, tooltips, the status line |
+| `--text-md` | 13px | tables, menus, popovers, toasts, the sidebar's pages, `h4` |
+| `--text-base` | 14px | body text, `h3` |
+| `--text-lg` | 16px | `h2` |
+| `--text-xl` | 18px | the Overview's summary sentence |
+| `--text-2xl` | 20px | the page title (`h1`, -0.011em tracking) |
+| `--text-3xl` | 28px | a tile's value |
+
+### Space, radius, elevation and layers
+
+- **Space:** `--space-1` to `--space-12` are 2, 4, 6, 8, 12, 16, 20, 24,
+  32, 40, 48 and 64px. Sections sit 40px apart with a hairline between.
+- **Radius:** `--radius-xs` 4px, `-sm` 6px, `-md` 8px, `-lg` 12px,
+  `-full` 999px.
+- **Elevation:** `--elev-1` (a 1px hint on panels), `--elev-2` (menus,
+  popovers, toasts and tooltips) and `--elev-3` (the drawer and search).
+  In dark mode the shadows are black at 20%, 28% and 40%, and the
+  lighter surfaces carry the depth.
+- **Layers,** lowest first: `--z-sticky` 10 (a tall grid's header),
+  `--z-sidebar` 20, `--z-topbar` 30 (the page header), `--z-popover` 40
+  (menus and popovers), `--z-backdrop` 50, `--z-drawer` 60, `--z-palette`
+  70 (search), `--z-toast` 80, `--z-tooltip` 90.
+
+### Focus
+
+One global rule draws the ring:
+`:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px }`.
+Table cells and rows use a -2px offset, so the ring stays inside the
+grid's box. Nothing removes it.
+
+### Motion tokens
+
+Durations: `--dur-instant` 80ms (a press), `--dur-fast` 140ms (menus,
+popovers, tooltips), `--dur-base` 200ms (toasts), `--dur-drawer` 240ms,
+`--dur-page` 220ms and `--dur-page-out` 120ms (a view in and out),
+`--dur-chart` 600ms and `--dur-count` 700ms. Easings: `--ease-out`
+`cubic-bezier(0.16, 1, 0.3, 1)` for arriving, `--ease-in`
+`cubic-bezier(0.7, 0, 0.84, 0)` for leaving, `--ease-inout`
+`cubic-bezier(0.65, 0, 0.35, 1)` for moves. See "Motion".
+
+### Icons
+
+`icons.js` draws every icon as inline SVG on a 16px grid in
+`currentColor` (`icon(name, opts)`). The scans ban emoji, arrow and
+check-mark characters, so those glyphs are icons too. Status is always
+an icon and a word, and each icon keeps one meaning: the octagon
+(`critical`) means act on this ("Do this", a check's "Worth a look"),
+the triangle (`warning`) worth considering, the circled check
+(`success`) nothing to do, and the circled i (`info`) for your
+information. A recommendation's severity chip sits inside its heading,
+so a screen reader moving by headings hears it before the title.
+
+### One number format
+
+`format.js` owns every rule, so a value reads the same on every page.
+
+| Kind | Rule | Example |
+|---|---|---|
+| Money | 2 decimals under 10, 1 under 100, none above; "<$0.01" for a tiny positive amount | "$12.34", "$56.7", "$1,962" |
+| Share | 1 decimal | "12.4%" |
+| Tokens | 3 significant figures, compacted, full count in the tooltip | "1.24M" |
+| Duration | hours and minutes | "2h 14m" |
+| Time | one absolute form (`shortTs`), or relative where freshness matters (`relativeTime`, absolute on hover) | "2026-09-23 10:44 UTC", "5 min ago" |
+| Signed change | `signedPercent`, with a true minus sign (U+2212) as wide as the plus | "+12%", "−3%" |
+
+Every amount outside a grid goes through `money`, `moneyText`,
+`moneyNode` or `moneyParts`, the mirror of `units.Units.money`. A grid's
+money column stays a plain, sortable number with its unit once in the
+header (`moneyUnit`: "$", or "list-price $" on a plan). The service
+writes amounts the CLI's way ("1,962.05 USD"); `fetchJson` runs every
+response through `readableAmounts`, so it reads "$1,962.05", and a unit
+in a label reads "($)". Another currency reads the same both ways
+("12.34 EUR"). No page writes "USD" itself.
+
+### Readable names
+
+A project slug (`C--Dev-claude-token-lens`) reads as its folder
+(`projectName`: "claude-token-lens"). It drops the drive, a Windows home
+folder and the one parent your projects share, and a worktree reads
+after its project ("claude-token-lens / ui-redesign"). The full slug
+stays in the tooltip. A slug can't tell a hyphen from a path separator,
+so the name is a best guess. Model ids read as names (`modelName`). A
+long name ends in an ellipsis rather than wrapping in a grid cell.
+
+## Navigation
+
+### Pages and segments
+
+The sidebar lists seven main pages, then two at its foot. A page with
+more than one part shows them as segments: a segmented control beside
+the page title. Each page, or page and segment, is a *view* with its own
+address. `PAGES` in `links.js` is the one list; the sidebar, the router,
+search and the README's page table all follow it.
+
+| Page | Segments | Window |
+|---|---|---|
+| Overview | none | follows |
+| Actions | Recommendations, Checks | follows |
+| Spend | Usage, Savings, Sessions | follows |
+| Cache | Rebuilds, Lifetime (TTL) | follows |
+| Agents & context | Subagents, Quality, Context | follows |
+| Work habits | none | follows |
+| Setup | Settings, Profiles, Capture | follows, except Capture |
+| Data quality (foot) | none | follows |
+| Glossary (foot) | Terms, How costs work | follows, except Terms |
+
+That makes eighteen views. In text a place is written "Page › Segment"
+with U+203A (`viewLabel`), such as "Spend › Sessions".
+
+### The sidebar
+
+216px wide, 232px from 1440px. It holds the brand, the main pages with
+an icon each, and on Actions a count of "Do this" recommendations for
+the window and project. The foot holds Data quality, the Glossary and
+the status line. A toggle narrows it to a 56px rail of icons
+(`tls:sidebar`), where each page's name is a tooltip on hover and on
+focus. Below 1024px it is always the rail and the toggle hides. A "Skip
+to the page" link before the sidebar moves focus to the page title
+(`#page-title`, the one `h1`).
+
+**The status line** gives the service's state in words beside a dot: Up
+to date, Scanning your history, Last scan failed, Not updating, or Can't
+reach the service. Under it: when the last scan finished; "Figures as
+of", the time of the oldest figures drawn (`X-Figures-As-Of`); the
+capture level as a link to Setup › Capture ("Capture: off" when off);
+and "claude-token-lens <version>. Your data stays on this machine."
+
+### The page header
+
+The header stays pinned while the view scrolls, with a hairline once
+content passes under it (`.is-stuck`, from an `IntersectionObserver` on
+a sentinel). Left to right: the page title and its segments; **Search**
+with its shortcut "Ctrl K" (added by `palette.js`); the project picker;
+the window picker; the theme toggle.
+
+Both pickers are one component, `menuControl` in `app.js`: a menu button
+with radio rows. Up, Down, Home and End move through it, and a row's
+first letter jumps to it. Esc closes it and gives focus back; Tab or a
+click outside closes it.
+
+### Addresses
+
+```
+#/<page>[/<segment>][?w=<window>&project=<slug>&id=&t=&row=&term=&card=&day=&split=]
+```
+
+`formatHash` writes `w` first, then `project` (left out for all
+projects), then the rest in alphabetical order. `parseHash` accepts ids
+of lower-case words joined by hyphens.
+
+| Parameter | Means |
+|---|---|
+| `w` | the window: `1h`, `today`, `24h`, `7`, `30`, `90`, `all` or `change` |
+| `project` | the one project shown; absent for all projects |
+| `id` | the inbox item picked: a recommendation's `key` (its id, plus the agent type for a per-agent rule) or a check id |
+| `t`, `row` | a report table (`section.table`) and the row to open at |
+| `term`, `card` | a glossary term or a How costs work card |
+| `day` | a UTC day: Spend › Sessions lists its sessions, Setup › Settings pulses its change |
+| `split` | `model` on Spend › Usage's daily chart; absent means by agent |
+
+**The router** (`app.js`) reads the address on load and on every
+`hashchange`. Every in-app link goes through `goTo`, which adds one
+history entry, so Back, Forward and bookmarks work. An address missing
+the segment or window is rewritten in place to the full form. A page
+named alone opens the segment last used there in this visit, else its
+first. An address naming no view opens `tls:view`, else the Overview.
+Picking an inbox item or a picker's choice rewrites the address in place
+(`replaceParams`), so it always names what is on screen. A view hears a
+new `id` through `onParams`, so a link to the view already open selects
+without redrawing. Every address written carries the window and project
+(`scopeParams()`).
+
+A view is drawn the first time it is opened and kept until the window or
+project changes. Views have no background poll. `history.scrollRestoration`
+is `manual`: each view keeps its scroll for Back and Forward, and a link
+to another view opens at the top.
+
+**From the old tab bar.** The first visit after the tab bar was replaced
+opens the view its last tab maps to in `OLD_TAB_VIEWS` (`quick` to
+Actions › Checks, `diagnostics` to Data quality, `config` to Setup ›
+Settings, and so on). `tls:activeTab` is then removed.
+
+### The window picker
+
+Its choices (`WINDOW_OPTIONS`) are Last hour, Today, Last 24 hours, Last
+7, 30 or 90 days (30 by default), All time, and Since my last change.
+
+- It is sent to every report-backed route as `window=<name>` or
+  `window_days=N` (`withWindow()`), carried as `?w=`, and kept in
+  `tls:window`.
+- A change drops every drawn view that follows the window and redraws
+  the one on screen, so no view keeps old numbers. It keeps `id` and
+  drops `t` and `row`.
+- The menu's note: a window counts every session with a reply in it, in
+  full, so a long session that started earlier counts whole.
+
+A view has one of three window modes (`windowMode`). It *follows* the
+window by default. A segment marked `window: false` is *fixed*: the
+pickers hide and the chip "The window doesn't apply here" takes their
+place. Setup › Capture and Glossary › Terms are fixed. A page without
+segments marked the same way would show neither; none ships.
+
+Some panels on views that follow the window cover all history. The
+rebuild counts on Cache › Rebuilds carry an "All time" chip ("All time,
+all projects" while a project is picked). On Setup › Settings, "Your
+changes and what they did", the estimates check and the baseline cover
+all history too.
+
+### The project picker
+
+All projects (the default), then every project with a session in the
+window, the most expensive first (`report.meta.projects` from the
+all-projects report, `loadProjects()`).
+
+- Each row reads as its folder, cut to 42 characters with both ends
+  kept, with the full slug on hover. A project with no session in the
+  window stays listed, marked "No sessions in this window".
+- Picking one sends `project=<slug>` with every window-aware request
+  (`withWindow()`, and `withProject()` for the Overview's previous
+  period), and the button keeps the accent (`.is-filtered`). It lives in
+  the address only and hides wherever the window picker does.
+- An unknown project in the address (an old bookmark, a moved folder) is
+  checked once (`checkProject`, asking `/api/sessions?limit=1&project=`).
+  The dashboard then shows every project, and a toast says why.
+- Panels that cover every project whatever the picker says carry an
+  "All projects" chip while one is picked: Settings' changes, estimates
+  and baseline, and Cache › Rebuilds' causes.
+
+### Banners
+
+**The health banner** sits under the page header, from `/api/health`.
+`pollHealth()` asks every 3 seconds while `status` is `"starting"` and
+every minute otherwise. The banner hides while the status is `"ok"`.
+Otherwise it shows the route's `message`: the first scan's progress with
+a bar, or a warning with the restart command when `"degraded"` or
+`"stale"`. When a scan finishes, the banner and the status line offer
+**Redraw figures**, which drops every drawn view and the report cache
+and redraws the view on screen. Views never redraw under the reader.
+
+**The capture banner** sits under it (`#capture-banner`,
+`role="status"`). It gets `/api/health`'s `capture` block and fetches
+`/api/capture` when that changes, or every five minutes. It shows only
+when there is something to act on: the end time has passed, a hook
+entry is missing, no notes have been seen, Claude tags too few messages,
+enough has been collected to lower the level, or capture's weekly cost
+can be weighed against what depends on it. It also carries the
+`/tl-feedback` reminder while that item is on, and the `capture feedback
+on` or `capture brief on` command while a skill's file needs installing.
+It leads with a headline ("Metrics capture: Essentials · since <date> ·
+N tokens · <amount> (x% of spend) · tagged on P% of messages") and links
+to Setup › Capture and Work habits. **Dismiss for a week** hides the
+notes until they change.
+
+**The logon warning** shows on the Overview and Data quality when
+`/api/health` says the service won't start at logon
+(`renderLogonNotice`).
+
+## Pages
+
+Each view opens with its one-line intro from `PAGES` (`viewIntro`).
+
+### Overview
+
+**Answers:** "What should I change next?"
+
+1. **The summary sentence** (18px): what the window cost, the change on
+   the period of the same length before, and what the changes worth
+   making come to, in the billing mode ("you spent $2,663", or "you used
+   about 38% of your weekly usage limit"). The previous period comes
+   from `/api/summary?since=&until=`, so a change compares a summary
+   with a summary. "All time" and "Since my last change" have none.
+   Other forms cover no sessions in the window or project, no change
+   recorded yet, and, before any session is read, **What Token Lens
+   does for you** (saying the first scan is running while
+   `scan.scanning` is true).
+2. **Four tiles**, each linking to its page: Spend, with its change and a
+   daily sparkline; Available saving, the four ways to save plus any
+   priced action no lever counts, marked "At most" because they overlap
+   (never less than any one action); Saved by the cache (`cache_saved`,
+   an estimate); and Sessions, with the subagent runs.
+3. **Daily spend** (chart 1) with your settings changes from
+   `/api/impact` as labelled rules. A day opens Spend › Sessions and a
+   change Setup › Settings. Beside it from 1440px (under it at 1280px),
+   **Next best actions**: the top five recommendations, each with its
+   severity, title, saving and a Copy prompt button. Side by side, the
+   chart grows from 300px to 560px to the actions' height
+   (`setChartHeight`), so neither panel ends in a blank band.
+4. **How your setup scores**: the overall level, set by the lowest area,
+   then the five scorecard areas as meters (5 and 4 good, 3 fair, 2 poor,
+   1 very poor, 0 not measured). Each says what its number means, which
+   way is better, where to look, and below 5 "What moves it:" with a
+   recommendation from this window.
+5. **Totals, and how amounts are counted** (folded): the billing mode and
+   why (`report.meta`), and `overview.totals`.
+
+Every load starts at once; the drawing waits for the report, which sets
+the billing mode. A newer draw drops an older one's answers.
+
+### Actions › Recommendations
+
+**Answers:** "Which changes are worth making, and how do I make them?"
+
+An inbox from `/api/recommendations`: the list (360px, in view while the
+detail scrolls) and the one picked.
+
+- **Filters** narrow the list by importance (Do this, Worth considering,
+  For your information) and by area (Models, Cache, Context, Agents,
+  Habits, Data and settings), each with its count. The area comes from
+  `RULE_AREA` in `page-actions.js`.
+- **Groups.** A rule that fires per agent type (`ttl-switch`, `spawn-*`
+  and the rest) is one item for all of them ("7 agent types are sent
+  your CLAUDE.md files every time they start").
+- **The detail** has the severity chip inside the `h2`, then chips for
+  who it's for, its area and where the change lands. **How this saves
+  you money** gives what it costs now, what the change does to the price
+  with your multiplier ("Reading from the cache costs a tenth of the
+  input price"), and the saving with its basis chip. **What to do** gives
+  the action, with a table when there is more than one change; in a
+  group, picking a row shows that agent's change. Then the fixes as
+  command blocks (a `scope: "managed"` card says your organisation's
+  policy sets it), **The numbers behind this** as evidence links, and
+  **The check this answers**.
+- A notice above the inbox says the figures are provisional while a
+  baseline capture window is open. An id the window doesn't have opens
+  the first item with a note.
+
+### Actions › Checks
+
+**Answers:** "For each way of saving tokens, is there anything to do?"
+
+`/api/quick-actions` in the same inbox. Each check is a question with a
+status (Worth a look, Nothing to do, Not enough data), filtered by
+status. The detail gives why it matters and the answer, then loads
+`/api/quick-actions/<id>`: **The numbers**, the fixes, **Habits that
+help**, and **The recommendation it leads to**. A check with not enough
+data says why. The same checks run as `claude-token-lens check`.
+
+### Spend › Usage
+
+**Answers:** "Is spend rising, and on what?"
+
+Chart 1 with **Split by**: main session and subagents, or model tier
+(`?split=model`, kept through a window change and a visit elsewhere). A
+day leads to its sessions and a change marker to what it did. Then cost
+by model (`overview.by_model`, placed by `TABLE_PAGE_MAP`), the
+`usage`, `elasticity`, `compactions` and `phases` sections, and
+`/api/compactions`, newest first. `elasticity` shows only under
+subscription billing with usage-limit readings.
+
+### Spend › Savings
+
+**Answers:** "Which change saves the most, and how sure is it?"
+
+Chart 2 heads the page: the four ways to save side by side, hatched
+unless measured. A bar leads to the row its figure comes from. Then four
+sections, each from its own route rather than the full report:
+
+- `/api/carry`: what tool output kept in context costs, and what a cap
+  would save;
+- `/api/compaction-sim`: the conversation-summary sweep, the best size
+  per agent type and the fidelity check, with chart 3;
+- `/api/model-swap`: the most a one-tier-cheaper model could save;
+- `/api/waste`: spend on replies whose output was never used.
+
+Their recommendations show on Actions › Recommendations, not here.
+
+### Spend › Sessions
+
+**Answers:** "Which sessions were expensive, and why?"
+
+Chart 4 plots every session in the window (the newest 2,000 at most,
+with a note when there are more) by start time and cost on a log scale,
+coloured by work mode. Dragging across it, or Shift with the arrow keys,
+lists only the sessions that started then. A `?day=` lists the sessions
+active that UTC day. A line above the list says what it is narrowed to,
+with **Show all sessions**. A row and its dot light up together. The
+report's `sessions` section follows.
+
+**Detail:** a row, Enter or a dot opens the session drawer
+(`openSessionDrawer`, from `/api/session/<id>`): a summary; **Why was
+this session expensive?** (`/explain`); "Mode override" and "Purpose
+override" with **Save tags**; **Rate this session** while the dashboard
+rating is on; chart 5; and **Transcripts**, with no path. Chart 5 draws
+context size over turns with a marker shape per event (cache rebuild,
+conversation summary, subagent start, your message). Usage-limit events
+sit in lanes above, placed by time because they fall between turns. It
+says so when there is no stored transcript digest, or when the service
+thinned a long session (`truncated`).
+
+### Cache › Rebuilds
+
+**Answers:** "Why did Claude Code rebuild the cache, and what did it
+cost?"
+
+**What the cache does for you**: three tiles, each with its price
+multiplier from `report.meta.rates` and a link to its card in Glossary ›
+How costs work. What cache reads saved (an estimate); what avoidable
+rebuilds cost and how many rebuilds that covers, leaving out the
+usage-limit pause as the cost does (`avoidableRebuilds`, shared with the
+Glossary); and how many agent types a 1-hour lifetime would help. Then
+`/api/recache`'s rebuilds by cause (expired while idle, invalidated by a
+change, expired during a usage-limit pause), for all time. Then the
+`recache` and `limits` sections for the window; `recache` draws chart 6.
+
+### Cache › Lifetime (TTL)
+
+**Answers:** "Would a 1-hour cache lifetime pay for itself?"
+
+`/api/ttl`, with chart 7 over its tables: observed and simulated cost
+per agent type, the 5-minute or 1-hour recommendation and its fidelity,
+as the CLI's `ttl` command shows them.
+
+### Agents & context › Subagents
+
+**Answers:** "What do my subagents cost, and what are they given?"
+
+The `agent_startup` and `agents` sections. `agent_startup` draws chart
+8. Then cost per run, skills and MCP cost, effort, and what each agent
+never used.
+
+### Agents & context › Quality
+
+**Answers:** "Is the work going well?"
+
+The `quality`, `workflows` and `workstyle` sections. `quality` comes
+first: signals per agent type, then per model and effort against the
+setup that agent used most ([concepts](concepts.md#7-quality-signals)),
+then **Agent runs retried on a larger model** and **Why agents were run
+again**. The per-agent grid is a heat grid (`TINT_TABLES`): each share
+is shaded against its column's largest, with the value shown.
+
+### Agents & context › Context
+
+**Answers:** "What does Claude read at the start, and what can go?"
+
+- **CLAUDE.md files** (`/api/claude-md`): one row per file with who reads
+  it, its size, how often it was sent, the cost and its fixes. A row
+  opens a drawer (`/api/claude-md/<id>`): sections by size, duplicates,
+  stale references and fix prompts.
+- **Skills** (`/api/skills`): the listing's size and cost, one fix that
+  hides every unused skill when there are two or more, and a grid with
+  "Show only skills Claude never used". A row opens a drawer with the
+  skill's description, facts and fixes.
+- The `context_budget` section.
+
+The terminal equivalent is `claude-token-lens review claude-md|skills`.
+
+### Work habits
+
+**Answers:** "Which ways of working would save the most?"
+
+The `habits` section: the **Weekly pace** digest; **Habits worth
+trying** as cards (saving a week, what your sessions show, an example to
+copy, how often it was seen, its source, confidence, a weekly pace line
+and how the saving is worked out); the brief templates with Copy
+buttons; **Kinds of task**; the other breakdowns under More tables; and
+the notes. Nothing here changes a setting.
+
+### Setup › Settings
+
+**Answers:** "What did my changes do, and what is set where?"
+
+1. **Your changes and what they did** (`/api/impact`): each `apply`,
+   undo or settings change the hook saw, sessions before against after,
+   and a folded quality table per agent it touched. An apply gives "To
+   undo it: `claude-token-lens apply --revert <backup_ts>`". A `?day=`
+   pulses that day's change.
+2. **Did your estimates come true?** (`/api/backtest`): each estimate
+   Profiles showed, against what happened.
+3. `/api/config-diff?auto_keys=1`: which layer supplied each key, which
+   projects share one effective config, and the per-key diffs.
+4. **Latest baseline** (`/api/baseline`): the capture window's status,
+   the latest baseline and the history, marked provisional while a
+   capture window is open.
+
+### Setup › Profiles
+
+**Answers:** "Which group of settings fits a goal, and what would it
+change?"
+
+**Save my current settings as a profile** comes first. **Create a
+profile** turns a goal (`/api/profile-goals`) into a table of changes
+with the ones your data supports ticked; each tick asks
+`POST /api/whatif` again. **Your profiles and the built-in ones** marks
+the one the latest baseline suggests. **Show what it changes** opens a
+drawer (`/api/profiles/<id>/diff`) with a Setting / Now / After / Set in
+table, **Estimated effect**, and "Ask Claude to do it", "Or run this
+command" and "Or try it for one session", each with Copy. Then **Best
+setup for each kind of task** (`habits.habits_setups`) and, folded,
+**Edit settings directly**. The page never runs a command and never
+fills in a project folder.
+
+### Setup › Capture
+
+**Answers:** "How much should Claude tell Token Lens, and what does that
+cost?" The window doesn't apply here.
+
+`/api/capture`: the cost warning; where capture stands (setting, cost so
+far, how often Claude tagged); its weekly cost against what depends on
+it (`roi`); a warning with `capture connect` when a hook entry is
+missing; the level cards (Off, Free, Essentials, Standard, Deep, Custom)
+with weekly estimates; sampling and end time; and every metric grouped
+by where it is captured.
+
+A group folds ("Main session (3 of 12 on)") unless a metric in it needs
+a hook entry or an install. The feedback and brief skill rows show
+**Needs installing** with their `capture ... on` command: the dashboard
+never writes Claude Code's folder. A change that asks Claude for more
+repeats the cost warning in a dialog first. Changes go to
+`POST /api/capture`; when the file can't be written, the view shows the
+CLI commands instead.
+
+### Data quality
+
+**Answers:** "What did Token Lens install, and can I trust its figures?"
+
+1. **What this tool installed, and what to expect** (`/api/setup`): each
+   thing installed, what it does, its token cost and how to undo it, and
+   "Remove everything".
+2. **Service health** (`/api/health`, `renderHealth`): status, version,
+   last scan, the watcher's counts and recent errors.
+3. Any report section no other view claims (`SECTION_PAGE_MAP`'s
+   fallback).
+4. `/api/diagnostics`: whether the hook and the status line work, then
+   the parse-quality counters, matching the CLI report's Diagnostics.
+
+### Glossary › Terms
+
+**Answers:** "What does this word mean?" The window doesn't apply here.
+
+`GLOSSARY` in `links.js`, word for word the README's glossary.
+`?term=<slug>` scrolls to an entry and pulses it. A term a How costs
+work card names also carries "Why it matters": the card's rule sentence
+(`cardRuleText`), with a link to the card.
+
+### Glossary › How costs work
+
+**Answers:** "How is each kind of token priced, and what does each
+change save?"
+
+One card per `COST_CARDS` entry: cache reads, cache writes and lifetime
+(TTL), cache rebuilds, model choice, startup context, tool output kept,
+conversation summaries, and billing mode. Each states the rule with the
+multiplier from your pricing (`priced()`, never a typed number), your
+figures for the window, and a link to what acts on it. `?card=<slug>`
+scrolls to and pulses a card.
 
 ## Components
 
 `ui.js` holds the pieces every page is built from, and `grid.js` the
 data grid. Each has a loading, an empty, an error and a stale state.
+Every helper builds nodes with `textContent`; server text goes through
+`prose()` (see "Linking").
 
-- **Button** (`button`): a label that says what happens ("Copy prompt",
-  "Save tags"). Variants: primary (the one main action in a group),
-  quiet, icon-only (with an accessible name) and link. The helper
-  refuses a label starting with "Apply": the dashboard offers prompts
-  and dry-run commands and never changes Claude Code's settings itself.
-- **Chips:** `severityChip` (Do this, Worth considering, For your
-  information: an icon and a label, never colour alone), `statusBadge`,
-  `basisChip` (Estimate, At most, Simulated, Calibrated; a measured
-  figure carries none) and `deltaChip` (a change on the previous period,
-  coloured by whether up is good, neutral within 1%; three times or more
-  reads as a multiple, "3.2 times", and an empty earlier period as
-  "None before").
-- **Metric tile** (`tile`, `tileRow`): a sentence-case label, the value
-  at 28px with its unit in the quieter ink, then an optional basis
-  chip, delta chip and hint. Tiles sit in a row that fits as many as
-  the width allows.
-- **Panel** (`panel`): a surface with a hairline border, a header slot
-  and a body. Panels are never nested. Sections themselves sit on the
-  page, 40px apart with a hairline between them.
-- **Callout** (`callout`, `errorNotice`): info, success, warning or
-  critical, as a tinted background with an icon and a label, with
-  optional actions. An error says what happened and offers "Try
-  again" when a retry can help.
-- **Empty state** (`emptyState`): what happened, why, and what would
-  fill it, as a link where one helps: "No sessions in the last 24
-  hours. Pick a longer window to see older ones." Never "No data".
-- **Skeleton** (`skeleton`, `loadingNode`): grey bars in the shape of
-  what is loading, with a shimmer that stops under reduced motion.
-- **Command block** (`commandBlock`, `renderFix`): the ways to make a
-  change as tabs (a prompt for Claude, a dry-run command, and a trial
-  for one session where there is one), each with a Copy button. Below
-  them, the explainer `fixes.build_fix` writes, as a definition list:
-  what the setting controls, where and who it affects, the trade-off
-  and how to undo it, then the restart note.
-- **Popover and tooltip** (`popoverButton`, `helpButton`,
-  `attachTooltip`): the (i) "How to read" help and a column's (?) open
-  a popover; a tooltip shows on hover and focus, value first. Both use
-  `textContent` only.
-- **Drawer** (`drawer`): a panel that slides in from the right, 560px or
-  720px, with a title, a close button and Esc. It keeps focus inside
-  while open and gives it back to the control that opened it.
-- **Toast** (`toast`): one at a time, bottom right, `role="status"`, for
-  a copy or a save. It goes after 3.5 seconds, and waits while the
-  pointer or focus is on it.
-- **Confirm dialog** (`confirmDialog`): a native `<dialog>`, used before
-  a change with a warning, such as a Capture level that costs more.
+| Component | Helper | What it does |
+|---|---|---|
+| Button | `button` | a label that says what happens ("Copy prompt"). Primary, quiet, icon-only (with a name) or link. Refuses "Apply ..." |
+| Severity chip | `severityChip` | Do this, Worth considering, For your information: an icon and a word |
+| Status badge | `statusBadge` | a check's status, the same way |
+| Basis chip | `basisChip` | Estimate, At most, Simulated, Calibrated; a measured figure has none |
+| Delta chip | `deltaChip` | a change on the previous period, coloured by whether up is good, neutral within 1%. Three times or more reads "3.2 times"; an empty earlier period "None before" |
+| Tile | `tile`, `tileRow` | a label, the value at 28px with its unit quieter, then an optional basis chip, delta, hint and sparkline |
+| Panel | `panel` | a surface with a hairline border, a header and a body. Never nested |
+| Callout | `callout`, `errorNotice` | info, success, warning or critical: a tint, an icon and a label. An error says what happened and offers "Try again" when a retry can help |
+| Empty state | `emptyState` | what happened, why, and what would fill it. Never "No data" |
+| Skeleton | `skeleton` | grey bars in the shape of what is loading, with a 1.4-second shimmer |
+| Command block | `commandBlock`, `renderFix` | the ways to make a change as a tab list (a prompt, a dry-run command, a one-session trial), each with Copy, then `fixes.build_fix`'s explainer and `fixes.RESTART_NOTE` |
+| Popover | `popoverButton`, `helpButton` | the (i) and (?) help. Closes on Esc, a click outside, or a link inside |
+| Tooltip | `attachTooltip` | on hover and focus after 40ms, value first; a text tip is also the element's `aria-describedby` |
+| Drawer | `drawer` | a modal `<dialog>` from the right, 560px or 720px, with a title, close and Esc, and optionally "Copy a link to this". Focus stays inside and returns to the opener |
+| Toast | `toast` | one at a time, bottom right, `role="status"`. Goes after 3.5 seconds, waiting while hovered or focused |
+| Confirm dialog | `confirmDialog` | a native `<dialog>` before a change with a warning |
+
+### Data grid
+
+Every table on every page is `dataGrid`.
+
+- **Cells and sort.** Numbers right-aligned in even-width digits; short
+  text stays on one line and sentences wrap. The sort is kept per table
+  (`tls:sort:<table>`).
+- **Lead columns.** A table of more than 8 columns shows its first 7 (or
+  its `lead_columns`), with a chooser for the rest (`tls:cols:<table>`)
+  and a pinned first column while it scrolls sideways.
+- **Inline bars.** The lead measure carries a thin bar, so a ranking
+  needs no chart. A table in `TINT_TABLES` shades values instead.
+- **Long tables.** A report table of more than 12 rows opens on its
+  first 10, with "Show all N rows"; a grouped table stays whole. A dated
+  table listed oldest first (`NEWEST_LAST`) opens on its latest 10 until
+  sorted. An evidence link to a hidden row shows them all first.
+- **Tall tables.** Past 20 rows a table scrolls in its own box with the
+  header pinned. Past 200 only the visible rows are drawn.
+- **Row pulse.** An evidence link's row scrolls into view and glows for
+  1.2 seconds (`pulseRow`). Under reduced motion the glow holds still.
+- **Summaries and notes.** A one-row table with `lead_columns` reads as
+  up to four tiles, with **All figures (N)** under them. One or two short
+  notes stay in view; more fold into **How these figures are worked out
+  (N notes)**.
+- **Placement.** `Table.dashboard`: `keep` shows a table, `advanced` puts
+  it in one folded **More tables (N)** per section, and `report` leaves
+  it to the CLI report with a note.
+- **Help and labels.** A column's (?) is a real `<button>` that never
+  sorts. `Table.value_labels` turns raw values such as `top-level` into
+  "Main session", with the raw value in `data-raw`.
+
+A section whose table a catalogue chart reads draws that chart between
+its intro and its tables. `grid.js` can't import the charts (they draw
+their table view with it), so `app.js` hands it `sectionChart` through
+`setSectionChart`.
 
 ### Search and keyboard shortcuts
 
-`palette.js`. **Search** (Ctrl+K, or the Search button at the right of
-the page header) is a modal `<dialog>` near the top of the window. It
-finds:
+**Search** (`palette.js`; Ctrl+K or the Search button) is a modal
+`<dialog>` near the top of the window. Its groups:
 
-- every page and segment, named as the sidebar names them (from
-  `VIEW_KEYS`, so a new page is found without more work);
-- the report's sections and tables: a section opens its page at its
-  first table, and a table opens where it is shown or, for a table no
-  page shows, in the table drawer (as an evidence link does);
-- the window's recommendations and checks, each opening selected in its
-  inbox (`?id=`);
-- glossary terms and the How costs work cards (`?term=`, `?card=`);
-- the window's 20 most recent sessions, each opening its drawer.
+| Group | Opens |
+|---|---|
+| Pages | every page and segment |
+| Commands | Set window: …, Show all projects, the three themes, Show keyboard shortcuts, Copy prompt: … |
+| Recommendations, Checks | the item, selected in its inbox (`?id=`) |
+| Sections and tables | a section at its first table; a table where it is shown, or in the table drawer |
+| Glossary | terms (`?term=`) and How costs work cards (`?card=`) |
+| Recent sessions | the window's 20 newest, each in its drawer |
+| Projects | each project, shown on its own |
 
-It also finds the window's projects, each showing only that project.
-And it runs commands: **Set window: …**, **Show all projects** (while
-one is picked), the three themes, **Show
-keyboard shortcuts**, and **Copy prompt: …** for each recommendation
-with a prompt (if the browser refuses the clipboard, the recommendation
-opens so the prompt can be copied from there). Search never changes
-Claude Code: it reads, opens pages and copies.
-
-With nothing typed it lists the pages, then the commands. Typing narrows
-every group at once: each typed word must match a result's name or its
-other words, at the start of the name first, then at the start of a
-word, inside a word, and finally as letters in order with at most two
-gaps ("rbld" finds "rebuild"). Each group shows its 8 best, the group
-with the best match first, with the typed words in bold.
+With nothing typed it lists the pages, then the commands. Each typed
+word must match a name or its other words: at the start first, then the
+start of a word, inside a word, and last as letters in order with at
+most two gaps ("rbld" finds "rebuild"). Each group shows its 8 best, the
+best group first, with the typed words in bold. If the clipboard is
+refused, Copy prompt opens the recommendation. Search never changes
+Claude Code.
 
 The box is an ARIA combobox: focus stays in it while Up, Down, Page Up
 and Page Down move `aria-activedescendant` through a `listbox` of
-`group`s; Enter opens the one picked, Esc or a click outside closes it
-and focus returns to what opened it. The list is `aria-busy` until the
-window's actions, tables and sessions arrive (fetched once per window);
-the pages and commands are there at once. A polite status line gives
+`group`s. Enter opens; Esc or a click outside closes, and focus returns.
+The list is `aria-busy` until the window's actions, tables and sessions
+arrive, fetched once per window and project. A polite status line gives
 the count.
 
-**Shortcuts** (`?` shows them all in a sheet):
+**Shortcuts** (`?` shows them in a sheet):
 
 | Keys | What they do |
 |---|---|
 | Ctrl+K | Search |
-| G, then O, A, S, C, E, H or U | Overview, Actions, Spend, Cache, Agents & context, Work habits, Setup (E and U because A and S are taken) |
-| `[` and `]` | The page's previous or next segment |
-| J and K | The next or previous item in the page's list: the Actions inbox, or the first grid whose rows open something (Sessions, CLAUDE.md files); Enter opens it |
+| G, then O, A, S, C, E, H or U | Overview, Actions, Spend, Cache, Agents & context, Work habits, Setup (`GO_KEYS`, within 1.5 seconds) |
+| `[` and `]` | The previous or next segment |
+| J and K | The next or previous item: the Actions inbox, or the first grid whose rows open something. Enter opens it |
 | `?` | The shortcut sheet |
 | Esc | Closes a drawer, menu, popover, search or the sheet |
 
 A key typed in a text box, pressed while a dialog, menu or popover is
 open, or pressed with Ctrl, Alt or the Windows key is left alone (Ctrl+K
-apart), so shortcuts never take a letter meant for a field.
-
-### Data grid
-
-Every table on every page is `dataGrid`:
-
-- a header that stays in view once a table passes 20 rows, and numbers
-  right-aligned in even-width digits;
-- short text (a name, a model, a key) on one line, so
-  "claude-haiku-4-5" never breaks; a column holding sentences wraps as
-  prose;
-- a table that shares its section's title doesn't repeat it;
-- a sort per table that is kept (`tls:sort:<table>`) and read back, so
-  it survives a window change or a reload;
-- the first 7 columns (or a table's lead columns) for a wide table, with
-  a chooser for the rest (`tls:cols:<table>`) and a sticky first column
-  while it scrolls sideways;
-- a thin bar in the lead measure's cells, the default ranking picture,
-  so a ranking needs no separate chart; an optional tint by value (the
-  Quality grid);
-- a report table of more than 12 rows opens on its first 10, in the
-  order it is sorted, with a "Show all N rows" button (a grouped or
-  per-row-kind table stays whole, and a table of more than 200 rows
-  scrolls instead); a dated table listed oldest first (`NEWEST_LAST`:
-  by day, week, month and five-hour block) opens on its latest 10 until
-  it is sorted; an evidence link to a later row shows them all first;
-- only the visible rows drawn once a table passes 200 rows;
-- an evidence link's row scrolled into view and briefly highlighted
-  (`pulseRow`): a glow under the row's text fades over 1.2 seconds.
-  With reduced motion the glow holds still until the next click or key.
-
-A report table of one row with `lead_columns` (a summary: "Cache
-rebuilds at a glance") reads as up to four tiles of those figures,
-amounts in the billing mode, with every figure in an **All figures (N)**
-disclosure under them; an evidence link to the row opens it. Notes
-under a table or section stay in view when there are one or two short
-ones; more, or longer, fold into **How these figures are worked out
-(N notes)**.
-
-A section whose table a catalogue chart reads (compaction summaries,
-idle gaps, lifetime by agent type, startup context) draws that chart
-between its intro and its tables. `grid.js` can't import the charts
-(they draw their Table view with it), so `app.js` hands it
-`charts-types.js`'s `sectionChart` through `setSectionChart`. A mark
-leads to the action its row feeds, or else to its row in the table
-below.
+apart).
 
 ### Service unreachable
 
-When the local service stops answering, a callout under the page
-header says so and retries after 2, 4, 8, 16 and then every 30
-seconds. The last figures stay on the page, dimmed and marked stale,
-so the page is never blank. Once the service answers again, the loads
-that failed run again (`retryOnReconnect`), and the callout goes.
+When the service stops answering, a callout under the header says so and
+retries after 2, 4, 8 and 16 seconds, then every 30 (`RETRY_SECONDS` in
+`shell.js`). The last figures stay, dimmed and marked stale. Once the
+service answers, the failed loads run again (`retryOnReconnect`) and the
+callout goes.
 
 ## Charts
 
-`charts.js` is the frame every chart shares; `charts-types.js` draws
-the marks. A page draws a chart with one call,
-`renderChart(container, key, data, opts)`, and nothing else in
-`static/` builds a chart.
+`charts.js` is the frame every chart shares; `charts-types.js` draws the
+marks. A page draws a chart with one call,
+`renderChart(container, key, data, opts)`, and nothing else builds one.
+Every chart is inline SVG drawn by d3 from JSON the API already returns.
 
 ### The catalogue and the rule for adding a chart
 
-`CHART_SPECS` in `charts.js` is closed: it holds these eight rows, and
-`tests/test_service_static.py` fails if a row is added or removed
-without this table changing too.
+`CHART_SPECS` in `charts.js` is closed at these eight rows.
+`tests/test_service_static.py` fails if a row is added or removed without
+its own list changing too.
 
-| Key | Question (the chart's title) | Data | Form |
-|---|---|---|---|
-| `daily-spend` | Is spend rising, and did my changes move it? | `/api/daily-usage` | stacked columns, main session and subagents (or model tier), with a rule for each change |
-| `savings-levers` | Which change saves the most, and how sure is it? | the `carry`, `compaction_sim`, `model_swap` and `waste` totals | horizontal bars, hatched when the figure is not measured |
-| `summary-point` | Would summarising conversations at a different size cost less? | `compaction_sim.compaction_sim_by_window` | dashed line (simulated) with "Now" and "Cheapest" marked |
-| `session-outliers` | Which sessions are the expensive outliers? | `/api/sessions` | scatter on a log scale, coloured by work mode, with a time brush |
-| `session-context` | Where in this session did context grow or reset? | `/api/session/<id>` | line with shape markers per turn, and limit events in a strip above, one lane per kind |
-| `idle-gaps` | Do idle gaps outlast the cache? | `recache.recache_gap_buckets` | column histogram with 5-minute and 1-hour rules |
-| `lifetime-by-agent` | Which agent types gain from a 1-hour cache lifetime? | `ttl.ttl_break_even_share` | diverging bars around zero |
-| `startup-context` | What fills each agent's context before it starts? | `agent_startup.agent_startup_breakdown` | stacked horizontal bars, at most 12 agent types |
+| # | Key | Question (the title) | Data | Form | Where |
+|---|---|---|---|---|---|
+| 1 | `daily-spend` | Is spend rising, and did my changes move it? | `/api/daily-usage` | stacked columns by agent or model tier, a rule per change | Overview, Spend › Usage |
+| 2 | `savings-levers` | Which change saves the most, and how sure is it? | the `carry`, `compaction_sim`, `model_swap` and `waste` totals | horizontal bars, hatched when not measured | Spend › Savings |
+| 3 | `summary-point` | Would summarising conversations at a different size cost less? | `compaction_sim.compaction_sim_by_window` | dashed line, "Now" and "Cheapest" marked | Spend › Savings |
+| 4 | `session-outliers` | Which sessions are the expensive outliers? | `/api/sessions` | log-scale scatter by work mode, with a time brush | Spend › Sessions |
+| 5 | `session-context` | Where in this session did context grow or reset? | `/api/session/<id>` | a line with a marker shape per event, limit events above | the session drawer |
+| 6 | `idle-gaps` | Do idle gaps outlast the cache? | `recache.recache_gap_buckets` | histogram with 5-minute and 1-hour rules | Cache › Rebuilds |
+| 7 | `lifetime-by-agent` | Which agent types gain from a 1-hour cache lifetime? | `ttl.ttl_break_even_share` | diverging bars around zero | Cache › Lifetime (TTL) |
+| 8 | `startup-context` | What fills each agent's context before it starts? | `agent_startup.agent_startup_breakdown` | stacked bars, at most 12 agent types | Agents & context › Subagents |
 
-A new chart needs a new row, and a row must meet both tests:
+A new chart needs a new row, and a row must pass both tests:
 
-- it shows at a glance something a sorted grid with inline bars
-  can't: a trend over time, a distribution against a threshold, the
-  sign across entities, a part-to-whole of 8 or fewer parts, or
-  outliers in two dimensions;
+- it shows at a glance what a sorted grid with inline bars can't: a trend
+  over time, a distribution against a threshold, the sign across
+  entities, a part-to-whole of 8 or fewer parts, or outliers in two
+  dimensions;
 - it leads somewhere: an action, a drawer or a filtered grid.
 
 A ranking is a grid with an inline bar, never a chart. There are no
 pies, donuts, treemaps, gauges, calendar heatmaps, 3D or dual-axis
-charts. A chart with fewer than 3 points says so in its frame instead
+charts. A chart with fewer than 3 points (`MIN_POINTS`) says so instead
 of drawing, except daily spend, where one day is still a reading.
 
 ### The frame
@@ -340,909 +849,276 @@ of drawing, except daily spend, where one day is still a reading.
 Every chart has the same parts, top to bottom:
 
 - the question as its title (`h3`) and a **Show as table** toggle
-  (`aria-pressed`), which swaps the plot for a grid of the same rows;
-- a summary sentence filled from the data (`fillSummary`), which is
-  also the plot's accessible name;
-- a legend whenever there are 2 or more series, each entry a swatch or
-  the marker's own shape, so no series is told apart by colour alone;
-- the plot: bars at most 24px thick with a 4px rounded end, 2px lines,
-  hairline grid lines, a 2px gap between stacked parts, text in ink;
+  (`aria-pressed`) that swaps the plot for a grid of the same rows;
+- a summary sentence from the data (`fillSummary`), which is also the
+  plot's accessible name;
+- a legend when there are 2 or more series, each entry a swatch or the
+  marker's shape, so no series relies on colour alone;
+- the plot: bars at most 24px thick (`MAX_BAR`) with a 4px rounded end,
+  2px lines, hairline gridlines, a 2px gap between stacked parts;
 - a note for what the reader needs to trust it, such as "Days run
   midnight to midnight UTC" or why a bar is hatched.
 
 Money axes use `moneyAxis`, the chart mirror of `Units.money`: "% of
-your weekly usage limit" when there is a share, "list-price $" when
-there isn't, and plain "$" (no unit label) for the API. Token axes
-compact (1.2M).
+your weekly usage limit", "list-price $", or plain "$" on the API. Token
+axes compact ("1.2M").
 
 ### Colour follows the thing, not its place
 
-`ENTITY_COLOURS` fixes a colour per entity: the main session is
-`--chart-1` and subagents `--chart-3`; model tiers (Opus and Fable,
-Sonnet, Haiku) have their own slots; work modes and startup-context
-parts too. Anything else is `--chart-other`. A chart never picks
-colours by rank, so changing the window never repaints what stays on
-screen.
+`ENTITY_COLOURS` fixes a colour per entity, so a new window never
+repaints what stays on screen:
+
+| Entity | Colours |
+|---|---|
+| Agent | main session `--chart-1`, subagents `--chart-3` |
+| Model tier | Opus (and Fable) `--chart-1`, Sonnet `--chart-2`, Haiku `--chart-3` |
+| Work mode | interactive `--chart-1`, long agentic `--chart-2`, overnight `--chart-3` |
+| Startup part | system prompt, tool definitions, CLAUDE.md, skills listing, tool lists, task prompt and hook context take `--chart-1` to `--chart-7` |
+
+Anything else is `--chart-other`. A chart never picks colours by rank.
+Chart 7 shows a sign, not an entity: an agent type that saves with a
+1-hour lifetime is `--div-pos`, one that costs more `--div-neg`.
 
 ### Reading a chart
 
-- **Pointer:** a tooltip shows the value first, then the label. Every
-  mark has a hit area at least 24px across. Clicking a mark that leads
-  somewhere (`opts.open`) opens it.
-- **Keyboard:** the plot is one tab stop. The arrow keys move a cursor
-  from mark to mark and read it in the tooltip, Home and End jump to
-  the ends, Enter opens the mark where it leads somewhere, and Esc
-  lets go. On the session scatter, Shift with the arrow keys picks
-  the sessions from where the cursor started, as the brush does. A
-  change label on a daily spend chart is a link of its own: the next
-  Tab stop after the plot, named "<change>, changed on <day>: see what
-  it did", opened with Enter or Space. Screen readers skip the rest of
-  the drawing (every other layer is `aria-hidden`; `layer(name,
-  {links: true})` keeps one reachable).
-- **Brush:** on the session scatter, dragging across a time range calls
-  `opts.brushed` with the range, so the grid below can list only those
-  sessions.
-- **Linked highlight:** a grid given `link: {scope, key(row)}` shares
-  hover and focus with the chart marks of the same scope (a day, a
-  session, an agent type) through `highlight`/`listenHighlight` in
-  `core.js`. Hovering either lights the other and dims the rest.
-  `swatch(row)` puts the entity's colour in the row's first cell.
-
-### Motion
-
-When the data changes (a new window), `renderChart` keeps the frame
-and d3 moves the marks to their new places over 600ms, unless there
-are more than 1,500 of them. While new data loads, `holdChart` keeps
-the last drawing at 0.55 opacity, so nothing jumps. The first drawing
-draws in once. `opts.delay` holds a draw-in or morph back for that
-many milliseconds. A chart resized while it is still drawing in or
-morphing (`redraw`: a new width, or `setChartHeight`) carries on to
-the new size in the time it had left, rather than finishing at the
-old size; a settled chart is redrawn at once. Under reduced motion
-every transition has zero duration.
-
-The rest of the dashboard moves only `transform` and `opacity`, and
-none of it runs under reduced motion or in a hidden tab:
-
-- **A new view** fades in over the old one: `app.js`'s `changeView`
-  runs the route change inside `document.startViewTransition`, where
-  the browser has it and the view really changes. The old view fades
-  out over 120ms (`--dur-page-out`, `--ease-in`) and the new one fades
-  in over 220ms (`--dur-page`, `--ease-out`), rising 6px. While it
-  runs, `html` has `view-changing`, which names `.views`, the sidebar,
-  the page header and the toasts, so only the views fade and the rest
-  change at once. The old view keeps its place on screen however far
-  the page scrolls for the new one (`--view-shift`). Focus and scroll
-  are still `showView`'s, so Back and Forward restore the scroll as
-  before. No transition runs while a dialog (the drawer) is open.
-- **The Overview's entrance.** The headline figures count up over
-  700ms (`ui.js`'s `countUp`, expo-out): from 0 the first time, from
-  the figures last shown after a window change. The tile is drawn with
-  its final text first, and a timer and the tab being hidden both
-  finish the count, so the final text is always what stays. Money is
-  written by the billing mode's own format. The daily spend chart
-  draws in 80ms after the figures start, and the next best actions
-  arrive 24ms apart from 160ms (`enterInTurn`, app.css's
-  `.is-entering`); a seventh row or later arrives with the sixth.
+- **Pointer.** A tooltip shows the value, then the label. Every mark has
+  a hit area at least 24px across. Clicking a mark that leads somewhere
+  (`opts.open`) opens it. On a section chart, `markLeads` sends a mark to
+  the first action whose evidence is its row, else to the row below.
+- **Keyboard.** The plot is one tab stop. Arrow keys move a cursor from
+  mark to mark and read it in the tooltip; Home and End jump to the
+  ends; Enter opens the mark; Esc lets go. On the session scatter, Shift
+  with the arrows picks a range. A change label on a daily spend chart is
+  its own link, the next Tab stop ("<change>, changed on <day>: see what
+  it did"). Every other layer is `aria-hidden`.
+- **Brush.** On the session scatter, dragging across a time range calls
+  `opts.brushed`, so the grid below lists only those sessions.
+- **Linked highlight.** A grid given `link: {scope, key(row)}` shares
+  hover and focus with the chart's marks of the same scope (a day, a
+  session, an agent type) through `highlight` and `listenHighlight` in
+  `core.js`. `swatch(row)` puts the entity's colour in the first cell.
 
 ### Micro-forms
 
-`sparkline(values)` draws a small trend for a tile, with no axes: the
-tile's value is the reading. `meter(level, opts)` draws a level out of
-5 as segments (`role="meter"`), with the level always written beside
-it and the status as a word, not only a colour. `habitSparkline` is
-the weekly pace line on a Work habits card.
+Not in the catalogue, because each sits inside another component:
+`sparkline(values)`, a trend in a tile with no axes; `meter(level)`, a
+level out of 5 as segments (`role="meter"`) with the level and status
+written beside it; and `habitSparkline(weeks, label)`, the weekly pace
+line on a habit card.
 
-## Pages
+## Linking
 
-One page (`index.html`) with a sidebar of pages (`PAGES` in `links.js`).
-A page with more than one part shows them as segments, a row of links
-beside its title. Each page, or page and segment, is a *view* with its
-own address, `#/<page>[/<segment>]?w=<window>&project=<slug>` (the
-window first, then the project, left out for all projects), and each
-view renders from its own `/api/*` route(s). A view is drawn the first
-time it is opened and kept until the window or project changes; views
-have no background poll. Eighteen views ship, in the sidebar's order below.
+Every number leads to its evidence, and every table says what it feeds.
 
-**The router** (`app.js`) reads the address on load and on every
-`hashchange`. Every in-app link goes through `goTo` (`core.js`, which
-`app.js` wires to the router, so `links.js`'s `pageLink` and the page
-modules reach it without importing `app.js`). It adds one history
-entry, so Back, Forward and bookmarks work. An address that leaves out
-the segment or the window is rewritten in place to the full form, and a
-page named alone opens the segment last used there. An address that
-names no view opens the last one shown (`tls:view`); on the first visit
-after the tab bar was replaced, that is the view the old tab bar last
-had selected (`tls:activeTab`, read once and removed). Each view keeps
-its scroll position: Back and Forward return to it, and a link to
-another view opens at the top. Two more parameters say what to open on
-a view. `id` picks an item in an inbox
-(`#/actions/recommendations?id=<key>`, where `key` is the
-recommendation's `key`: its id, plus the agent type for a rule that
-fires per agent, so a member's key opens its group on that agent; and
-`#/actions/checks?id=<check id>`). Picking another item rewrites `id`
-in place (`replaceParams`), so the address always names what is on
-screen without adding history. An id the window doesn't have opens the
-first item with a note saying so. `t=<section.table>&row=<row key>`
-names the row behind a number: the view opens at it, opens the "More
-tables" or Details that hides it, scrolls it into view and pulses it
-(`evidence.js`'s `revealEvidence`, which waits for the table to be
-drawn). Changing the window keeps `id` and drops `t` and `row`. A
-view's module hears a new `id` through `onParams` (`core.js`), so a
-link to the view already open selects without redrawing it.
-
-**Evidence links** (`evidence.js`). A recommendation's evidence names a
-report table and a row (`[label, value, "section.table", row_key]`).
-The link opens the view `TABLE_PAGE_MAP` names for that table, else the
-one `SECTION_PAGE_MAP` names for its section, and pulses the row there;
-the scorecard strip on the Overview is tagged like a table
-(`data-table-name="dimensions"`, a `data-row-key` per area), so its
-items pulse the same way. A table no page shows (one placed `report`, a
-section no page shows such as `savers`, or a table the page didn't
-draw for this window) opens in the **table drawer** instead: the table
-as a grid, the row pulsed, and a line saying where else it appears. A
-test checks every evidence table the rules can name resolves one of
-these ways. A "Skip to the page" link before the
-sidebar moves focus to the page title (`#page-title`, the one `h1`).
-
-**The sidebar** lists the seven main pages, with a count of "Do this"
-recommendations on Actions, then Data quality and the Glossary, then
-the status line. A toggle narrows it to a 56px rail of icons, with each
-page's name as a tooltip on hover and on keyboard focus
-(`tls:sidebar`); below 1024px wide it is always the rail.
-
-**The page header** stays pinned while the view scrolls, with a
-hairline once content passes under it. It holds the page title, the
-segments, Search, the project picker, the window picker and the theme
-toggle (same as the system, light or dark: `tls:theme`). Both pickers
-are one component, `menuControl` (`app.js`): a menu button with radio
-rows, moved through with the arrow keys, Home and End, or the first
-letter of a row; Esc closes it and returns focus, and a click outside
-or Tab closes it.
-
-**The health banner and status line** are on every view, from
-`/api/health` (`pollHealth()`: every 3 seconds while its `status` is
-`"starting"`, every minute otherwise). The banner, under the page
-header, is hidden while the status is `"ok"`. Otherwise it shows the
-route's `message`: the first scan's progress (with a progress bar)
-while `"starting"`, and a warning with the restart command when
-`"degraded"` or `"stale"`, or when the service can't be reached at all.
-When a scan that was in progress finishes, the banner and the status
-line offer **Redraw figures**, which drops every drawn view and the
-report cache and redraws the view on screen; views never redraw
-themselves under the reader. The status line, at the foot of the
-sidebar, gives the status in words beside a coloured dot (Up to date,
-Scanning your history, Last scan failed, Not updating, Can't reach the
-service), when the last scan finished, the time the oldest figures
-drawn are from (`X-Figures-As-Of`) once a report has loaded, the
-capture level as a link to Setup › Capture, and the running version.
-A view keeps the figures it drew; a reload, a new window or **Redraw
-figures** picks up a newer report.
-
-**The capture banner** sits under the health banner
-(`#capture-banner`, `role="status"`). `pollHealth()` hands it
-`/api/health`'s `capture` block; it fetches `/api/capture` when that
-block changes, or every five minutes for fresh figures. The status line
-always shows the capture level, so the banner shows only when there is
-something to act on: notes when the end time has passed, a hook entry
-is missing, no notes have been seen, Claude tags too few messages, or
-enough has been collected to lower the level, plus, once capture has
-run long enough to price a weekly cost, a note weighing that cost
-against what the habits worth trying that depend on its reports or your
-feedback are worth a week (or that nothing measured yet relies on it).
-It then leads with the headline ("Metrics capture: Essentials · since
-<date> · N tokens · <amount> (x% of spend) · tagged on P% of
-messages", in billing units) and links to Setup › Capture and Work
-habits. **Dismiss for a week** hides the notes until they change
-(`localStorage` `tls:captureNotesHidden`). The feedback note ("Finished
-a piece of work? Run /tl-feedback ...") shows while that item is on,
-and a note with the `capture feedback on` command while the
-`/tl-feedback` skill is on but its file needs installing, or the
-`capture brief on` command while brief templates are on but the
-`/tl-brief` skill's file needs installing.
-
-**The dashboard never changes Claude Code's settings.** There is no
-Apply button. Every fix is a prompt to paste into Claude Code or an
-`apply ... --dry-run` command to run yourself, each with a Copy button.
-The only things the dashboard writes are profile files in this tool's
-own folder, session tags and ratings in its own store and the `[capture]` table
-in its own `config.toml` (Setup › Capture). Amounts follow the
-billing mode (`docs/writing-help.md`, "Amounts").
-
-**The window picker** is a menu button in the page header (the arrow
-keys move through it; Esc closes it and returns focus): Last hour,
-Today, Last 24 hours, Last 7/30/90 days (30 by default), All time, or
-Since my last change (`WINDOW_OPTIONS`). It is sent to every
-report-backed route as `window=<name>` or `window_days=N`
-(`withWindow()`), carried in the address as `?w=`, and remembered in
-`localStorage` (`tls:window`, read from the older `tls:overviewWindow`
-key when it is missing). A change drops every drawn view and redraws
-the one on screen, so no view keeps showing the previous window's
-numbers (review finding 21). `loadReport()`'s cache is keyed by the
-window for the same reason. The short windows (last hour, today, last
-24 hours, since my last change) carry a note: a session active in the
-window counts in full. A few panels always cover all history and ignore
-the picker: the rebuild counts on Cache › Rebuilds, the baseline
-panel, "Your changes and what they did", the setup panel and service
-health. Setup › Capture's figures don't depend on the window, so there
-the picker gives way to a note, "The window doesn't apply here"; the
-Glossary has no figures and shows neither.
-
-**The project picker** sits beside it: All projects (the default), then
-every project with a session in the window, the most expensive first
-(`report.meta.projects` from every project's report for the window,
-`loadProjects()`). Each row reads as its folder (`projectName`), with
-the full slug on hover. Picking one sends `project=<slug>` with every
-window-aware request (`withWindow()`; the Overview's previous window
-adds it through `withProject()`), so every figure that follows the
-window covers only that project, and the header button keeps the
-accent while it does. It is carried in the address as `?project=`,
-never stored, and hides wherever the window picker does. The report
-and recommendation caches are keyed by window and project together
-(`scopeKey()`), and a report for one project never replaces the list of
-project names (`setKnownProjects`). A project with no session in the
-window stays in the menu, marked "No sessions in this window", and the
-Overview says "No sessions in <project> <when>. Pick a longer window, or
-all projects." An address naming a project the service doesn't know
-(an old bookmark, a moved folder) is checked once (`checkProject`,
-which keeps the answer): the dashboard shows every project and a toast
-says why, and does so at once if an address names it again. Every
-address the dashboard writes, from links, the pickers or a page saying
-what it has open, carries the window and project through `scopeParams()`
-(`links.js`), so none drops the project. Panels that
-cover every project whatever the picker says (Settings' changes,
-estimates and baseline; Cache › Rebuilds' causes) carry an "All
-projects" chip while one is picked. Search lists the projects too, and
-offers **Show all projects** while one is picked.
-
-1. **Overview** — answers "What should I change next?". Top to bottom:
-   - the logon warning, only when `/api/health` says the service is not
-     registered to start at logon (`renderLogonNotice`; the full health
-     detail is on Data quality);
-   - **the summary sentence** (18px): what the window cost, the change
-     on the period of the same length before, and how many changes are
-     worth making and what the ways to save come to. It is built from
-     fixed wording and numbers only, in the billing mode ("you spent
-     $2,663" on the API, "you used about 38% of your weekly usage limit"
-     on a plan). "All time" and "Since my last change" have no earlier
-     period. The previous period is the N days before a last-N-days
-     window, the hour or 24 hours before, or the same hours yesterday
-     for Today (from local midnight), fetched as
-     `/api/summary?since=&until=`: deltas compare a summary with a
-     summary, never with a report figure. Its other forms: no sessions in
-     the window ("No sessions in the last 7 days. Pick a longer window to
-     see older ones."), no change recorded for "Since my last change",
-     and, before any session is read, "What Token Lens does for you" in
-     three lines (saying the first scan is running while `/api/health`'s
-     `scan.scanning` is true, otherwise linking to Data quality);
-   - **four tiles**: Spend (with its change and a daily sparkline from 3
-     days), Available saving (the four ways to save from Spend ›
-     Savings added up, plus any priced action no lever counts, such as
-     lower effort, marked "At most" because they overlap; the model lever
-     is every agent type's cheapest alternative added up, so no action
-     shows more than the tile), Saved by
-     the cache (`/api/summary`'s `cache_saved`, marked Estimate, with
-     what a cache read costs against fresh input on the model that read
-     most from the cache, from `report.meta.rates`) and Sessions (with
-     the subagent runs: transcripts less sessions). Each links to its
-     page;
-   - **daily spend** (chart 1, `/api/daily-usage` with the window and
-     `split=agent`), with your settings changes from `/api/impact` as
-     labelled rules; a day opens Spend › Sessions and a change Setup ›
-     Settings. Beside it from 1440px (under it at 1280), **Next best
-     actions**: the top five of `/api/recommendations`, most important
-     first, then biggest `saving_usd`, each with its severity, title
-     (a link to Actions › Recommendations), estimated saving and a Copy
-     prompt button. Side by side, the chart grows (300px to 560px) to
-     the actions' height, redrawn in place with no morph
-     (`setChartHeight`), so neither panel ends in a blank band; a
-     draw-in still running carries on to the new height;
-   - **How your setup scores**: the overall level, set by the lowest
-     area, then the five scorecard areas as segmented meters (level 5-4
-     good, 3 fair, 2 poor, 1 very poor, 0 not measured), each with a
-     sentence about its number, which way is better, a link to where to
-     look, and "What moves it:" naming a matching recommendation from
-     this window when the area is below 5;
-   - **Totals, and how amounts are counted** (collapsed): the billing
-     mode and why it was chosen (`report.meta`), and the report's
-     `overview.totals` table (its `by_model` table is on Spend › Usage).
-   Every load starts at once; the drawing waits for the report, which
-   sets the billing mode. A newer draw (a new window) drops the answers
-   of an older one, and the chart is held dimmed while new figures load.
-2. **Actions › Recommendations** — `/api/recommendations` as an
-   inbox: the list to pick from on the left (360px, and it stays in view
-   while the detail scrolls), the one picked on the right. Filter chips
-   above the list narrow it by importance (Do this, Worth considering,
-   For your information) and by area (Models, Cache, Context, Agents,
-   Habits, Data and settings), each with its count. The area comes from
-   `RULE_AREA` in `page-actions.js`, since a recommendation's `category`
-   only says settings, workflow or data; a test keeps it in step with
-   every rule id the service can send. A rule that fires once per agent
-   type (`ttl-switch`, `spawn-*` and the rest) is one list item for all
-   of them, titled for all of them ("7 agent types are sent your
-   CLAUDE.md files every time they start"), most important first and
-   in the service's order (by saving) within. Each item shows its
-   severity as an icon, its title, "severity · area · N agent types"
-   and its saving.
-   The detail opens with the severity chip inside the `h2` and the
-   title, then chips for who it's for, its area and where the change
-   lands. **How this saves you money** follows, in three rows: what it
-   costs you now (`why`), what the change does to the price (one or two
-   sentences with the multiplier from your pricing, `report.meta.rates`
-   through `fraction()`: "Reading from the cache costs a tenth of the
-   input price...", "Sonnet 5 costs 40% of Opus 5's price, and Haiku 4.5
-   a fifth of it"), and what
-   you could save, with its basis chip (At most, Estimate, Simulated,
-   Calibrated, from `saving_basis`) and how it was worked out. **What to
-   do** gives the action, then, when there is more than one change (the
-   model changes for six agent types, or a group), one table of them:
-   the agent, the value it sets ("Set model to", with the model's
-   name; a switch as On or Off), the saving and a Copy button per row.
-   The value now is said once above the table when every agent shares
-   it, else under each agent's name. In a
-   group, picking a row shows that agent's change, and the address
-   follows. Then the fixes: one command block, or several collapsed
-   with the first open, each with the prompt, the `--dry-run` command,
-   the six-part explainer and the reminder to restart Claude Code
-   (`fixes.RESTART_NOTE`). A card with a `lever` but no `fixes` names the
-   setting and where it lives; a `scope: "managed"` one says your
-   organisation's policy sets it and shows no fix. **The numbers behind
-   this** lists each report row the recommendation cites, as a link
-   ("Cost of each agent type on other models, revixo-reviewer on Spend ›
-   Savings") with the values taken from it, formatted as the CLI's
-   `format_evidence_value` does. **The check this answers** links to the
-   checks whose `rule_ids` name it. The same "capture window open"
-   notice as Setup › Settings' baseline panel appears above the inbox
-   while a capture window is in progress (`/api/baseline`'s
-   `capture_status`).
-3. **Actions › Checks** — `/api/quick-actions` in the same inbox: each
-   check is a question with its status (Worth a look, Nothing to do, Not
-   enough data, in that order), filtered by status. The detail gives the
-   status, why it matters and the answer, then loads
-   `/api/quick-actions/<id>`: **The numbers** (its table), the fixes
-   (the same command blocks as Recommendations) and **Habits that
-   help**. A check with not enough data says why instead. **The
-   recommendation it leads to** links to each recommendation whose id is
-   in its `rule_ids`. The same checks run in the terminal as
-   `claude-token-lens check`.
-4. **Spend › Usage** — chart 1, daily spend, the same chart as the
-   Overview's with a **Split by** choice: main session and subagents
-   (`/api/daily-usage?split=agent`) or model (`split=model`, one colour
-   per tier). The choice is kept in the address (`?split=model`), so a
-   reload or a link opens it, and it stays through a window change and a
-   visit to another page; a day leads to its sessions
-   (`#/spend/sessions?day=YYYY-MM-DD`) and a change marker to what the
-   change did. Then cost by model (the overview section's `by_model`
-   table, placed here by `TABLE_PAGE_MAP`), the
-   `usage`/`elasticity`/`compactions`/`phases` report sections plus a raw
-   `/api/compactions` list (windowed, newest first, the first 50 shown).
-5. **Spend › Savings** — chart 2, **Which change would save the most,
-   and how sure is it?**, heads the page: the four ways to save side by
-   side, built from the same four responses as the sections below, and
-   hatched unless measured. A bar leads to the row its figure comes
-   from (`?t=<section.table>&row=`). The compaction-window section draws
-   chart 3 through the section-chart hook (below). Then the four
-   sections, each fetched directly from its own report-backed route the
-   same way TTL fetches `/api/ttl` (rather than waiting on the full
-   `/api/report.json`), and each rendered with the same generic
-   Section/Table renderer: `/api/carry` (context carry cost per tool and
-   agent type, top carried results, truncation-cap savings), `/api/compaction-sim`
-   (the `autoCompactWindow` sweep: cost per candidate window, the
-   per-agent-type best window, and the fidelity check), `/api/model-swap`
-   (ceiling saving from moving a model/subagent type one tier down), and
-   `/api/waste` (spend on turns whose output was never used, by cause,
-   agent type and top session). The `tool-output-carry`/
-   `compaction-window`/`model-tier`/`wasted-turns` recommendations these
-   sections' rules produce are not duplicated here — they show up as
-   cards on Actions › Recommendations like every other recommendation.
-6. **Spend › Sessions** — chart 4, **Which sessions are the expensive
-   outliers?**: every session in the window (one `/api/sessions` fetch,
-   newest 2,000 at most, with a note when the window holds more) by
-   start time and cost on a log scale, coloured by how it ran. Dragging
-   across the chart lists only the sessions that started in that
-   stretch; a `?day=YYYY-MM-DD` from a daily spend chart lists the
-   sessions active on that UTC day. A line above the list says what it
-   is narrowed to, with **Show all sessions**. A row and its dot light
-   up together, and the row carries the dot's colour. The report's
-   `sessions` section follows. A row click (or Enter), or a dot, opens
-   the session in a drawer. The detail view fetches `/api/session/<id>` and renders an
-   inline-SVG context-size-over-turns timeline from its `turn_series`/
-   `markers` fields (`docs/api.md`) — markers for re-cache, compaction,
-   spawn and human-message events; clicking a turn marker shows its
-   context composition (feature #1) and the events immediately
-   preceding it. A session with no stored top-level transcript digest
-   yet shows an explicit "no per-turn data for this session" notice
-   instead of a chart. Usage-limit events (v3-limits wiring) draw as a
-   fourth marker kind, `limit_markers`, in the blank strip above the
-   context line rather than on the line itself — see "Session timeline"
-   below for why they're positioned by timestamp instead of turn index.
-   The detail runs, top to bottom: a summary list, **Why was this
-   session expensive?** (`/api/session/<id>/explain`: the headline, its
-   sentences, and the cost split as a small table with share bars),
-   "Mode override" and "Purpose override" selects with an "Apply tags"
-   button (`POST /api/sessions/<id>/tags`, stored in this tool's own
-   store), **Rate this session** while the dashboard rating is on (the
-   `/tl-feedback` questions as checkboxes and radio buttons, from
-   `feedback_questions`; **Save rating** and **Clear** send
-   `POST /api/sessions/<id>/feedback` and redraw the detail), a
-   **Transcripts** table, then the timeline.
-7. **Cache › Rebuilds** — opens with **What the cache does for you**:
-   three tiles in your own numbers for the window, each with its price
-   multiplier from `report.meta.rates` (via `fraction()`) and a link to
-   its card in Glossary › How costs work. What reading from the cache
-   saved (`ttl_cache_economy`'s overall `net_saving_usd`, an estimate),
-   what avoidable rebuilds cost (`recache_summary`'s
-   `avoidable_cost_usd`) and how many rebuilds that covers (the sum of
-   `recache_signature_split`'s `turns` without the usage-limit pause
-   row, `limit-expiry`, as the cost leaves it out; `costs.js`'s
-   `avoidableRebuilds`, which Glossary › How costs work counts with
-   too), and how many agent types a 1-hour lifetime would help (`ttl_break_even_share` rows with a
-   positive `margin`, linking to Cache › Lifetime). Then
-   `/api/recache`: stat cards for cache rebuilds by cause
-   (expired while idle, invalidated by a change, expired during a
-   usage-limit pause — `recache.SIGNATURES`), headed "all history"
-   because the route takes no window, plus the `recache`/`limits`
-   report sections for the chosen window; the `recache` section draws
-   chart 6, the idle-gap histogram.
-8. **Cache › Lifetime (TTL)** — `/api/ttl`, with chart 7 (net saving of
-   a 1-hour lifetime per agent type) over its tables: per-agent-type observed/simulated cost, the
-   5m/1h recommendation and its fidelity — same figures as the CLI's
-   `ttl` subcommand, including the fidelity-exceeds-bound suppression
-   note.
-9. **Agents & context › Subagents** — the `agent_startup` and `agents`
-   report sections, from `/api/report.json`: what each subagent type
-   is given at startup (and what it never used), cost per run, skills
-   and MCP cost, effort, and what fills the context window.
-10. **Agents & context › Quality** — the `quality`, `workflows` and
-    `workstyle` report sections. The `quality` section, **Is the work going well?**, comes first:
-    quality signals per agent type, then per model and
-    effort with each setup compared with the one that agent used most
-    ([concepts](concepts.md#7-quality-signals)), then **Agent runs
-    retried on a larger model** (each agent and model whose runs the same
-    agent redid on a larger model) and **Why agents were run again** (the
-    reasons retries gave, when Claude writes the `[retry: ...]` marker);
-    the failing-tools, counts and markers tables sit under the advanced
-    toggle. The per-agent signals grid is a heat grid: each percentage
-    cell is shaded against its column's largest value (`TINT_TABLES` in
-    `grid.js`), with the value always shown.
-11. **Agents & context › Context** — what Claude reads at the start of every
-    session and subagent. **CLAUDE.md files** (`/api/claude-md`): a grid,
-    one row per file with who reads it, its size in tokens, how often it
-    was sent and to whom, the cost and its number of fixes; a row opens a
-    drawer with its findings and `/api/claude-md/<id>`'s sections by
-    size, duplicates, stale references and fix prompts. **Skills**
-    (`/api/skills`): the listing's size and cost, then, when two or more
-    skills are unused, one folded fix that hides them all, then a grid of
-    skills (where each comes from, status, listing size, uses, listing
-    cost) with a "Show only skills Claude never used" checkbox; a row
-    opens a drawer with the skill's description, facts and its own fixes.
-    File text and skill descriptions are read when
-    the view asks and never stored. The terminal equivalent is
-    `claude-token-lens review claude-md|skills`. The report's
-    `context_budget` section follows: what fills the context window at
-    the start, and what can go.
-12. **Work habits** — the report's `habits` section: the "Weekly pace"
-    digest as cards (the three habits worth the most a week, what the
-    habits you already picked up save, what a piece of work that met
-    its goal cost, and how many messages Claude tagged), then "Habits
-    worth trying" as cards, each with its saving a week in billing
-    units, what your sessions show, an example to copy (Copy button),
-    how often it was seen, its source (reported, inferred or your
-    feedback), confidence, its trend with a by-week bar chart, and how
-    the saving is worked out. Then the brief templates, one card per
-    kind of task with a Copy button (`claude-token-lens capture brief
-    on` installs the `/tl-brief` skill that asks for the same lines),
-    then **Kinds of task**, and the section's other breakdowns (briefs,
-    agents, effort, outcomes, Claude's own reports) folded under "More
-    tables" (their `helptext.PLACEMENT` is `advanced`), then its notes
-    (capture off, no feedback yet). Every item is a way of working to try: nothing on
-    this page changes a setting.
-13. **Setup › Settings** — what your changes did, then the settings
-    themselves. **Your changes and what they did** (`/api/impact`, all
-    history) comes first: each `apply`, undo or settings change the
-    hook saw, with the sessions before against those after on the
-    measures that change should move, then a "Quality, <agent>:" line
-    per agent the change touched (or the main session) with a collapsed
-    Signal / Before / After / Verdict table (agents with too few runs
-    yet share one line), and, for an apply, "To undo it:
-    `claude-token-lens apply --revert <backup_ts>`". A metrics capture
-    change is measured by capture's tokens per session and the share of
-    messages tagged, and its card gives the `capture level <old>` (or
-    `capture off`) command that changes it back. A change marker on the
-    daily spend chart opens this view with `?day=`, and that day's
-    change is pulsed. **Did your estimates come true?**
-    (`/api/backtest`) follows: each estimated effect Profiles showed,
-    against what happened after a matching change. Then
-    `/api/config-diff?auto_keys=1`: `effective_config`/`config_layers`/
-    `config_groups`/`config_drift` and the per-key diff tables, rendered
-    once (the config section is skipped when the view walks the full
-    report for `baseline_comparison`) — which layer supplied each
-    key, and which projects share an identical effective config. A
-    snapshot with no project attribution (`project_slug: null`, see
-    `docs/api.md`) is shown as a user-level layer rather than a project's.
-    A "Latest baseline" section renders
-    `/api/baseline` (v0.3): the capture window's one-line status
-    (`capture_status.summary`), the latest capture (or "no baseline
-    captured yet"), and every past capture in a history table — with a
-    "capture window open: provisional" notice whenever
-    `capture_status.started && !capture_status.complete`.
-14. **Setup › Profiles** — a "Save my current settings as a profile" button
-    comes first (`POST /api/profiles/from-current`; if a copy already
-    exists it asks before replacing it). Then **Create a profile**: pick
-    a goal from `/api/profile-goals` (spend less on subagents, cheaper
-    models, cheaper cache, shorter conversations, less thinking, start
-    from my recommendations, or start from my current settings, whose
-    "Start here" presses the save button above). The goal's
-    draft is a table of candidate changes (setting, now, after,
-    estimated effect, why and the trade-off) with the ones your data
-    supports already ticked; each tick re-posts the chosen changes to
-    `POST /api/whatif` and updates the running total. The goal "A
-    profile for one kind of task" adds a "Kind of task" picker (each by
-    its plain name from the draft's `task_labels`; it reloads the draft
-    with `task=`) and a note on what was found, and names the profile
-    after the task ("Bug fix tasks"). Name it and save
-    (`POST /api/profiles`). **Your profiles and the built-in
-    ones** follows: one card per profile from `/api/profiles` (the
-    catalogue's seven shipped profiles plus every user profile): name,
-    "Built in" or "Yours", who it is for, and "Changes N settings: ..."
-    listed by their plain labels (from `/api/profiles/<id>` and
-    `/api/profile-schema`). The card matching the latest baseline's
-    `suggested_profile_id` carries a "Suggested for you" badge. "Show what
-    it changes" opens the profile in a drawer, from `/api/profiles/<id>/diff`,
-    with a scope picker ("Apply it to:", in plain words): one table of
-    Setting / Now / After / Set in (unchanged and policy-locked rows are
-    greyed and say so), an **Estimated effect** table from
-    `POST /api/whatif` (Change / Effect / How it was worked out), then
-    "Ask Claude to do it" (the route's `prompt`), "Or run this command"
-    (`dry_run_command`), the reminder to restart Claude Code afterwards,
-    and "Or try it for one session" (`launch_command`,
-    `claude-token-lens apply <id> --launch`, which saves the overlay in
-    this tool's folder and prints the `claude --settings` command; it
-    says when the profile's agent or environment changes can't come
-    along), each with a Copy button, and the unified diff in a collapsed
-    block. The UI never runs a command itself, and never
-    fills in a project directory on the user's behalf (`docs/api.md`'s
-    own note on why that route never accepts one).
-    **Best setup for each kind of task** follows: the report's
-    `habits_setups` table (a note and a link to Setup › Capture while
-    nothing is tagged). "Make your own profile" is a form built from
-    `/api/profile-schema`: "Start from" any profile, one field per
-    setting (a select for fixed values and on/off, a number box with
-    the allowed range, or a comma-separated list), an "Add an agent"
-    block per agent, and "Edit as JSON instead" as an escape hatch. It
-    posts to `POST /api/profiles` and shows the server's validation
-    error inline. It sits last, in a collapsed "Edit settings directly"
-    block.
-15. **Setup › Capture** — `/api/capture`: the cost warning, then where
-    capture stands (its setting, what it has cost since it was turned
-    on by scope, how often Claude tagged, and what the estimates
-    replay), a line weighing what capture costs a week against what the
-    habits worth trying that depend on it or your feedback are worth a
-    week once there's enough time since it began to price it (`roi`;
-    the same wording as the banner's note, and left out while that's
-    `null`), a warning with the `capture connect` command
-    (Copy button) when `settings.json` lacks a hook entry a chosen
-    metric needs, the level cards (Off, Free, Essentials, Standard,
-    Deep, Custom) each with what it adds and its weekly estimate, the
-    sampling and end-time selects, and every metric grouped by where
-    it is captured. Each group folds ("Main session (3 of 12 on)"), open
-    only when one of its metrics needs a hook entry or an install, or
-    carries a note that its status line won't show. A
-    metric is a row: a checkbox, what it captures, its estimate against
-    its actual cost and how much has been collected, then "Why it helps
-    and what Claude writes" folded (why, the tag Claude writes, what it
-    helps with). The feedback skill's row
-    shows its runs over the last 14 days and, while its file is
-    missing or out of date, a **Needs installing** badge with the
-    `capture feedback on` command (Copy button): the dashboard never
-    writes Claude Code's folder. The brief templates row does the same
-    for the `/tl-brief` skill, with `capture brief on`. The status-line rows say so when
-    Claude Code's status line isn't this tool's. Metrics that are always
-    measured can't be switched off. Switching off a metric switches
-    off the ones that need it. Every change that asks Claude for more
-    (a level, a metric or a larger sample) first shows the cost
-    warning again in a dialog. Changes are sent to `POST /api/capture`
-    and the view and banner redraw from its answer; when the file
-    can't be written, the view shows the CLI commands to run instead.
-16. **Data quality** — **What this tool installed, and what to expect**
-    first (`/api/setup`): what to expect in plain words (it never uses
-    your Claude tokens, the hook and statusline add none, the first scan
-    takes a while, nothing changes until you apply it), then each thing
-    installed with where it is, what it does, its token cost and how to
-    undo it, and the uninstall command under "Remove everything". Then
-    **Service health** (`/api/health`): the logon warning when it
-    applies, then the status, version, last scan, the watcher's counts
-    and any recent errors. Then
-    any report section no other view claims (the fallback in
-    `SECTION_PAGE_MAP`, below). Then `/api/diagnostics`: whether the
-    snapshot hook and the statusline are working, then the parse-quality
-    counters (`Diagnostics` dataclass fields), as one labelled table,
-    each row with what it means (`helptext.diagnostics_table`) — same
-    figures as the CLI report's Diagnostics section, so a user comparing
-    the UI against a CLI run for the same window sees identical numbers.
-17. **Glossary › Terms** — the `GLOSSARY` constant, now in `links.js` (so
-    any view can link a term): each term the dashboard uses, in plain
-    English. The README's glossary is the same list, word for word.
-    Each entry is a `<div>` wrapping its `dt`/`dd` pair, so a link with
-    `?term=<slug>` (`termLink`/`termSlug`) scrolls to it and pulses it
-    the way an evidence link does (`pulseNode`). A term named in a How
-    costs work card's own `terms` (`COST_CARDS`) also carries a "Why it
-    matters" line: the same rule sentence the card states, from
-    `costs.js`'s `cardRuleText` (one source read by both segments), with
-    a link back to the card.
-18. **Glossary › How costs work** — one card per `COST_CARDS` entry
-    (`links.js`), in the order they're listed: cache reads, cache writes
-    and lifetime (TTL), cache rebuilds, model choice, startup context,
-    tool output kept, conversation summaries, and billing mode. Each
-    card states the rule with the multiplier from your own pricing
-    (`format.js`'s `fraction()`, via `costs.js`'s `priced()` — never a
-    number typed into the page), your own figures for the window from
-    `report.json`, and a link to the page or recommendation that acts on
-    it; a card whose section has no data for the window says so in a
-    line instead of a number. The cache rebuilds card counts the
-    rebuilds its cost covers, as Cache › Rebuilds does
-    (`avoidableRebuilds`), and the billing mode card says how amounts
-    read: money, a share of the weekly limit, or list-price equivalents
-    on a plan until usage-limit readings give a share
-    (`units.share_per_usd` is `null`). A link with `?card=<slug>` (`cardLink`)
-    scrolls to and pulses its card, the same way a term link does.
+- **Evidence links** (`evidence.js`). A recommendation's evidence names a
+  report table and a row (`[label, value, "section.table", row_key]`).
+  The link opens the view `TABLE_PAGE_MAP` names for the table, else the
+  one `SECTION_PAGE_MAP` names for its section, with `?t=&row=`.
+  `revealEvidence` waits for the table, opens the More tables or detail
+  that hides it, scrolls to the row and pulses it. The Overview's
+  scorecard is tagged like a table (`data-table-name="dimensions"`), so
+  its areas pulse the same way.
+- **The table drawer.** A table no page shows (placed `report`, a section
+  no page shows such as `savers`, or a table not drawn for this window)
+  opens in a drawer (`tableDrawer`): the table, the row pulsed, and
+  where else it appears. A test checks every evidence table a rule can
+  name resolves one of these ways.
+- **Feeds N actions.** `actionIndex()` (`api.js`) indexes the window's
+  recommendations by the tables and rows they cite. It reads
+  `loadRecommendations()`, one fetch per window and project, shared with
+  the badge, the inbox and the Overview. A cited table shows **Feeds N
+  actions** by its heading, and each cited row a mark in its first cell;
+  both list those actions, each linking to its detail (`?id=<key>`). N
+  counts inbox items, so a per-agent rule is one action.
+- **Page links in text.** Server text may point at a page with
+  `{{page:<page>}}` or `{{page:<page>/<segment>}}`
+  ([`docs/writing-help.md`](writing-help.md), "Linking to another
+  page"). `prose(text, seen)` renders each as a link named as the
+  sidebar names the view, and every place server text shows uses it.
+  Where a link can't go (a tooltip, a toast, a grid cell), `plainText`
+  gives the page's name, as `pages.plain()` does for the CLI. A token
+  naming no page is left as written.
+- **Glossary terms.** With a `seen` set, `prose()` finds the words in
+  `JARGON` (each a `GLOSSARY` term with its other forms). The first use
+  in a card or section becomes a button with a dotted underline that
+  opens the definition, with a link to its entry. Page intros, the
+  Glossary and popovers show none.
+- **How costs work cards.** A section whose figures rest on a price the
+  Glossary explains (`SECTION_CARDS` in `grid.js`) ends its help popover
+  with a link to that card. The Cache › Rebuilds tiles link there too.
+- **Popovers and drawers close on a link** inside them.
 
 ## Help and labels
 
-The page title in the header is the one `h1` (the page's label from
-`PAGES`), and each view opens with its one-line intro from `PAGES`
-(`viewIntro`). Sections are `h2`, tables `h3`, and nothing goes deeper
-than `h4`; a table shown on its own in a view it was moved to takes the
-`h2` itself. The words come from `helptext.py` (house style:
-`docs/writing-help.md`), applied to the report model by
-`helptext.annotate` and rendered generically:
+The page title is the one `h1`. Sections are `h2`, tables `h3`, and
+nothing goes deeper than `h4`; a table moved to another view takes the
+`h2`. The words come from `helptext.py`, applied by `helptext.annotate`:
+`Section.intro` under the heading; `Section.help` and `Table.help` in
+one (i) popover ("What it shows", "How to read it", "When to act");
+`Column.help` behind a column's (?).
 
-- **Section intro and "How to read this".** `Section.intro` as a line
-  under the heading; `Section.help`/`Table.help` behind one (i) button
-  beside the heading, a popover with "What it shows", "How to read it"
-  and "When to act". A section whose figures rest on a price the
-  Glossary explains (cache rebuilds, cache lifetime, model choice,
-  startup context, tool output kept, conversation summaries, billing
-  mode: `SECTION_CARDS` in `grid.js`) ends its popover with a link to
-  that card in **Glossary › How costs work**.
-- **Column help.** A `?` button in the header (a real `<button>` with
-  `aria-expanded`, keyboard and touch operable, never a `title=`-only
-  tooltip) opens that column's `Column.help` in a popover. It stops
-  propagation so it never also sorts the column.
-- **Value labels.** `Table.value_labels` replaces raw row values such
-  as `top-level` with "Main session"; the raw value stays in the
-  cell's `title` and `data-raw`.
-- **Placement.** `Table.dashboard`: `keep` tables are shown,
-  `advanced` tables go into one collapsed "More tables (N)" block per
-  section, and `report` tables are left to the CLI report with a
-  one-line note.
+## Motion
 
-### Links in text, glossary terms and the actions a table feeds
+Motion explains a change and never decorates. Only `transform` and
+`opacity` move, and none of it runs under reduced motion or in a hidden
+browser tab.
 
-- **Page links.** Server text may point at a page with a
-  `{{page:<page>}}` or `{{page:<page>/<segment>}}` token
-  (`docs/writing-help.md`, "Linking to another page"). `ui.js`'s
-  `prose(text, seen)` renders it through `links.js`'s `linkText`: each
-  token becomes a link to that view, named as the sidebar and the page
-  title name it (a page with segments opens on its first). Every place
-  the dashboard shows server text uses `prose()`: help, intros, notes,
-  table and column help, callouts, empty states, recommendation and
-  check detail, tips, habit cards, capture metrics, the setup list and
-  a session's explanation. Where a link can't go (a tooltip, a toast, a
-  grid cell, whose row opens its own detail) `plainText` gives the
-  page's name instead, as `pages.plain()` does for the CLI. A token
-  naming no page is left as written rather than dropped.
-- **Glossary terms.** With a `seen` set, `prose()` also finds the words
-  in `links.js`'s `JARGON` (each a `GLOSSARY` term, with the plural and
-  other forms it goes by) and turns the first use of each in a card or
-  section into a button styled as the word with a dotted underline. It
-  opens the term's definition, the Glossary's own wording, with a link
-  to its entry (`#/glossary/terms?term=<slug>`). Later uses in the same
-  card or section stay plain words. Page intros, the Glossary itself,
-  and popovers (help, column help) show no term buttons: a popover
-  inside a popover would lose its place.
-- **Feeds N actions.** `api.js`'s `actionIndex()` reads the window's
-  recommendations (`loadRecommendations()`, one fetch per window shared
-  by the Actions badge and inbox, the Overview and the grids) and
-  indexes their evidence by report table and by row. A table that is
-  evidence for a recommendation shows **Feeds N actions** beside its
-  heading, and each row a recommendation cites carries a small mark at
-  the end of its first cell; both open a list of those actions, each a
-  link to its detail in Actions (`?id=<key>`). N counts inbox items: a
-  rule that fires for several agent types is one action. A mark sits
-  inside the row's line box, so a marked row is as tall as the rest.
-- **Popovers close on a link.** Following any link inside a popover
-  closes it, so it never floats over the view the link opens.
+### A new view
+
+`app.js`'s `changeView` runs the route change inside
+`document.startViewTransition` only when the browser has it, the view
+really changes, motion is welcome (`motionOK()`), the page is visible,
+and no dialog is open.
+
+- The old view fades out over 120ms (`--dur-page-out`, `--ease-in`); the
+  new one fades in over 220ms (`--dur-page`, `--ease-out`), rising 6px.
+- While it runs, `html` has `.view-changing`, which names the views, the
+  sidebar, the page header and the toasts. Only the views fade; the rest
+  changes at once.
+- The old view keeps its place however far the page scrolls for the new
+  one (`--view-shift`). Focus and scroll are still `showView`'s.
+- While a transition runs, Chromium hit-tests only the page root. So a
+  click in those 220ms ends the transition and goes to what is under
+  the pointer (`passClickThrough`).
+- `html { scroll-behavior: smooth }` applies only when motion is welcome.
+
+### The Overview's entrance
+
+- The headline figures count up over 700ms (`countUp`, expo out): from 0
+  the first time, from the last figures shown after a window change.
+  Each tile is drawn with its final text first. A timer 100ms after the
+  end, or the browser tab being hidden, finishes the count, so the final
+  text always stays.
+- The daily spend chart draws in 80ms after the figures start.
+- The next best actions arrive 24ms apart from 160ms (`enterInTurn`,
+  `.is-entering` with `--enter-delay`). A seventh row or later arrives
+  with the sixth.
+- The count-up and the stagger do nothing on a view with no layout box.
+  Figures that land after you have left the Overview show as they are.
+
+### A new window: hold and morph
+
+While a new window or project loads, `holdChart` keeps each chart's
+last drawing at 0.55 opacity, so nothing jumps. Then `renderChart` keeps
+the frame and moves the marks to their new places over 600ms
+(`MORPH_MS`), unless there are more than 1,500 (`MAX_MORPH_MARKS`). A
+first drawing draws in once over 600ms (`DRAW_IN_MS`). `opts.delay`
+holds a draw-in or morph back. A chart resized mid-draw carries on to
+the new size in the time it had left; a settled chart redraws at once.
+A session timeline resized mid draw-in carries on from as much of its
+line as was drawn.
+
+### Reduced motion
+
+Under `prefers-reduced-motion: reduce`:
+
+- every animation and transition takes 0.01ms, and scrolling jumps;
+- the skeleton's shimmer stops;
+- a pulsed row or block holds at full opacity until the next click or
+  key;
+- the drawer, toasts and popovers appear without moving;
+- view transitions and `.is-entering` are off;
+- charts draw and morph with zero duration, and `countUp` leaves the
+  final text as drawn.
+
+## Forced colours
+
+Under Windows High Contrast (`@media (forced-colors: active)`) the
+system's colours replace the theme, and one block in app.css keeps the
+dashboard readable.
+
+Charts keep their own colours (`forced-color-adjust: none` on
+`.chart-svg`, `.sparkline` and `.swatch`): a mark's colour and hatching
+are what the legend names, and the system's few colours can't keep the
+series apart. Around them, axis text and rules take CanvasText,
+gridlines GrayText, a linked rule label LinkText, and the keyboard
+cursor and brush Highlight. Focus rings are Highlight. Chips, tiles,
+panels, menus, popovers, the drawer, tooltips and toasts keep a
+CanvasText border. A meter's lit segments are filled and the rest
+outlined.
+
+## Copy
+
+Every word the dashboard shows follows
+[`docs/writing-help.md`](writing-help.md): short sentences, plain words,
+"you", the Words to use table, and places written "Page › Segment".
+Nothing says "tab". `tests/test_ui_copy.py` checks the dashboard's own
+strings; `tests/test_help_coverage.py` checks the server's help text.
 
 ## Data flow
 
-Every view's data comes from `fetch('/api/...')` returning the envelope
-`docs/api.md` describes; `api.js`'s `fetchJson` unwraps `{"ok": true, "data": ...}`
-and renders, or shows the `error.message` inline (never a raw stack
-trace — the API never sends one, per its own `error.code`/`message`
-contract) on `{"ok": false, ...}`. No view holds state the server
-doesn't already have; a page reload is always safe.
+Every view's data comes from `fetch('/api/...')` and the envelope
+`docs/api.md` describes. `fetchJson` unwraps `{"ok": true, "data": ...}`,
+or the view shows `error.message` inline on `{"ok": false, ...}`; the
+API never sends a stack trace. `loadInto` calls a view's render with the
+data first and the container second. `postJson` sends ratings, profiles
+and capture changes; session tags go through `fetchJson` with `POST`. No
+view holds state the server doesn't have, so a reload is always safe.
+
+`loadReport()`, `loadRecommendations()` and `loadQuickActions()` (the
+checks) are cached per window and project, keyed by `scopeKey()`.
+Search's entries (`loadEntries` in `palette.js`) are cached the same
+way, in `state.searchPromises`. A new window or project (`scopeChanged`
+in `app.js`) or **Redraw figures** (`redrawEverything` in `shell.js`)
+clears them all.
 
 ## Performance
 
-The budget, measured on Chrome at 1440px against a local service with
+The budget, measured in Chrome at 1440px against a local service with
 its report already built:
 
 | Moment | Budget | Measured (median of 9 loads) |
 |---|---|---|
-| First contentful paint | under 300ms | 64ms (48ms to 220ms; the slowest is a cold browser) |
-| Shell ready (`performance.mark("tl-shell-ready")` at the end of `init()`) | under 500ms | 177ms (at most 217ms) |
-| A page or segment already drawn, to its first frame | under 100ms | 19ms to 35ms, the fade included |
+| First contentful paint (the `first-contentful-paint` entry) | under 300ms | 44ms |
+| Shell ready (`performance.mark("tl-shell-ready")` at the end of `init()`) | under 500ms | 66ms |
+| A view already drawn, to its first frame | under 100ms | 19ms to 36ms, the fade included |
+| Actions, from the idle prefetch | under 100ms | 23ms to 35ms |
 
-Once the Overview's chart is drawn, `api.js`'s `prefetchActions` asks
-for the recommendations and the checks (`/api/quick-actions`) while
-the browser is idle (`requestIdleCallback`, at most 2 seconds; half a
-second later where there's no idle callback). Both are cached per
-window (`loadRecommendations`, `loadQuickActions`), so Actions opens
-from them without a fetch. A new window or Redraw figures clears the
-cache.
+These were taken when the motion work merged. A busy machine reads
+slower, so measure on a quiet one: load the page nine times from
+`about:blank` (a hash change alone doesn't reload), read the paint entry
+and the mark, then time a switch between two views already drawn.
+
+Once the Overview's chart is drawn, `prefetchActions` asks for the
+recommendations and the checks while the browser is idle
+(`requestIdleCallback` with a 2-second timeout, else half a second
+later). Both land in the caches above, so Actions opens without a
+fetch.
 
 ## Testing
 
-`tests/test_service_static.py` greps every first-party file in
-`static/` (each `*.html`, `*.js` and `*.css` directly in it) for
-the forbidden substrings above (mirroring `test_render.py`'s HTML
-egress test), then starts a real service with canned JSON for every
-route and checks, among other things, that `app.js` and `app.css` are
-served with the right content type, that
-the modules fetch every `GET /api/...` route this document's sibling
-`docs/api.md` documents under a `### \`GET ...\`` heading, that `PAGES`
-and the view renderers name the same views, that the heading policy
-holds, and that every section `report._SECTION_ORDER` can emit is mapped
-to a view. `tests/test_ui_copy.py` holds the dashboard's own words to
-`docs/writing-help.md` ("Dashboard copy"). The linking tests check that
-every `JARGON` word is a Glossary term, that the client's token pattern
-is the server's, that each place server text shows goes through
-`prose()` (and `plainText` where a link can't go), that no string the
-dashboard shows says "tab", and that tables name the actions they feed. The chart tests hold `CHART_SPECS` to the catalogue above, check every chart's data names a real route or report table, and keep bars thin, colours tied to entities and money axes in step with the billing mode. `tests/test_ui_motion.py` holds the motion, forced colours and load budget above to their source: the View Transition's guards and timing, the count-up's final text, the stagger's cap, the reduced-motion and forced-colours rules, the shell-ready mark and the idle prefetch. There is no headless browser: `urllib.request` plus string checks is enough for a
-stdlib-only test suite.
+The suite has no headless browser: `urllib.request` and string checks
+are enough for a stdlib-only suite. Screenshots and timings are taken by
+hand with Playwright against a dev service.
+
+| Test file | Guards |
+|---|---|
+| `tests/test_service_static.py` | The first-party scans (forbidden substrings, emoji, control characters, inline scripts, "Apply"). A real service with canned JSON: content types, and that the modules fetch every `GET /api/...` route in `docs/api.md`. Imports and no cycles. `PAGES` against the renderers, the heading policy, the section map against `report._SECTION_ORDER`, and the README's page table and glossary against `PAGES` and `GLOSSARY`. The chart catalogue, sources, bar widths, colours and money axes. Evidence links, "Feeds N actions", `prose()`, no "tab" in dashboard text. The pickers, search, shortcuts and many page behaviours |
+| `tests/test_ui_tokens.py` | contrast in both themes, the two dark blocks agree, reduced-motion alternatives, `url()` only for fonts, no side-stripe accents, one global focus ring |
+| `tests/test_ui_motion.py` | "Motion", "Forced colours" and "Performance" above: the View Transition's guards and timing, the count-up's final text, the stagger's cap, the resize carry-on, the reduced-motion and forced-colours rules, the shell-ready mark and the idle prefetch |
+| `tests/test_ui_copy.py` | the dashboard's own words: no banned words, no snake_case, sentences of 25 words at most |
+| `tests/test_static_vendor.py` | the vendored d3 and fonts: hashes, nothing unlisted, `.gitattributes`, the wheel, and no call to d3's parsers |
 
 ## Modules
 
 | File | Holds |
 |---|---|
-| `app.js` | the entry point: the router (`resolveRoute`, `showView`, `VIEW_RENDERERS`), the sidebar, the page header, the project and window pickers (`menuControl`) and the theme toggle |
-| `core.js` | `el`/`clear`, `localStorage` helpers, the shared `state`, `WINDOW_OPTIONS`, `renderedViews`, the `goTo` and `pickProject` hooks (`setRouteHandler`, `setProjectHandler`) and the linked-highlight bus (`highlight`, `listenHighlight`) |
-| `format.js` | the one number format: `formatCell`, `money`/`moneyText`/`moneyNode`/`moneyParts` (the `Units.money` mirror), `currencyAmount`, `moneyUnit`, `readableAmounts`, `compactNumber`, `signedPercent`, `fraction` (a price ratio in words: "a tenth of"), `shortTs`/`relativeTime`, `projectName` |
-| `api.js` | `fetchJson`, `loadInto`, `postJson`, `withWindow`/`withProject`, `scopeKey`, `loadReport`, `loadRecommendations` and `loadQuickActions` (each cached per window and project), `prefetchActions`, `loadProjects` (the project picker's list), the figures-as-of stamp, and the connection state behind "Service unreachable" |
-| `ui.js` | the components (see "Components"): buttons, chips, tiles, panels, callouts, empty states, skeletons, command blocks and `RESTART_NOTE`, popovers, tooltips, drawers, toasts and the confirm dialog |
-| `grid.js` | the data grid (`dataGrid`, with `link` and `swatch` for linked highlight), report tables (`renderTable`, `renderPlacedTables`), `renderMappedSections`, `simpleTable`, `pulseRow` |
-| `charts.js` | the chart frame: `CHART_SPECS`, `fillSummary`, `ENTITY_COLOURS`/`entityColour`, axes, the tooltip, keyboard reading, the table view, resize, `drawChart`/`holdChart`/`chartError` |
-| `charts-types.js` | the chart forms and `renderChart`, `sessionContextChart`, `savingsLevers`, and the micro-forms `sparkline`, `meter`, `habitSparkline` |
-| `links.js` | `PAGES` (pages, segments, intros), `SECTION_PAGE_MAP`/`TABLE_PAGE_MAP`, `parseHash`/`formatHash`, `scopeParams` (the window and project every address carries), `viewIntro`, `pageLink`/`captureLink`, `GLOSSARY`/`termLink`/`termSlug`, `COST_CARDS`/`cardLink` |
-| `costs.js` | the pricing helpers Actions and Glossary both need, from `report.meta.rates`: `pricingFacts`, `priced`, `modelSentence`, and `cardRuleText` (the rule sentence for each `COST_CARDS` concept — the one source Glossary's two segments both read) |
-| `shell.js` | what is on every view: the health banner, the sidebar's status line, the capture banner; the health detail (`renderHealth`) and logon warning (`renderLogonNotice`) the Overview and Data quality show |
-| `icons.js` | the icon set: `icon(name, opts)` returns an inline 16px SVG |
-| `palette.js` | search (Ctrl+K: `openPalette`, `matchScore`) and the keyboard shortcuts (`GO_KEYS`, `showShortcuts`) |
-| `d3.js` | the one door to the vendored d3 (`import d3 from "./d3.js"`) |
+| `index.html` | the shell: skip link, sidebar, page header, banners and `#views` |
 | `theme-boot.js` | a classic script, not a module: sets `data-theme` before the first paint |
-| `page-overview.js` | Overview |
-| `page-actions.js` | Actions › Recommendations and Checks |
-| `page-spend.js` | Spend › Usage, Savings and Sessions (with the session drawer) |
-| `page-cache.js` | Cache › Rebuilds and Lifetime (TTL) |
-| `page-agents.js` | Agents & context › Subagents, Quality and Context |
-| `page-habits.js` | Work habits |
-| `page-setup.js` | Setup › Settings (with impact and backtest) and Profiles |
-| `page-capture.js` | Setup › Capture |
-| `page-data.js` | Data quality |
-| `page-glossary.js` | Glossary › Terms and How costs work |
-
-## Implementation notes (S1-ui)
-
-The UI shipped in `static/` (`index.html`, `app.css` and the modules above) follows
-this document's Constraints, Data flow and Testing sections, and the
-Pages section above describes the shipped structure: seven main pages,
-Data quality and the Glossary, eighteen views in all.
-
-**Generic Section/Table rendering** is driven by two explicit maps in
-`links.js`. `SECTION_PAGE_MAP` gives each report section key its view
-(`recache`/`recache_by_group`/`limits` -> Cache › Rebuilds, `ttl` ->
-Lifetime, `agent_startup`/`agents` -> Subagents,
-`quality`/`workflows`/`workstyle` -> Quality, `context_budget` ->
-Context, `sessions` -> Sessions, `config`/`baseline_comparison` ->
-Settings, `usage`/`elasticity`/`compactions`/`phases` -> Usage
-(`elasticity` only under subscription billing with usage-limit
-readings), `scorecard`/`overview` -> Overview, anything else -> Data
-quality), so an unrecognised section key still lands somewhere visible
-instead of being silently dropped. `TABLE_PAGE_MAP` moves single tables
-away from their section's view: `overview.by_model` to Spend › Usage,
-and `habits.habits_setups` to Setup › Profiles. `renderMappedSections`
-draws a section in full on its own view, and a moved table on its new
-view under its own `h2`. `tests/test_service_static.py` checks every
-section `report._SECTION_ORDER` can emit is in the map, and every table
-key names a real section. `recache_by_group` is mapped even though it
-never arrives as a section's own `key` today -- `report.py`'s
-`_build_recache_section` appends it as an extra *table* inside the
-`"recache"` section rather than a section of its own (review finding
-20) -- so a future refactor that promotes it to its own section needs
-no corresponding dashboard change. `limits` (v3-limits wiring) sits
-with the rebuilds rather than falling to Data quality: a usage-cap
-pause forces exactly the full-expiry re-cache cost `recache`/`ttl`
-already attribute, so its six tables read naturally alongside them.
-`habits` maps to Work habits, and `capture` to Setup › Capture, whose
-one table is report-only: that view draws its own figures from
-`/api/capture`.
-
-**Spend › Savings (v4 wiring round).** `carry`/`compaction_sim`/
-`model_swap`/`waste` are mapped to the `"spend/savings"` view in the
-same `SECTION_PAGE_MAP` — not because anything calls
-`renderMappedSections(report, "spend/savings", ...)` (nothing does),
-but because an entry there is the only thing standing between a section
-and the Data quality fallback, exactly the same as `ttl`'s own entry
-above (the Lifetime view never calls `renderMappedSections` either).
-The Savings view instead fetches its own four sections directly
-— `/api/carry`, `/api/compaction-sim`, `/api/model-swap`, `/api/waste`
-— the same one-route-per-view pattern `renderTtl` already used, via a
-new shared `renderReportBackedSection` helper factored out of what used
-to be `renderTtlData`'s own body (identical behaviour, now shared by
-five call sites instead of duplicated). This keeps the four new
-sections off the full `/api/report.json` fetch entirely for this view,
-matching TTL's existing "own dedicated route" precedent rather than
-introducing a second pattern.
-
-**Session timeline (S1-integration fix 1.g).** `/api/session/<id>` now
-carries `turn_series`/`markers` (`docs/api.md`) whenever the watcher has
-stored a top-level transcript digest for that session.
-`buildSessionTimeline`/`findPerTurnSeries` consume exactly that shape —
-`turn_series` as `[turn_index, ctx, cache_creation_tokens, is_recache,
-preceding_primary]` rows, `markers` as turn-index lists keyed by
-`compactions`/`spawns`/`human` — replacing the placeholder box this
-document previously described. A session with no stored digest yet
-(e.g. ingested before the watcher parsed a top-level transcript, or a
-digest that failed to decode) still falls back to an explicit "no
-per-turn data for this session" notice rather than a fabricated curve.
-A single-turn session (exactly one point) draws as a dot rather than a
-`<polyline>`, which needs at least two points to render anything
-(review finding 11). The chart's maximum-context axis scale is computed
-with a plain loop rather than `Math.max.apply` (review finding 10),
-which could otherwise exceed the engine's call-stack/argument-count
-limit on a session with tens of thousands of turns. A session over
-`Store.MAX_TURN_SERIES_POINTS` turns has its `turn_series` downsampled
-server-side (`truncated: true`, `docs/api.md`); the timeline shows a
-note saying so rather than presenting the thinned-out chart as complete.
-
-**Usage-limit markers (v3-limits wiring).** `/api/session/<id>`'s
-`limit_markers` (`docs/api.md`, `docs/limits.md`'s "Session-timeline
-marker contract") ride the same `<svg>`, but a usage-cap
-pause/resume/agent-terminated event's own `ts` falls *inside* the gap
-between two turns, not at one of `turn_series`'s own points — there is
-no turn index to pin it to the way a compaction/spawn/human marker is
-pinned. `buildSessionTimeline` instead interpolates each marker's `ts`
-between the session's own `first_ts`/`last_ts` and draws it in the
-blank strip above the context-size line, in one of three colours
-(`limit_hit`/`limit_resume`/`agent_terminated`, distinct from the four
-turn-indexed marker colours), with its own legend entries (shown only
-for kinds actually present) and a tooltip naming the kind and, when
-present, `detail.subkind` (`session_limit`/`weekly_limit` for a hit,
-`rate_limit`/`other` for a termination). A marker whose `ts` doesn't
-parse is skipped rather than mis-plotted at a wrong-but-plausible
-position.
-
-**Shape-defensive rendering for routes `api.py` hadn't shipped yet.**
-At the time this UI was first built, `service/api.py` did not exist (a
-sibling work package's deliverable), so `/api/ttl`, `/api/config-diff`
-and `/api/baseline`'s exact response shapes were pinned only loosely by
-`docs/api.md` ("same shape as ... Section/Table encoding" without a
-worked example). `renderTtlData`/`renderConfigDiff` still check for
-more than one plausible shape (a bare `Section` dict, a list of `Table`
-dicts, or a flat row list) and fall back to a plain "no data for this
-window" notice rather than rendering nothing on a mismatch — this is
-still live for those two routes. `renderBaseline`'s own defensive
-branch was trimmed once v0.3's `api.py` landed with a confirmed,
-frozen shape (`{"baseline", "history", "capture_status"}` —
-`docs/api.md`); it now reads that shape directly rather than guessing
-at a bare list vs. a single object.
-
-**Inline SVG without a namespace-URI literal.** Bar cells and the
-timeline chart are built as HTML strings (e.g. `'<svg viewBox="..."
-class="bar-svg">...'`) assigned via `innerHTML`, relying on HTML5's
-foreign-content parsing to place `<svg>`/`<rect>`/`<polyline>`/etc. in
-the correct namespace — not `document.createElementNS`, which would
-otherwise require embedding the literal
-`http://www.w3.org/2000/svg` namespace URI and trip the "no bare
-`http://`/`https://` literal" rule this same document states above.
+| `app.css` | the tokens, the component and page styles, then motion, reduced motion and forced colours |
+| `app.js` | the entry point: the router (`resolveRoute`, `changeView`, `showView`, `VIEW_RENDERERS`), the sidebar, the page header, `menuControl`, the theme toggle and `init()` |
+| `core.js` | `el`, `clear`, the storage helpers, `state`, `WINDOW_OPTIONS`, `renderedViews`, the `goTo` and project hooks, `onParams`, `highlight` and `listenHighlight` |
+| `links.js` | `PAGES`, `viewLabel`, `viewIntro`, `parseHash`, `formatHash`, `scopeParams`, `OLD_TAB_VIEWS`, `SECTION_PAGE_MAP`, `TABLE_PAGE_MAP`, `pageLink`, `GLOSSARY`, `JARGON`, `COST_CARDS`, `termLink`, `cardLink`, the `{{page:}}` pattern |
+| `format.js` | `formatCell`, `money`, `moneyText`, `moneyNode`, `moneyParts`, `moneyUnit`, `moneyAxis`, `readableAmounts`, `compactNumber`, `signedPercent`, `fraction`, `shortTs`, `relativeTime`, `modelName`, `projectName`, `setKnownProjects` |
+| `api.js` | `fetchJson`, `loadInto`, `postJson`, `withWindow`, `withProject`, `scopeKey`, `loadReport`, `loadProjects`, `loadRecommendations`, `loadQuickActions`, `prefetchActions`, `actionIndex`, `findSection`, the figures-as-of stamp, the connection state |
+| `ui.js` | the components in the table above, plus `prose`, `countUp`, `enterInTurn` and `motionOK` |
+| `grid.js` | `dataGrid`, `pulseRow`, `pulseNode`, `renderTable`, `renderPlacedTables`, `renderMappedSections`, `renderReportBackedSection`, `simpleTable`, `setSectionChart`, `NEWEST_LAST`, `formatEvidenceValue` |
+| `evidence.js` | `openEvidence`, `evidenceList`, `revealEvidence`, `tableDrawer` |
+| `charts.js` | `CHART_SPECS`, `fillSummary`, `ENTITY_COLOURS`, axes, tooltip, keyboard reading, the table view, resize, `drawChart`, `holdChart`, `chartError` |
+| `charts-types.js` | the eight forms, `renderChart`, `sectionChart`, `sessionContextChart`, `savingsLevers`, `dailyChanges`, `sparkline`, `meter`, `habitSparkline` |
+| `costs.js` | pricing helpers for Actions, Cache and the Glossary: `pricingFacts`, `priced`, `modelSentence`, `avoidableRebuilds`, `cardRuleText` |
+| `shell.js` | on every view: the health banner, the status line, the capture banner, `RETRY_SECONDS`, `renderHealth`, `renderLogonNotice` |
+| `icons.js` | `icon(name, opts)` and `ICON_NAMES` |
+| `palette.js` | `openPalette`, `matchScore`, `GO_KEYS`, `showShortcuts`, `initPalette` |
+| `d3.js` | the one door to the vendored d3 |
+| `page-*.js` | one renderer per view: `page-overview.js`, `page-actions.js` (with `RULE_AREA`), `page-spend.js` (with the session drawer), `page-cache.js`, `page-agents.js`, `page-habits.js`, `page-setup.js` (Settings and Profiles), `page-capture.js`, `page-data.js`, `page-glossary.js` |

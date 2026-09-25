@@ -58,7 +58,7 @@ static-file response, not just a successful `{"ok": true, ...}` one):
 - `X-Content-Type-Options: nosniff` — stops a browser from
   MIME-sniffing a JSON or static-asset response into something else.
 - `Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'`
-  — matches the UI's own "no CDN, no external reference" constraint
+  — matches the UI's own "No external reference" constraint
   (`docs/ui.md`): nothing may load from another origin, inline `<img>`
   data URIs are allowed (the inline-SVG charts), and inline `<style>`
   is allowed (the UI's static `app.css` plus small inline style
@@ -243,7 +243,7 @@ in parallel; only on a scan with many changed files) and `"storing"`
 (sessions folded into the store). `phase` is `null` between scans.
 
 `version` is the running code's version (`claude-token-lens
---version`), also shown in the dashboard's footer: after an update, a
+--version`), also shown on the dashboard's status line: after an update, a
 dashboard still showing the old one hasn't been restarted, or runs from
 another Python install.
 
@@ -480,7 +480,7 @@ modification time: a new billing mode or capture setting changes the
 figures) and keeps the last eight. When the store
 has changed since a window's report was built (a live session writes
 every few seconds), a request is answered from the kept report at once
-and a rebuild starts in the background (one at a time), so a tab never
+and a rebuild starts in the background (one at a time), so a page never
 waits on a whole report build just because a transcript grew. A named
 `window` keeps its report across the minute-by-minute moves of its
 start the same way. A request waits for a build only when nothing is
@@ -492,8 +492,8 @@ requests for a window already being built wait on that one build.
 Every response built from a kept report carries **`X-Figures-As-Of`**
 (ISO 8601, UTC): when that report's figures were read from the store.
 While a newer one is being built it also carries
-**`X-Figures-Refreshing: 1`**. The dashboard shows the time in its
-footer.
+**`X-Figures-Refreshing: 1`**. The dashboard shows the time on its
+status line, at the foot of the sidebar.
 
 - **`window`** (optional) — a named window, used by the dashboard's
   header picker: `1h` (the last hour), `today` (since midnight in
@@ -595,7 +595,7 @@ config section; `400` when neither is given), plus `window`/`window_days`/`since
 Mirrors the CLI's `config-diff` subcommand.
 
 `data`: with `auto_keys=1`, a list of every `config` section table (the
-dashboard's Config tab uses this); with `key`, that key's
+dashboard's Setup › Settings uses this); with `key`, that key's
 `config-diff-<key>` `Table`, or `[]` when it didn't change in the
 window.
 
@@ -633,8 +633,8 @@ across two runs of the same corpus. A dashboard link can use it as
 ### `GET /api/diagnostics`
 
 The report's parse-quality counters (`ReportModel.diagnostics`) as one
-plain-English `Table` — `helptext.diagnostics_table`. Used by the Data
-quality tab.
+plain-English `Table` — `helptext.diagnostics_table`. Used by the
+dashboard's Data quality page.
 
 Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
 routes: windowing query params" above).
@@ -942,7 +942,7 @@ out in the background, as with `/api/impact`).
 
 What this tool installed and changed on this machine, what each piece
 costs in tokens and how to undo it, plus what to expect
-(`footprint.py`). Used by the Data quality tab.
+(`footprint.py`). Used by the dashboard's Data quality page.
 
 `data`: `{"items": [{"key", "title", "status", "where", "what_it_does", "token_cost", "undo"}, ...], "expectations": [{"title", "text"}, ...], "uninstall_command"}`.
 
@@ -1137,8 +1137,9 @@ tag set after the write).
 
 Your rating of a session: the `/tl-feedback` questions as checkboxes,
 kept in this tool's own store (the `session_feedback` table), so it
-costs no tokens. The Sessions tab shows the form while the dashboard
-rating is switched on; the route itself works either way.
+costs no tokens. The session drawer on Spend › Sessions shows the form
+while the dashboard rating is switched on; the route itself works either
+way.
 
 Body: `{"outcome": word|null, "slow": [word], "worth": word|null,
 "helped": [word]}`, any key left out counting as nothing ticked. The
@@ -1367,7 +1368,7 @@ exists only for callers (tests, `baseline.py`, `team.py`) that never
 had a `config_dir` of their own to give it.
 
 **Memoization key: `Store.change_token()`.** Rebuilding a full report on
-every request would make every tab switch in the UI (`docs/ui.md`)
+every request would make every page switch in the UI (`docs/ui.md`)
 re-parse the whole corpus. The implementation caches the assembled
 `ReportModel` in-process, keyed by `(window_days, since, until,
 change_token)` (a named `window` is first turned into its `since`,
@@ -1455,8 +1456,9 @@ to avoid, for one purely cosmetic field. Left as-is rather than
 special-cased.
 
 **Static file serving.** `/` and `/static/*` serve
-`service/static/index.html`/assets (the UI package's build output,
-per `docs/ui.md`) when present, guarded against path traversal
+`service/static/index.html`/assets (the dashboard's own files, served
+as they are with no build step, per `docs/ui.md`) when present, guarded
+against path traversal
 (`Path.resolve()` plus a parent-containment check — a `..` segment or
 an escaping resolved path is `404`, not an error). When
 `service/static/index.html` is missing or unreadable, `/` falls back to

@@ -131,7 +131,7 @@ already has on file before typing one in.
 
 Nothing calls this module yet: `report.build_report` does not add the
 `savers` section, `recommend.recommend()` does not run its rule, and no
-CLI subcommand or dashboard tab prints it. That is deliberate until
+CLI subcommand or dashboard page prints it. That is deliberate until
 these are fixed:
 
 - Detection is a name match, so ordinary tools whose names contain

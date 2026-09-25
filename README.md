@@ -131,7 +131,7 @@ python -m pip install --force-reinstall git+https://github.com/PaulMorrisDev/cla
 python -m claude_token_lens install-service
 ```
 
-Check the dashboard's footer shows the new version. After an update it
+Check the foot of the dashboard's sidebar shows the new version. After an update it
 may re-read your history once, so the first page load can be slow.
 [`CHANGELOG.md`](CHANGELOG.md) lists what changed.
 
@@ -170,7 +170,7 @@ Windows and WSL sessions together, with a **Where** column on
 | What you see | What to do |
 |---|---|
 | `claude-token-lens` "is not recognized as a name of a cmdlet" or "command not found" | pip's Scripts folder isn't on your `PATH`. Use `python -m claude_token_lens` instead; everything else stays the same |
-| The dashboard still looks old after updating (its footer shows an old version, or has no version at all) | Something else is still serving port 8765, such as an older copy started by hand, from another Python install, or from Docker. See [An old dashboard won't go away](#an-old-dashboard-wont-go-away) |
+| The dashboard still looks old after updating (the foot of its sidebar shows an old version, or none at all) | Something else is still serving port 8765, such as an older copy started by hand, from another Python install, or from Docker. See [An old dashboard won't go away](#an-old-dashboard-wont-go-away) |
 | http://127.0.0.1:8765 doesn't open | Run `python -m claude_token_lens serve` in a PowerShell window and leave it open; any error prints there. "Already in use by another serve" names the process that has the dashboard's database open: stop that one first |
 | A banner says the dashboard is **not updating** or its **last scan failed** | The background scan has stopped or keeps failing, so figures are frozen at the time shown. Restart the dashboard: `python -m claude_token_lens install-service` (or stop and start `serve`) |
 | Sessions you ran in WSL are missing | Run `python -m claude_token_lens init` again and say yes when it offers the WSL folder. It only finds a distro that is installed for your Windows user; `wsl -l -v` lists them. See [Using Claude Code in WSL too](#using-claude-code-in-wsl-too) |
@@ -202,7 +202,8 @@ Get-NetTCPConnection -LocalPort 8765 -State Listen | ForEach-Object { Get-Proces
   container in Docker Desktop), then run
   `python -m claude_token_lens install-service`.
 
-Then reload http://127.0.0.1:8765 and check the version in the footer.
+Then reload http://127.0.0.1:8765 and check the version at the foot of
+the sidebar.
 
 ### Uninstalling
 
@@ -247,15 +248,18 @@ completely, see [Uninstalling](#uninstalling).
 
 ## What each page answers
 
-The sidebar lists the pages; a page with more than one part shows them as
-a row of buttons under its title. Each page has its own address (such as
-`#/spend/usage`), so Back, Forward and bookmarks work. Ctrl+K searches
-the pages, tables, recommendations, checks, glossary terms and recent
-sessions; press `?` for the keyboard shortcuts.
+The sidebar lists seven pages, with Data quality and the Glossary at its
+foot. A page with more than one part shows its segments beside its
+title. Every view has its own address, such as `#/spend/usage?w=30`, so
+Back, Forward, bookmarks and shared links work, and the window and
+project travel with it. **Search** (Ctrl+K) finds pages, tables,
+recommendations, checks, glossary terms, recent sessions and projects.
+It also runs commands, such as setting the window or copying a prompt.
+Press `?` for the keyboard shortcuts.
 
 | Page | The question it answers |
 |---|---|
-| Overview | How much did I use, and what should I change first? |
+| Overview | What should I change next, and where did my tokens go? |
 | Actions › Recommendations | What exactly should I change, where, and what is the trade-off? |
 | Actions › Checks | For each way of saving (models, effort, summaries, cache, tools, skills, CLAUDE.md, tool output, habits), and whether any agent is struggling: is there anything to do, and what exactly? |
 | Spend › Usage | How is my usage spread over days, models, projects and five-hour blocks? |
@@ -281,7 +285,14 @@ last change**. **Setup › Capture** doesn't depend on it, so there the
 picker gives way to a note saying so, as it does on **Glossary › Terms**.
 The project picker beside it narrows every page that follows the window
 to one project; the address keeps it (`?project=`), so a bookmark or a
-shared link opens the same view.
+shared link opens the same view. The theme button beside them switches
+between your system's theme, light and dark.
+
+Every figure a recommendation rests on links to the exact table row it
+came from, and a table that feeds a recommendation says so ("Feeds 2
+actions"). Charts answer one question each, and **Show as table** on any
+chart gives the same figures as a grid. Motion is kept short and stops
+when your system asks for reduced motion.
 
 Amounts follow your billing mode. On a Pro or Max plan, savings are a
 share of your usage limits once your statusline has logged enough
@@ -1178,7 +1189,8 @@ see the Status note above):
 ## 10. Running the service
 
 `claude-token-lens serve` runs a local watcher thread, a SQLite store,
-a read-only JSON API and a dependency-free static web UI, so you can
+a read-only JSON API and a web dashboard with no build step (its only
+third-party files, d3 and two fonts, ship in the package), so you can
 keep a live dashboard open instead of re-running `report` by hand. It
 never opens an outbound connection and binds to `127.0.0.1` unless you
 explicitly pass `--allow-remote` (see [SECURITY.md](SECURITY.md)).

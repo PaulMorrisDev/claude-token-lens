@@ -67,7 +67,7 @@ profile, then launch Claude with it for that kind of work (its detail's
 The same table is on Setup › Profiles as **Best setup for each kind of
 task**, all levels together and then by how hard Claude said the work
 was. The agent candidates' own table, **Agents by kind of task**
-(`habits_agents_by_task`), is on the Work habits tab rather than
+(`habits_agents_by_task`), is on the Work habits page rather than
 repeated here.
 
 **Subagents and CLAUDE.md.** With metrics capture at Standard, each
@@ -86,7 +86,7 @@ The estimate reads the report's own tables and runs no new simulation:
 | `autoCompactWindow` | summary-point sweep | Simulated: your sessions replayed; not estimated past `CompactionSimThresholds().max_compactions_per_session` summaries a session (EST-P2, the same floor the compaction-window rule and this goal's own candidates are held to) |
 | `promptCacheTtl`, `subagentPromptCacheTtl`, an agent's `experimental.cacheTtl` | cache-lifetime simulation | Simulated: every cache write replayed at 5 minutes or 1 hour |
 | an agent's `omitClaudeMd = true` | CLAUDE.md tokens per spawn, minus Managed policy CLAUDE.md (still loads either way -- F13); `context_files`' own carry cost for the agent, minus Managed there too | Measured per spawn, times the spawns in the window -- or the carry cost (EST-P10: cache reads until it's re-sent), whichever is greater |
-| `skillOverrides`, `enabledPlugins` (turning one off) | each skill's listing cost (Context files) | Estimated from what stops being sent |
+| `skillOverrides`, `enabledPlugins` (turning one off) | each skill's listing cost (Agents & context › Context) | Estimated from what stops being sent |
 | `effortLevel`, an agent's `effort` | thinking share of output | Not estimated: shows the thinking share only |
 | `fastMode = false` | fast-priced replies this window | Simulated: every reply this window actually billed at a fast-mode rate, repriced at its model's standard rate |
 
