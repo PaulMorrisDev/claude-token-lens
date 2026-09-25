@@ -957,6 +957,9 @@ def make_handler(
             usage_log_rows=usage_log_rows,
             # Your Sessions-tab ratings, for the Work habits tab.
             ratings=store.all_feedback(),
+            # Spend > Usage shows cost by phase. The CLI keeps it behind
+            # --phases; here it costs about 1% of the build.
+            phases=True,
             # v4 wiring round: without this, waste.WasteStats's salted
             # session-id hash would fall back to report.py's own
             # temp-directory default (see _default_waste_config_dir) --

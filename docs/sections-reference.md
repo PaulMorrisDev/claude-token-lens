@@ -11,7 +11,7 @@ in this order: `overview`, `usage`, `elasticity` (only under
 subscription billing with usage-log readings), `sessions`, `recache`, `ttl`,
 `limits`, `carry`, `compaction_sim`, `plan_handoff`, `model_swap`, `waste`,
 `compactions`, `agent_startup`, `agents`, `run_split`, `hooks`, `quality`, `workstyle`, `habits`,
-`workflows`, `phases` (only with `--phases`), `config` (only when config
+`workflows`, `phases` (CLI only with `--phases`; the dashboard always has it), `config` (only when config
 snapshots exist), `context_budget`, `capture`, `scorecard`, and
 `baseline_comparison` (only with `--baseline`). `claude-token-lens
 report` prints it. This file groups sections by topic, so its order
@@ -64,7 +64,7 @@ and it's still useful when you want one section by itself.
 | `workstyle` | Workstyle | `workstyle.py` | one archetype per session/corpus: `overseer-fanout`, `plan-high-implement-low`, `workflow-heavy`, `effort-varied`, `chat-only`, `single-model`, `mixed` (the fallback when none of the other six match), with the evidence features |
 | `habits` | Work habits | `habits.py` | the "Weekly pace" digest, habits worth trying with a saving estimate and evidence, per-task and per-agent setup comparisons, and (once you rate sessions or use `/tl-feedback`) cost per piece of work that met its goal |
 | `workflows` | Workflows | `workflows.py` | per-run agent count, phase count, duration and cost from `<session>/workflows/wf_*.json` |
-| `phases` | Phases | `phases.py` | cost split across DISCOVERY (read/search only), IMPLEMENTATION (real edits or an ordinary shell command), VERIFICATION (a test/build tool, or a scratch-file edit), OTHER — only in the report when `--phases` is given |
+| `phases` | Phases | `phases.py` | cost split across DISCOVERY (read/search only), IMPLEMENTATION (real edits or an ordinary shell command), VERIFICATION (a test/build tool, or a scratch-file edit), OTHER — in the CLI's report only when `--phases` is given; the dashboard always builds it |
 | `config` | Config | `report.py` via `snapshots.py` | one diff table per config key that changed across the window's snapshots (capped at 20 keys) — only present when `snapshot-config` snapshots exist for the window |
 | `context_budget` | Context budget | `context_budget.py` | an estimated breakdown of what a session's context window is spent on before any real work (system prompt and tools, skills, memory files, custom agents, MCP tools), plus ground truth where the statusline logged it |
 | `capture` | Capture | `habits.py` | what metrics capture has cost since it was turned on, measured from the transcripts, and what the habits and feedback that depend on it are worth a week — see [`capture.md`](capture.md) |
@@ -1001,8 +1001,9 @@ here since a turn usually does one or the other, not both.
   `phases_by_agent_type` still files a named one under its type.
 - `phases_by_agent_type` — the same, cross-tabbed by agent type.
 
-A DISCOVERY cost share above the module's threshold (default 35%, only
-evaluated when `--phases` was given) feeds the `discovery-share`
+A DISCOVERY cost share above the module's threshold (default 35%,
+evaluated whenever the section is present: with `--phases` on the CLI,
+always on the dashboard) feeds the `discovery-share`
 recommendation — see [Recommendations](#recommendations-recommendpy)
 below.
 
@@ -1455,7 +1456,7 @@ own `_rule_*` functions: `ttl-switch`, `long-tool-waits`,
 without `agent_startup` data; otherwise the per-part `spawn-claude-md`,
 `spawn-unused-skills`, `spawn-unused-mcp`, `spawn-read-only-tools`,
 `spawn-task-prompt` and `spawn-shared-claude-md`), `effort-mismatch`,
-`discovery-share` (only with `--phases`), `pricing-coverage`,
+`discovery-share` (when the `phases` section is present), `pricing-coverage`,
 `data-quality`, `limit-pressure`. Then each module's own rule:
 `tool-output-carry` (`carry.RULES`), `plan-handoff` (`handoff.RULES`),
 `run-split` (`run_split.RULES`), `hook-failures`, `hook-block-resent`

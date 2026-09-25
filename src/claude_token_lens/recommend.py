@@ -282,7 +282,7 @@ class RecommendThresholds:
     # whose purpose is docs/general-dev at effort high or above".
     effort_mismatch_thinking_share_pct: float = 30.0
 
-    # discovery-share: "--phases and DISCOVERY > 35%" (matches
+    # discovery-share: a phases section with DISCOVERY > 35% (matches
     # phases.DISCOVERY_SHARE_THRESHOLD's 0.35, expressed here as a pct).
     discovery_share_pct: float = 35.0
 
@@ -2010,7 +2010,7 @@ def _rule_discovery_share(report: ReportModel, th: RecommendThresholds) -> list[
             ),
             lever=None,
             evidence=[
-                _evidence("DISCOVERY cost share", share_pct, "phases", "phases_summary", "discovery"),
+                _evidence("Share of cost", share_pct, "phases", "phases_summary", "discovery"),
             ],
         )
     ]

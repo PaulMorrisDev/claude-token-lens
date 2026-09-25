@@ -1207,8 +1207,9 @@ one is built in the background.
 ### `GET /api/report.md` / `GET /api/report.html` / `GET /api/report.json`
 
 The full report in each format, built from the store instead of a fresh
-parse — byte-equivalent in content to running the CLI's `report`
-subcommand with `--json`/`--html`/(default) over the same window,
+parse — byte-equivalent in content to running the CLI's `report
+--phases` subcommand with `--json`/`--html`/(default) over the same
+window (the service always builds the `phases` section),
 modulo the "verified against CLI JSON" test the plan's Milestone v0.2
 Tests bullet requires (`tests/test_service_api.py`, built alongside
 `api.py`). All three return the raw rendered document on success, not
@@ -1537,6 +1538,10 @@ service-specific session-metrics rebuild the way the CLI's own
 narrower computation. A `key` that names a config key which didn't
 change in the requested window returns `{"ok": true, "data": []}`, not
 an error.
+
+`_build_report_model` passes `phases=True`, so Spend › Usage can show
+cost by phase; on a 30-day store it adds about 1% to the build. The
+CLI keeps the section behind `--phases`.
 
 `_build_report_model` also passes `config_dir=options.config_dir` to
 `build_report()` (v4 wiring round) so that `waste.py`'s salted

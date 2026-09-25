@@ -810,7 +810,7 @@ def _explain_pricing_coverage(rec: Recommendation, ctx: _Context) -> None:
 
 
 def _explain_discovery_share(rec: Recommendation, ctx: _Context) -> None:
-    share = _evidence_value(rec, "DISCOVERY")
+    share = _evidence_value(rec, "Share of cost")
     rec.title = "Much of the work is finding your way around"
     rec.why = (
         f"Searching and reading the code took {share:.0f}% of the cost." if isinstance(share, (int, float)) else ""

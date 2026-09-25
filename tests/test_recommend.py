@@ -1666,11 +1666,15 @@ def test_discovery_share_fires_when_phases_section_present_and_above_threshold()
     r = _add_section(r, Section(key="phases", title="Phases", tables=[_phases_summary_table(50.0)]))
     recs = recommend_fn(r, config=_config(), archetype=None)
     rec = next(rec for rec in recs if rec.id == "discovery-share")
-    assert rec.evidence == [("DISCOVERY cost share", 50.0, "phases.phases_summary", "discovery")]
+    assert rec.evidence == [("Share of cost", 50.0, "phases.phases_summary", "discovery")]
+    # The dashboard shows phases without --phases, so the card never names the flag.
+    assert rec.title == "Much of the work is finding your way around"
+    assert rec.why == "Searching and reading the code took 50% of the cost."
+    assert "--phases" not in rec.action
 
 
 def test_discovery_share_does_not_fire_without_phases_section():
-    r = _base_report()  # no "phases" section at all -- --phases wasn't passed
+    r = _base_report()  # no "phases" section at all -- the CLI without --phases
     recs = recommend_fn(r, config=_config(), archetype=None)
     assert not any(rec.id == "discovery-share" for rec in recs)
 

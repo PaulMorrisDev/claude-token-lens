@@ -107,6 +107,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine. Spawns, observed cost and every `Cost at` column are
   unchanged. The Models quick action gains a "Model set by" column.
 
+- **Spend › Usage shows where the work went.** The dashboard never
+  built the phases section, so "Cost by phase" and its main session,
+  subagent and workflow-agent split never appeared, and the
+  `discovery-share` recommendation could never fire there. It is now
+  always built, adding about 1% to a report build (10.4 s to 10.55 s on
+  a 30-day store); its figures match `report --phases`. The CLI still
+  needs `--phases`. The section's notes and the recommendation's
+  evidence now name the phases as the tables do (Exploring, Building,
+  Checking, Other).
+
 - **The dashboard reads each project's own settings again.** It filed
   every settings snapshot under "(unknown project)", so Setup › Settings
   showed one project instead of each, and per-project settings never
