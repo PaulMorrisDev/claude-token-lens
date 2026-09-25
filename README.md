@@ -97,20 +97,31 @@ No git on this machine, or no pip at all? See
 python -m claude_token_lens init
 ```
 
-It asks a few questions. The first matters most: **how you pay for
-Claude Code**. Type `subscription` for a Pro, Max, Team or Enterprise
-plan, or `api` if you pay per token with an API key. For the rest,
-pressing Enter accepts the default, which suits most people. It then
-offers these, and asks before each:
+It asks up to four questions:
 
-- **Connect to Claude Code.** It adds a small hook to your Claude Code
-  `settings.json` that records your settings when a session starts. The
-  dashboard uses it to show what changed and what that did. It shows
-  you the exact change first, and backs the file up.
-- **Include your WSL sessions**, only if you run Claude Code inside WSL
-  too. It finds them itself; say yes.
-- **Start the dashboard when you log on.** Say yes. It starts straight
-  away, and again every time you log on.
+1. **How you pay for Claude Code.** `1` for a Pro, Max, Team or
+   Enterprise plan, `2` for an API key. Amounts then show as a share of
+   your usage limits, or in dollars.
+2. **Connect to Claude Code.** It adds a small hook to your Claude Code
+   `settings.json` that records which settings each session ran with.
+   The dashboard uses it to show what changed and what that did. It
+   adds no tokens.
+3. **Start the dashboard when you log on.** Say yes. It starts straight
+   away, and again every time you log on.
+4. **Sharper tips**, optional. Claude ends each reply with a short tag,
+   such as `[tl: task=bugfix brief=clear]`, so the tips fit how you
+   work. It costs a few hundred tokens a session and switches itself
+   off after 14 days.
+
+Then it lists every change and asks once: **Go ahead? [Y/n/d]**. Type
+`d` to see the exact `settings.json` change first, or `n` to change
+nothing. It backs `settings.json` up before changing it. It ends with a
+checklist of what's set up and what to open next; run
+`python -m claude_token_lens status` to see it again any time.
+
+It finds your WSL sessions itself, if you have any, and includes them.
+`init --advanced` also asks about the rest: projects to leave out, the
+time zone, and the full metrics capture choices.
 
 > [!WARNING]
 > Claude Code deletes old transcripts, after 30 days by default. The
@@ -171,8 +182,8 @@ are kept inside Linux, in
 `\\wsl.localhost\<distro>\home\<you>\.claude\projects`. Install
 claude-token-lens on **Windows** as above, not inside WSL, and run
 `python -m claude_token_lens init`. It finds those folders itself and
-asks whether to include them. Say yes, and the dashboard shows your
-Windows and WSL sessions together. A **Where** column on
+includes them, naming each distro when it starts. The dashboard then
+shows your Windows and WSL sessions together. A **Where** column on
 **Spend › Sessions** says which is which ("This computer" or
 "WSL: Ubuntu").
 
@@ -368,8 +379,9 @@ python -m pip uninstall claude-token-lens
 | The dashboard still looks old after updating (the foot of its sidebar shows an old version, or none at all) | Something else is still serving port 8765, such as an older copy started by hand, from another Python install, or from Docker. See [An old dashboard won't go away](#an-old-dashboard-wont-go-away). If `--version` shows the new version but the dashboard doesn't, it runs from another Python: see [An update doesn't take](#an-update-doesnt-take-more-than-one-python) |
 | http://127.0.0.1:8765 doesn't open | With 0.6.1 on Windows, the logon task can't start the dashboard: run `python -m claude_token_lens update` to get the fix. Otherwise, run `python -m claude_token_lens serve` in a PowerShell window and leave it open; any error prints there. "Already in use by another serve" names the process that has the dashboard's database open: stop that one first |
 | A banner says the dashboard is **not updating** or its **last scan failed** | The background scan has stopped or keeps failing, so figures are frozen at the time shown. Restart the dashboard: `python -m claude_token_lens install-service` (or stop and start `serve`) |
-| Sessions you ran in WSL are missing | Run `python -m claude_token_lens init` again and say yes when it offers the WSL folder. It only finds a distro that is installed for your Windows user; `wsl -l -v` lists them. See [Using Claude Code in WSL too](#using-claude-code-in-wsl-too) |
-| Amounts are in dollars but you're on a plan | Run `python -m claude_token_lens init` again and answer `subscription` to "How do you pay for Claude Code?" |
+| Sessions you ran in WSL are missing | Run `python -m claude_token_lens init` again: it adds any WSL folder it finds. It only finds a distro that is installed for your Windows user; `wsl -l -v` lists them. See [Using Claude Code in WSL too](#using-claude-code-in-wsl-too) |
+| Amounts are in dollars but you're on a plan | Run `python -m claude_token_lens init` again and answer `1` to "How do you pay for Claude Code?" |
+| Not sure setup worked | Run `python -m claude_token_lens status`. It says what's done, what's off and what needs attention, with the command that fixes each. The Overview page shows the same list until everything essential is set up |
 | `capture status` or **Setup › Capture** says your organisation allows only the hooks it deploys, or that hooks are turned off | A managed policy (`allowManagedHooksOnly` or `disableAllHooks`), or `disableAllHooks` in your own settings.json, stops Claude Code running any hook you add yourself. So capture, the config-snapshot hook and the status line can't run. Reports and the dashboard still work from your transcripts. Only your administrator can lift a managed policy |
 
 [`docs/first-run.md`](docs/first-run.md#troubleshooting) has more.

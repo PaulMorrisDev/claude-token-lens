@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`init` asks four things and shows one review.** How you pay (`1` a
+  plan, `2` an API key), whether to connect to Claude Code, whether to
+  start the dashboard at logon, and optionally sharper tips (metrics
+  capture at Essentials for 14 days, plus `/tl-feedback`). Nothing is
+  written until one `Go ahead? [Y/n/d]`, where `d` shows the exact
+  `settings.json` change. It ends with a checklist of what's done, off
+  or needs attention. Pressing Enter no longer saves "api" on a fresh
+  machine: with nothing saved, the billing question asks again. The
+  rest of the old questions moved behind `init --advanced`, and
+  `projects/<slug>.toml` is written only there. `--dry-run` now writes
+  nothing at all, not even the hook copy. WSL folders it finds are
+  included and named. [`docs/onboarding.md`](docs/onboarding.md#init)
+  has the details.
+- **The main session is never told to use Haiku.** A main session on
+  Sonnet gets no model card; Opus still steps down to Sonnet. That card
+  is its own recommendation now, ranked after the compaction tips, and
+  its saving no longer counts in the Overview's available saving when it
+  would suggest Haiku.
+- **Essentials also tags the size of each piece of work.** The
+  before-and-after comparison and the new "without this change" figure
+  use it with the kind and difficulty of the work, so a change is judged
+  on like-for-like work. It adds about 10 tokens to each session's
+  note. A new "Measuring your changes" theme on the Capture page says
+  why these three are collected. Installed hooks pick it up when the
+  dashboard next starts, or after `update`.
+- **Your changes record what they changed, and where.** Each settings
+  change keeps its old and new values ("model: opus → sonnet"), and a
+  change made in one project's own settings is judged on that project's
+  sessions only. Changes only your sessions show (a model, effort or
+  CLAUDE.md size change) now appear in "Your changes and what they did"
+  and start the "Since my last change" window. Each measure shows its
+  reading ("Lower", "Possibly higher", "No clear change").
+
 - **The README is a short landing page now.** It keeps the quick start,
   the page table, troubleshooting and the glossary, and gains dashboard
   screenshots (synthetic data), a Privacy section and a "What it can't
@@ -33,6 +66,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Every recommendation has a key of its own.** A rule that made
+  several cards, such as one per CLAUDE.md source, gave them the same
+  key, so the dashboard couldn't tell them apart.
+- **The dashboard logs your estimates.** Saving a profile, or copying
+  the command or prompt for one, now logs its what-if estimate, so
+  "Did your estimates come true?" has something to judge.
+- **A change your sessions show isn't counted twice.** When an apply
+  changes the model and the next session runs on it, that's one change,
+  not two; the second one used to cut the first one's after sessions
+  short.
 - **Quality verdicts no longer compare your work with scheduled checks.**
   Main sessions a scheduled or looped task started, with no message of
   yours, are left out of "Quality by model and effort" and of the
@@ -62,6 +105,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`claude-token-lens status`** says whether each part of the setup
+  works: how you pay, the Claude Code connection and whether it has seen
+  a session yet, the dashboard and its logon task, metrics capture and
+  the `/tl-feedback` skill. Each item says what fixes it. It exits 1
+  only when something essential needs attention. The Overview shows the
+  same checklist while anything essential isn't done, and the Data
+  quality page shows it in full. It replaces the old logon notice.
+- **Ignore a recommendation.** Its detail view has an "Ignore this
+  recommendation" button, and Actions gains "To do" and "Ignored"
+  filters. An ignore belongs to the profile that was active and the
+  project you were looking at (or every project), and lapses when the
+  recommendation changes what it suggests. Ignored ones also stay out of
+  "Start from my recommendations".
+- **"Start building in a fresh session once a big plan is approved."**
+  A new tip for sessions that approved a plan and then carried a lot of
+  planning context through the build. It suggests `/clear` and building
+  from the plan file, and says why forking the conversation saves
+  nothing. [`docs/plan-handoff.md`](docs/plan-handoff.md) has the
+  method.
+- **`/tl-feedback` asks whether the build could have started fresh.**
+  After a piece of work where you approved a plan, it asks one more
+  question. Your answers back or stop the fresh-session tip.
+- **A plan-then-build profile.** When at least half your recent
+  sessions plan and build in one session, the suggested profile is the
+  new built-in `plan-then-build`. Its detail offers "Plan on Opus,
+  build on Sonnet" (`model = opusplan`) as an unticked option, with its
+  saving, when your main sessions run on Opus.
+- **What it would have cost without a change.** Each change in "Your
+  changes and what they did" leads with "Without this change: about X.
+  You paid Y, so it saved about Z", and says how that was worked out: a
+  model or fast mode change is repriced reply by reply, a cache lifetime
+  or raised compaction window is replayed, removed context is priced as
+  carried, and anything else uses the sessions before it. The "Since my
+  last change" window adds the same figure under its headline, and the
+  back-test uses it where it's exact.
+  [`docs/concepts.md`](docs/concepts.md#6-windows-what-if-estimates-and-beforeafter-comparisons)
+  explains each method.
 - `tests/test_doc_links.py` checks that every Markdown link to a
   heading in the README, `docs/`, `SECURITY.md` and this file resolves.
 - `scripts/demo-corpus.py` builds the synthetic sessions the README's
