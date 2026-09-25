@@ -267,6 +267,7 @@ export var SECTION_PAGE_MAP = {
   // Data quality when the whole report is walked.
   carry: "spend/savings",
   compaction_sim: "spend/savings",
+  plan_handoff: "spend/savings",
   model_swap: "spend/savings",
   waste: "spend/savings",
   sessions: "spend/sessions",
@@ -404,7 +405,7 @@ export var GLOSSARY = [
   ["Scope", "Where a change is written: your user settings (every project), this project on your machine only, or this project for everyone."],
   ["Managed setting", "A setting your organisation's policy controls. Only your administrator can change it."],
   ["Snapshot", "A record of your Claude Code settings at one moment, taken so changes can be compared over time."],
-  ["Window", "The stretch of time the numbers cover, picked at the top of the dashboard. It can be the last hour, today, the last 24 hours, 7, 30 or 90 days, all time, or since your last change. A session counts, in full, when it was last active in the window."],
+  ["Window", "The stretch of time the numbers cover, picked at the top of the dashboard. It can be the last hour, today, the last 24 hours, 7, 30 or 90 days, all time, or since your last change. A session counts, in full, when it was last active in the window; since your last change, when it started after the change."],
   ["Change point", "A moment your settings changed: an apply, its undo, or a change the settings snapshot saw. The dashboard compares the sessions before it with those after it."],
   ["Quick action", "One question about a way to spend less, answered from your own sessions with the evidence and a fix you can copy. The dashboard lists them on the Actions page, under Checks."],
   ["What-if estimate", "What a change would have saved over the window, worked out from your own sessions. It is an estimate: cheaper settings can change how Claude works, which the estimate can't see."],

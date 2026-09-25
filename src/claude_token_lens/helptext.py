@@ -99,6 +99,8 @@ PLACEMENT: dict[str, str] = {
     "compaction_sim_by_agent_type": "keep",
     "compaction_sim_by_task": "advanced",
     "compaction_sim_fidelity": "advanced",
+    "plan_handoff_summary": "keep",
+    "plan_handoff_by_session": "keep",
     "model_swap_by_agent_type": "keep",
     "model_swap_summary": "keep",
     "waste_summary": "keep",
@@ -150,6 +152,7 @@ PLACEMENT: dict[str, str] = {
     "habits_setups": "keep",
     "habits_agents_by_task": "advanced",
     "habits_outcomes": "advanced",
+    "habits_by_shape": "keep",
     "habits_self_report": "advanced",
     "habits_prompt_flags": "advanced",
     "habits_skills": "advanced",
@@ -518,6 +521,20 @@ SECTION_COPY: dict[str, SectionCopy] = {
             "after it, so small windows look better than they are.",
             act="Treat large savings at small windows with caution. {{page:actions/recommendations}} only suggests a "
             "minimum window, after taking off an allowance for re-reading.",
+        ),
+    ),
+    "plan_handoff": SectionCopy(
+        title="Building in a fresh session after a big plan",
+        intro=(
+            "Would the build after an approved plan cost less in a fresh session that starts from the plan alone?"
+        ),
+        help=Help(
+            shows="Each main session where you approved a plan, and how much planning context the build kept. "
+            "Also what the replies after it would have cost without it.",
+            read="An upper bound: a fresh session may need more than the plan. The cache write of the plan and an "
+            "allowance for re-reading files are taken off. Replies after a conversation summary aren't counted.",
+            act="When a big plan is approved, run /clear and ask Claude to carry out the plan file. Forking copies "
+            "the whole conversation, so it saves nothing.",
         ),
     ),
     "model_swap": SectionCopy(
@@ -966,6 +983,39 @@ TABLE_COPY: dict[str, TableCopy] = {
         },
         value_labels={"met": "Met", "partly": "Partly", "missed": "Missed", "stopped": "Stopped early"},
         lead_columns=["outcome", "pieces", "cost", "avg_cost", "task", "slow", "helped"],
+    ),
+    "habits_by_shape": TableCopy(
+        title="Planning and building in one session",
+        help=Help(
+            shows="Your main sessions by whether you approved a plan and then built it in the same session. "
+            "Your feedback on each kind of session sits beside it.",
+            read="Planning kept is the context from before the plan that the build carried. The last three "
+            "columns count your /tl-feedback answers on whether the build could have started from the plan "
+            "alone.",
+            act="If most of your sessions plan and build and the plan was enough, start the build in a fresh "
+            "session. If the build needed the discussion, write fuller plans first.",
+        ),
+        columns={
+            "shape": ("Session", "Whether you approved a plan, and built it in the same session."),
+            "sessions": ("Sessions", "Main sessions of this kind."),
+            "share": ("Share", "Their share of your main sessions."),
+            "avg_cost": ("Per session", "The average cost of one, subagents included, at list price."),
+            "carried_median": ("Planning kept (median)", "The median context, in tokens, that a fresh start "
+                               "from the plan would have dropped."),
+            "pieces": ("Pieces rated", "Pieces of work in these sessions you gave feedback on."),
+            "met_pct": ("Met the goal", "Of the rated pieces, the share that met its goal."),
+            "worth_pct": ("Worth it", "Of the pieces you said were or weren't worth it, the share worth it."),
+            "costly_pct": ("Too costly", "Of the same pieces, the share you said cost too many tokens."),
+            "handoff_yes": ("Plan was enough", "Answers saying the build could have started fresh from the plan."),
+            "handoff_partly": ("Plan was partly enough", "Answers saying it needed a few things from earlier."),
+            "handoff_no": ("Needed the discussion", "Answers saying it relied on the earlier discussion."),
+        },
+        value_labels={
+            "plan_build": "Planned and built in one session",
+            "plan_only": "Planned, then built elsewhere",
+            "no_plan": "No plan",
+        },
+        lead_columns=["shape", "sessions", "share", "avg_cost", "carried_median", "met_pct", "handoff_yes"],
     ),
     "habits_self_report": TableCopy(
         title="Claude's reports against your feedback",
@@ -3648,6 +3698,65 @@ TABLE_COPY: dict[str, TableCopy] = {
         },
         value_labels={"subagent types currently on Fable/Opus": "Subagent types on Fable or Opus"},
         lead_columns=["saving_usd", "saving_pct", "observed_cost_usd", "agent_types"],
+    ),
+    # -- savings: building fresh after a plan ------------------------------------
+    "plan_handoff_summary": TableCopy(
+        title="Building in a fresh session after a big plan",
+        help=Help(
+            shows="Main sessions with an approved plan, and what starting each build fresh from the plan could "
+            "have saved.",
+            read="A plan counts when a fresh start would drop a lot of context and many replies follow it. The "
+            "saving overlaps with the auto-compact saving.",
+            act="",
+        ),
+        columns={
+            "scope": ("Scope", "Which sessions this row covers."),
+            "main_sessions": ("Main sessions", "Main sessions in this window, scheduled checks left out."),
+            "sessions_with_plan": ("Sessions with an approved plan", "Main sessions where you approved at least one plan."),
+            "qualifying_sessions": (
+                "Sessions where it pays",
+                "Sessions with a plan big enough, and followed by enough replies, to be worth a fresh start.",
+            ),
+            "tokens_carried_median": (
+                "Planning context kept (median)",
+                "Context a fresh start would have dropped, over the plans that count. The middle value.",
+            ),
+            "saving_usd": ("Most you could save", "The replies after those plans without the planning context, at list price."),
+            "saving_pct": ("Share of main-session cost", "That saving as a share of all main-session cost."),
+            "main_session_usd": ("Main-session cost", "Cost of every main session in this window, at list price."),
+            "build_usd": (
+                "Cost after approved plans",
+                "Replies after each approved plan, up to the next plan, at list price.",
+            ),
+            "build_usd_sonnet": (
+                "Same at Sonnet's prices",
+                "Those replies repriced at Sonnet's list price. Empty when the price list has no Sonnet.",
+            ),
+        },
+        value_labels={"main sessions": "Main sessions"},
+        lead_columns=["saving_usd", "qualifying_sessions", "tokens_carried_median", "saving_pct"],
+    ),
+    "plan_handoff_by_session": TableCopy(
+        title="Sessions with an approved plan",
+        help=Help(
+            shows="One row per main session where you approved a plan, largest saving first.",
+            read="Planning context kept is what a fresh start would have dropped. Replies after a conversation "
+            "summary or the next plan aren't counted.",
+            act="",
+        ),
+        columns={
+            "session": ("Session", "The session's id."),
+            "plans": ("Approved plans", "Plans you approved in this session."),
+            "tokens_carried": ("Planning context kept", "The most context any of its plans would have dropped."),
+            "later_turns": ("Replies after the plan", "Replies after its plans, up to a summary or the next plan."),
+            "qualifies": ("Worth a fresh session", "Whether any of its plans was big enough to count."),
+            "saving_usd": ("Most you could save", "Those replies without the planning context, at list price."),
+            "build_turns": ("Build replies", "Replies after its approved plans, up to the next plan."),
+            "build_usd": ("Build cost", "Cost of those replies, at list price."),
+            "build_usd_sonnet": ("Build cost at Sonnet's prices", "The same replies at Sonnet's list price."),
+        },
+        value_labels={"yes": "Yes", "no": "No"},
+        lead_columns=["session", "tokens_carried", "later_turns", "qualifies", "saving_usd", "build_usd"],
     ),
     # -- savings: wasted replies --------------------------------------------------
     "waste_summary": TableCopy(

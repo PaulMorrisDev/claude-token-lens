@@ -72,11 +72,49 @@ export function runReconnectRetries() {
  * error.message inline... never a raw stack trace" contract.
  *
  * Empty, the container shows a skeleton while the answer is on its way
- * (options.skeleton picks its shape: "lines", "rows", "tiles"). Already
+ * (options.skeleton picks its shape: "lines", "rows", "tiles"), under
+ * what is loading in words (loadingLabel, or options.label). Already
  * drawn, it keeps what it shows, dimmed, until the answer lands; and if
  * the service has gone, it keeps it, marked stale, and tries again once
  * the service is back. options also passes through to fetch.
  */
+// The words over a loading view's skeleton, by the route it reads.
+var LOADING_LABELS = [
+  ["/api/claude-md/", "Loading this file"],
+  ["/api/claude-md", "Loading your CLAUDE.md files"],
+  ["/api/skills", "Loading your skills"],
+  ["/api/setup/status", "Checking your setup"],
+  ["/api/setup", "Loading your setup"],
+  ["/api/health", "Checking the service"],
+  ["/api/diagnostics", "Loading the counters"],
+  ["/api/impact", "Loading your changes"],
+  ["/api/backtest", "Loading past estimates"],
+  ["/api/config-diff", "Comparing your settings"],
+  ["/api/baseline", "Loading your baseline"],
+  ["/api/profiles/", "Comparing this profile with your settings"],
+  ["/api/profiles", "Loading profiles"],
+  ["/api/profile-goals?goal=", "Working out the settings"],
+  ["/api/profile-goals", "Loading goals"],
+  ["/api/quick-actions/", "Checking your sessions"],
+  ["/api/ttl", "Loading the cache lifetimes"],
+  ["/api/capture", "Loading capture settings"],
+  ["/api/sessions", "Loading sessions"],
+  ["/api/session/", "Explaining this session"],
+  ["/api/compactions", "Loading summaries"],
+  ["/api/carry", "Loading tool output"],
+  ["/api/compaction-sim", "Replaying summaries"],
+  ["/api/plan-handoff", "Loading approved plans"],
+  ["/api/model-swap", "Loading model prices"],
+  ["/api/waste", "Loading wasted replies"],
+];
+
+export function loadingLabel(url) {
+  for (var i = 0; i < LOADING_LABELS.length; i++) {
+    if (url.indexOf(LOADING_LABELS[i][0]) === 0) return LOADING_LABELS[i][1];
+  }
+  return "Loading";
+}
+
 export function loadInto(container, url, render, options) {
   var drawn = container.firstChild !== null && !container.querySelector(".loading, .callout-critical");
   if (drawn) {
@@ -84,7 +122,7 @@ export function loadInto(container, url, render, options) {
     container.setAttribute("aria-busy", "true");
   } else {
     clear(container);
-    container.appendChild(loadingNode(null, options && options.skeleton));
+    container.appendChild(loadingNode((options && options.label) || loadingLabel(url), options && options.skeleton));
   }
   function retry() {
     if (container.isConnected) loadInto(container, url, render, options);
@@ -336,6 +374,8 @@ export function actionIndex() {
       list.push({ id: rec.id, key: rec.key || rec.id, title: title, first: title, slot: slot, members: 1 });
     }
     recs.forEach(function (rec) {
+      // Ignored ones feed nothing on screen: only Actions' Ignored list.
+      if (rec.ignored) return;
       (rec.evidence || []).forEach(function (item) {
         if (!Array.isArray(item) || !item[2]) return;
         var source = String(item[2]);

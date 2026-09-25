@@ -37,6 +37,9 @@ class Context:
     config_dir: Path
     effective: dict
     effective_agents: dict
+    #: Recommendations ignored on the dashboard (``ignores.py``): the
+    #: drafted fixes leave their changes out.
+    skip_keys: frozenset = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +156,13 @@ def _merge_fixes(*groups: list[dict]) -> list[dict]:
 
 def _goal(ctx: Context, goal_id: str) -> dict:
     return goals.draft(
-        goal_id, ctx.model, ctx.units, effective=ctx.effective, effective_agents=ctx.effective_agents, period=ctx.period
+        goal_id,
+        ctx.model,
+        ctx.units,
+        effective=ctx.effective,
+        effective_agents=ctx.effective_agents,
+        period=ctx.period,
+        skip_keys=ctx.skip_keys,
     )
 
 
@@ -1021,12 +1030,12 @@ def _quality(ctx: Context) -> dict:
 CHECKS: tuple[Check, ...] = (
     Check("models", "Is each agent on the cheapest model that does the job?",
           "Every reply is priced by its model; a cheaper model for routine agents is usually the largest saving.",
-          _models, ("model-tier",)),
+          _models, ("model-tier", "model-tier-main")),
     Check("effort", "Is anything thinking more than the work needs?",
           "Thinking is billed as output, the most expensive kind of token.", _effort, ("effort-mismatch",)),
     Check("compaction", "When should conversations be summarised?",
           "Every reply re-reads the whole conversation, so the point it's summarised at sets the cost of each reply.",
-          _compaction, ("compaction-window", "compaction-churn")),
+          _compaction, ("compaction-window", "compaction-churn", "plan-handoff")),
     Check("cache", "Which cache lifetime is cheaper for you?",
           "A 5-minute cache is cheaper to write; a 1-hour one survives longer pauses without rebuilding.", _cache,
           ("ttl-switch",)),

@@ -13,6 +13,7 @@
    "brief",
    "level",
    "shift",
+   "size",
    "result",
    "retry",
    "session_end",
@@ -25,9 +26,9 @@
    "brief",
    "level",
    "shift",
+   "size",
    "result",
    "retry",
-   "size",
    "missing",
    "plan",
    "skill",
@@ -45,9 +46,9 @@
    "brief",
    "level",
    "shift",
+   "size",
    "result",
    "retry",
-   "size",
    "missing",
    "plan",
    "skill",
@@ -116,6 +117,17 @@
    "tool_note": ""
   },
   {
+   "id": "size",
+   "group": "essentials",
+   "requires": [],
+   "main_line": "size: xs|s|m|l|xl (how big the work was)",
+   "main_extra": "",
+   "extra_before_tag": false,
+   "sub_line": "",
+   "sub_extra": "",
+   "tool_note": ""
+  },
+  {
    "id": "result",
    "group": "essentials",
    "requires": [],
@@ -135,17 +147,6 @@
    "extra_before_tag": false,
    "sub_line": "",
    "sub_extra": "Re-running an agent? Begin its brief with [retry: model|brief|tools|scope|other].",
-   "tool_note": ""
-  },
-  {
-   "id": "size",
-   "group": "standard",
-   "requires": [],
-   "main_line": "size: xs|s|m|l|xl (how big the work was)",
-   "main_extra": "",
-   "extra_before_tag": false,
-   "sub_line": "",
-   "sub_extra": "",
    "tool_note": ""
   },
   {

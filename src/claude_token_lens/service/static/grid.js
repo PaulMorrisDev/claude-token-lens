@@ -949,6 +949,8 @@ var SECTION_CARDS = {
   context_budget: "startup-context",
   carry: "tool-output",
   compaction_sim: "conversation-summaries",
+  // The planning context kept is re-read on every later reply.
+  plan_handoff: "cache-reads",
   compactions: "conversation-summaries",
   elasticity: "billing-mode",
 };
@@ -1144,6 +1146,7 @@ function ranking(table) {
 var EMPTY_TEXT = {
   context_budget_statusline: ["No status line readings in this window.", "This table fills once the status line logger is installed and has logged a session."],
   habits_outcomes: ["No feedback on your work in this window.", "Answer /tl-feedback, or rate a session on {{page:spend/sessions}}, to fill this table."],
+  habits_by_shape: ["No main sessions with a message of yours in this window.", "A longer window may include some."],
 };
 
 function emptyText(table) {

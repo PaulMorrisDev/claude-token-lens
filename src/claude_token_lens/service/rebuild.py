@@ -65,7 +65,7 @@ from ..cache import result_from_jsonable
 from ..corpus import Corpus, SessionBundle, _session_sort_key
 from ..discovery import _resolve_window, ts_in_window
 from ..model import WorkflowRun
-from .store import Store, decode_digest_blob
+from .store import Store, decode_digest_blob, window_column
 
 
 def _window_ts(top_row, window_by: str):
@@ -125,7 +125,9 @@ def corpus_from_store(
     it would never have been discovered by a fresh ``load_corpus`` call
     over the same window. ``window_by="last-reply"`` (the default) reads
     the session row's stored ``last_ts``, its last reply across every
-    transcript, which is what ``load_corpus`` filters on. A session with
+    transcript, which is what ``load_corpus`` filters on;
+    ``"first-reply"`` reads its ``first_ts`` (service only: the "since my
+    last change" window counts the sessions that started after it). A session with
     no stored top-level transcript
     at all (shouldn't normally happen — ``FileWatcher`` always upserts
     one alongside any of a session's subagents) is skipped rather than
@@ -143,7 +145,7 @@ def corpus_from_store(
     has_window_filter = since_dt is not None or until_dt is not None
     allowed_slugs = set(project_slugs) if project_slugs is not None else None
 
-    session_rows = conn.execute("SELECT id, slug, last_ts FROM sessions").fetchall()
+    session_rows = conn.execute("SELECT id, slug, first_ts, last_ts FROM sessions").fetchall()
 
     bundles: list[SessionBundle] = []
     total_bytes = 0
@@ -154,7 +156,9 @@ def corpus_from_store(
         slug = session_row["slug"]
         if allowed_slugs is not None and slug not in allowed_slugs:
             continue
-        if window_by == "last-reply" and not ts_in_window(session_row["last_ts"], since_dt, until_dt):
+        if window_by in ("last-reply", "first-reply") and not ts_in_window(
+            session_row[window_column(window_by)], since_dt, until_dt
+        ):
             continue
 
         transcript_rows = conn.execute(
@@ -169,7 +173,7 @@ def corpus_from_store(
         if top_row is None:
             continue
 
-        if has_window_filter and window_by != "last-reply":
+        if has_window_filter and window_by not in ("last-reply", "first-reply"):
             window_ts = _window_ts(top_row, window_by)
             if window_ts is None:
                 continue

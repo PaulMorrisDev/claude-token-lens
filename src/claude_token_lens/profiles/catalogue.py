@@ -1,4 +1,4 @@
-"""The seven shipped starting-point profiles (plan "Milestone v0.3":
+"""The eight shipped starting-point profiles (plan "Milestone v0.3":
 "Catalogue shipped as starting points, each with the metrics that
 justify it"), plus :func:`suggest`, the deterministic archetype/purpose
 -> catalogue-id mapping the plan's baseline/``init`` (v0.3, out of this
@@ -39,8 +39,9 @@ from .schema import Profile, load_profile
 
 __all__ = ["CATALOGUE_IDS", "FOR_TASKS", "list_profiles", "get", "suggest", "task_profile", "tasks_for"]
 
-#: Exactly the seven ids the plan names (Milestone v0.3's catalogue
-#: bullet), in the order the plan lists them.
+#: The seven ids the plan names (Milestone v0.3's catalogue bullet), in
+#: the order the plan lists them, then ``plan-then-build`` (a way of
+#: working :func:`suggest` reaches through its ``shape`` input).
 CATALOGUE_IDS: tuple[str, ...] = (
     "interactive-chat",
     "discovery-scrape",
@@ -49,6 +50,7 @@ CATALOGUE_IDS: tuple[str, ...] = (
     "overseer-fanout",
     "overnight-batch",
     "workflow-ultracode",
+    "plan-then-build",
 )
 
 
@@ -137,6 +139,12 @@ FOR_TASKS: dict[str, tuple[str, ...]] = {
 #: as they do in ``classify.classify_session``.
 _STRUCTURAL_PURPOSES = ("local-llm-pipeline", "workflow-run", "agent-fanout")
 
+#: A way of working measured from the sessions themselves -> catalogue
+#: id. ``plan-then-build``: at least half the main sessions approved a
+#: plan and built it in the same session (``baseline`` reads
+#: ``habits.habits_by_shape``).
+SHAPE_PROFILES: dict[str, str] = {"plan-then-build": "plan-then-build"}
+
 
 def tasks_for(profile: Profile) -> tuple[str, ...]:
     """The kinds of task ``profile``'s ``for`` words cover, in order. A
@@ -164,7 +172,12 @@ def task_profile(task: str) -> str | None:
     return _task_index().get(task)
 
 
-def suggest(archetype: str | None, purposes: list[str], tasks: list[str] | tuple[str, ...] = ()) -> str:
+def suggest(
+    archetype: str | None,
+    purposes: list[str],
+    tasks: list[str] | tuple[str, ...] = (),
+    shape: str | None = None,
+) -> str:
     """The catalogue id ``id`` (see :data:`CATALOGUE_IDS`) that best
     starts a corpus with workstyle ``archetype`` (one of
     ``schema.ARCHETYPES``, or ``None``/unclassified) whose dominant
@@ -178,11 +191,20 @@ def suggest(archetype: str | None, purposes: list[str], tasks: list[str] | tuple
     otherwise the first task a catalogue profile's ``for`` list covers
     (:data:`FOR_TASKS`) comes before the purposes, since Claude reported
     it rather than it being guessed. Without ``tasks`` the purposes are
-    read in the caller's order, as before."""
-    if tasks:
+    read in the caller's order, as before.
+
+    ``shape``: a way of working measured from the sessions
+    (:data:`SHAPE_PROFILES`). It comes after a structural purpose and
+    before the tasks: a plan-then-build corpus's tasks (feature, bugfix)
+    would otherwise lead to ``implementation-heavy``, which hands the
+    build to a cheaper model."""
+    if tasks or shape in SHAPE_PROFILES:
         for purpose in purposes:
             if purpose in _STRUCTURAL_PURPOSES:
                 return _PURPOSE_OVERRIDE[purpose]
+    if shape in SHAPE_PROFILES:
+        return SHAPE_PROFILES[shape]
+    if tasks:
         for task in tasks:
             profile_id = task_profile(task)
             if profile_id is not None:

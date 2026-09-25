@@ -1,36 +1,28 @@
-"""``claude-token-lens init`` (v0.3 milestone, plan "Configuration
-layers" section's "Asked, not guessed (v0.3 init)"): detect what's
-already on the machine, ask (or derive, under ``--non-interactive``) a
-handful of questions this codebase genuinely cannot infer on its own,
-write ``config.toml``/``<config_dir>/projects/<slug>.toml``, print the
-install-step fragments when asked to, and finish by running an initial :mod:`~claude_token_lens.baseline` capture
-and printing its capture-window status.
+"""The questions ``claude-token-lens init`` asks, and the parts of it
+that write ``config.toml`` and the first baseline. :mod:`setup_flow`
+runs them in order, with one review before anything is written.
 
-This module never performs the dynamic import of the packaged
-``hooks/snapshot-config.py`` hook script itself -- that stays
-``cli.py``'s job (see its own ``_load_snapshot_hook_module``), so this
-module only ever receives the hook's fragment text and the statusline's
-install fragment as plain strings (``hook_fragment``/
-``statusline_fragment`` below). This keeps ``onboarding.py`` importable
-and unit-testable without touching ``importlib``/packaged-resource
-plumbing at all.
+:func:`detect` looks at what's already on the machine; :func:`gather_answers`
+asks (or derives, under ``--non-interactive``) the settings this codebase
+can't infer on its own, all of them under ``init --advanced`` and none
+by default; :func:`save_config` and :func:`run_baseline` write the
+result. Nothing here installs anything or dynamic-imports the packaged
+``hooks/snapshot-config.py``: that stays ``cli.py``'s job, so this
+module stays importable and unit-testable without packaged-resource
+plumbing.
 
 The only ``settings.json`` write here is repairing a broken hook
 command, after showing it and a yes (or ``--repair-hook``), with a
-backup first (:func:`_offer_hook_repair`). Connecting the hook and
-statusline is ``cli.py``'s ``_cmd_init_connect_step``, which also shows
-the change and asks first; profiles are written only by ``apply``.
+backup first (:func:`offer_hook_repair`). Connecting the hook and
+statusline is :mod:`setup_flow`'s, after its review; profiles are
+written only by ``apply``.
 
-The last question, whether to turn on metrics capture, is
-:func:`ask_capture_level`: it warns that capture uses tokens and shows
-what each level would have cost, and ``cli.py``'s
-``_cmd_init_capture_step`` saves the answer and adds the hook entries it
-needs, after showing the change and asking. When a level goes on,
-:func:`ask_capture_until` follows with a second question: a default
-time-box (:data:`DEFAULT_CAPTURE_TIMEBOX_DAYS` days) so capture doesn't
-run on forever unnoticed, or "no limit" if asked for. Then
-:func:`ask_feedback` offers the ``/tl-feedback`` skill and its
-status-line reminder.
+The full capture question, :func:`ask_capture_level`, warns that capture
+uses tokens and shows what each level would have cost. When a level goes
+on, :func:`ask_capture_until` follows with a default time-box
+(:data:`DEFAULT_CAPTURE_TIMEBOX_DAYS` days) so capture doesn't run on
+forever unnoticed, or "no limit" if asked for. Then :func:`ask_feedback`
+offers the ``/tl-feedback`` skill and its status-line reminder.
 """
 
 from __future__ import annotations
@@ -39,12 +31,12 @@ import json
 import os
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import IO
 
 from . import baseline as baseline_mod
-from . import capture_catalogue, discovery, hook_health, pages, snapshots
+from . import capture_catalogue, discovery, footprint, hook_health, pages, snapshots
 from .fixes import RESTART_NOTE
 from .config import (
     Config,
@@ -52,6 +44,7 @@ from .config import (
     ProjectConfig,
     load_config,
     save_project_config,
+    saved_billing,
     write_config_values,
 )
 from .pricing import PricingError, load_pricing
@@ -69,7 +62,13 @@ __all__ = [
     "ask_capture_until",
     "ask_feedback",
     "feedback_answer",
-    "run_init",
+    "QUESTION_KEYS",
+    "BILLING_WORDS",
+    "offer_hook_repair",
+    "config_updates",
+    "save_config",
+    "baseline_project_dirs",
+    "run_baseline",
 ]
 
 #: Default onboarding capture window length in days, when neither the
@@ -87,6 +86,18 @@ DEFAULT_CAPTURE_WINDOW_DAYS = 7
 DEFAULT_CAPTURE_TIMEBOX_DAYS = capture_catalogue.DEFAULT_CAPTURE_TIMEBOX_DAYS
 
 _TRUE_STRINGS = frozenset({"y", "yes", "true", "1", "on"})
+
+#: The keys :func:`gather_answers` can ask, in the order it asks them.
+QUESTION_KEYS = (
+    "billing",
+    "exclude_projects",
+    "launch_overlays",
+    "shared_project_config",
+    "tz",
+    "apply_scope",
+    "capture_window",
+    "extra_projects_roots",
+)
 
 
 def _relative_label(path: Path, base: Path) -> str:
@@ -134,6 +145,9 @@ class Detection:
     #: Claude Code project folders found inside WSL distros that
     #: ``config.toml`` doesn't list yet (``init`` offers to add them).
     wsl_roots: list[Path] = field(default_factory=list)
+    #: ``billing`` as written in ``config.toml`` (``auto`` stays
+    #: ``auto``), or ``None`` when it was never answered.
+    saved_billing: str | None = None
 
 
 def _root_key(path: str | Path) -> str:
@@ -170,6 +184,11 @@ def detect(
     except Exception:
         snapshot_count = 0
 
+    try:
+        saved = saved_billing(config_dir)
+    except ConfigError:
+        saved = None
+
     usage_log_present = (config_dir / "usage-log.csv").exists()
     project_slug = discovery.redact_slug(discovery.slug_for(os.getcwd()))
 
@@ -192,6 +211,7 @@ def detect(
         project_slug=project_slug,
         project_count=project_count,
         wsl_roots=wsl_roots,
+        saved_billing=saved,
     )
 
 
@@ -243,7 +263,7 @@ def load_answers_file(path: str | Path) -> dict:
 
 #: Answers accepted for the billing question, including the plan names
 #: people type instead of "subscription".
-_BILLING_WORDS = {
+BILLING_WORDS = {
     "api": "api",
     "subscription": "subscription",
     "auto": "auto",
@@ -314,30 +334,45 @@ def gather_answers(
     non_interactive: bool = False,
     stdin: IO[str] = sys.stdin,
     stdout: IO[str] = sys.stdout,
+    questions: frozenset[str] | None = None,
 ) -> Answers:
     """Resolve every :class:`Answers` field: an ``--answers`` file wins
     for any key it names; otherwise interactive prompting (default:
     derived from ``detection.existing_config``); under
     ``--non-interactive`` with no matching answers-file key, the derived
     default is used and recorded in ``Answers.notes``.
+
+    ``questions`` (default: all of :data:`QUESTION_KEYS`) are the keys
+    asked. Any other key takes the answers file's value or its current
+    one, without a note (``init`` asks how you pay itself, and its
+    default path asks none of these). A saved ``billing = "auto"`` is
+    offered as ``auto``, not as what it works out to, so pressing Enter
+    keeps it.
     """
     answers_data = load_answers_file(answers_path) if answers_path is not None else None
     notes: list[str] = []
     existing = detection.existing_config
+    asked = frozenset(QUESTION_KEYS) if questions is None else questions
+
+    def quiet(key: str) -> bool:
+        return non_interactive or key not in asked
+
+    def notes_for(key: str) -> list[str]:
+        return notes if key in asked else []
 
     billing_raw = _ask(
         "billing",
         "How do you pay for Claude Code? Type subscription for a Pro, Max, Team or Enterprise plan, "
         "api to pay per token with an API key, or auto to let this tool work it out",
-        existing.billing,
+        detection.saved_billing or existing.billing,
         answers_data=answers_data,
-        non_interactive=non_interactive,
+        non_interactive=quiet("billing"),
         stdin=stdin,
         stdout=stdout,
-        notes=notes,
+        notes=notes_for("billing"),
     )
-    # Anything else is left as typed, for run_init's validation to reject.
-    billing = _BILLING_WORDS.get(billing_raw.strip().lower(), billing_raw)
+    # Anything else is left as typed, for the config check to reject.
+    billing = BILLING_WORDS.get(billing_raw.strip().lower(), billing_raw)
 
     exclude_raw = answers_data.get("exclude_projects") if answers_data is not None else None
     if exclude_raw is None:
@@ -346,10 +381,10 @@ def gather_answers(
             "Projects to always leave out: folder names under ~/.claude/projects, separated by commas (blank for none)",
             ",".join(existing.exclude_projects),
             answers_data=None,
-            non_interactive=non_interactive,
+            non_interactive=quiet("exclude_projects"),
             stdin=stdin,
             stdout=stdout,
-            notes=notes,
+            notes=notes_for("exclude_projects"),
         )
         exclude_projects = [s.strip() for s in exclude_str.split(",") if s.strip()]
     elif isinstance(exclude_raw, list):
@@ -363,10 +398,10 @@ def gather_answers(
         "(most people don't)",
         existing.launch_overlays,
         answers_data=answers_data,
-        non_interactive=non_interactive,
+        non_interactive=quiet("launch_overlays"),
         stdin=stdin,
         stdout=stdout,
-        notes=notes,
+        notes=notes_for("launch_overlays"),
     )
 
     shared_project_config = _ask_bool(
@@ -374,10 +409,10 @@ def gather_answers(
         "Is this project's .claude folder (agents, skills) committed to a repo colleagues use",
         existing.shared_project_config,
         answers_data=answers_data,
-        non_interactive=non_interactive,
+        non_interactive=quiet("shared_project_config"),
         stdin=stdin,
         stdout=stdout,
-        notes=notes,
+        notes=notes_for("shared_project_config"),
     )
 
     tz_raw = _ask(
@@ -385,10 +420,10 @@ def gather_answers(
         "Time zone, such as Europe/London (blank uses this computer's)",
         existing.tz or "",
         answers_data=answers_data,
-        non_interactive=non_interactive,
+        non_interactive=quiet("tz"),
         stdin=stdin,
         stdout=stdout,
-        notes=notes,
+        notes=notes_for("tz"),
     )
     tz = tz_raw or None
 
@@ -398,10 +433,10 @@ def gather_answers(
         "project-local (this project, just you) or repo (this project, everyone)",
         existing.apply_scope,
         answers_data=answers_data,
-        non_interactive=non_interactive,
+        non_interactive=quiet("apply_scope"),
         stdin=stdin,
         stdout=stdout,
-        notes=notes,
+        notes=notes_for("apply_scope"),
     )
 
     capture_window_raw = _ask(
@@ -409,16 +444,16 @@ def gather_answers(
         "How many days to collect data before the first baseline",
         str(existing.capture_window or DEFAULT_CAPTURE_WINDOW_DAYS),
         answers_data=answers_data,
-        non_interactive=non_interactive,
+        non_interactive=quiet("capture_window"),
         stdin=stdin,
         stdout=stdout,
-        notes=notes,
+        notes=notes_for("capture_window"),
     )
     try:
         capture_window = int(capture_window_raw)
     except (TypeError, ValueError):
         capture_window = DEFAULT_CAPTURE_WINDOW_DAYS
-        notes.append(
+        notes_for("capture_window").append(
             f"capture_window: {capture_window_raw!r} is not an integer; used default "
             f"{capture_window!r}"
         )
@@ -426,10 +461,10 @@ def gather_answers(
     extra_projects_roots = _gather_extra_roots(
         detection,
         answers_data=answers_data,
-        non_interactive=non_interactive,
+        non_interactive=quiet("extra_projects_roots"),
         stdin=stdin,
         stdout=stdout,
-        notes=notes,
+        notes=notes_for("extra_projects_roots"),
     )
 
     return Answers(
@@ -557,7 +592,7 @@ def ask_capture_until(
     surprise end date). This is only ever reached from ``off``, so there
     is never an *existing* ``until`` for it to clobber; ``ask_capture_until``
     is skipped entirely when capture is already on and no new level was
-    asked for (see ``_cmd_init_capture_step``).
+    asked for (see ``cli._init_capture_choice``).
 
     Returns ``(until, notes)``: ``until`` is an ISO-8601 time, or ``""``
     for an explicit "no limit".
@@ -678,15 +713,17 @@ def _gather_extra_roots(
     return roots
 
 
-def _offer_hook_repair(health, *, repair_hook: bool, non_interactive: bool, stdin, stdout, now) -> None:
+def offer_hook_repair(health, *, repair_hook: bool, non_interactive: bool, stdin, stdout, now) -> None:
     """A broken SessionStart hook command that can be fixed (see
     ``hook_health``): repair it with ``--repair-hook`` or a yes at the
     prompt, never silently. The fix changes only that command string,
     and settings.json is backed up first."""
     if health.fixed_command is None:
         return
-    stdout.write(f"The hook command in {health.settings_path} is:\n  {health.command!r}\n")
-    stdout.write(f"It should be:\n  {health.fixed_command!r}\n")
+    stdout.write(
+        f"\nThe snapshot hook in Claude Code's settings.json ({footprint.home_label(health.settings_path)}) "
+        f"can't run. Its command is\n  {health.command!r}\nand should be\n  {health.fixed_command!r}\n"
+    )
     if not repair_hook:
         if non_interactive:
             stdout.write("Run 'claude-token-lens init --repair-hook' to fix it (settings.json is backed up first).\n\n")
@@ -701,89 +738,11 @@ def _offer_hook_repair(health, *, repair_hook: bool, non_interactive: bool, stdi
     except (OSError, ValueError, KeyError, TypeError) as exc:
         stdout.write(f"Could not fix the hook command: {exc}\n\n")
         return
-    stdout.write(f"Fixed. The previous settings.json is at {backup}\n{RESTART_NOTE}\n\n")
+    stdout.write(f"Fixed. The previous settings.json is at {footprint.home_label(backup)}\n{RESTART_NOTE}\n\n")
 
 
-def run_init(
-    *,
-    config_dir: str | Path,
-    projects_root_path: str | Path,
-    extra_projects_roots: list[Path] | None = None,
-    find_wsl_roots=None,
-    answers_path: str | Path | None = None,
-    non_interactive: bool = False,
-    no_install: bool = False,
-    hook_fragment: str,
-    statusline_fragment: str,
-    stdin: IO[str] = sys.stdin,
-    stdout: IO[str] = sys.stdout,
-    now: datetime | None = None,
-    all_projects: bool = False,
-    project: list[str] | None = None,
-    project_family: str | None = None,
-    repair_hook: bool = False,
-    connect_step: bool = False,
-    claude_root: str | Path | None = None,
-) -> int:
-    """Run the whole ``init`` flow: detect, ask/derive, write
-    ``config.toml``/``projects/<slug>.toml``, print the install step,
-    then run an initial baseline capture and print its capture-window
-    status. Returns the process exit code (0 ok, 2 bad input -- a
-    malformed ``--answers`` file or a ``config.toml`` shape
-    :func:`~claude_token_lens.config.write_config_values` can't
-    validate).
-
-    ``all_projects``/``project``/``project_family`` mirror
-    ``cli._resolve_project_dirs_for_args``'s own selection flags and
-    fallback rule (fix S6): the baseline capture used to always scan
-    only the current directory's own slug regardless of these -- a user
-    running ``init --all-projects`` from a fresh directory silently got
-    no baseline at all, even though the CLI's own subparser already
-    accepted (and printed as ``detection.project_count``) the wider
-    selection. ``config.toml``/``projects/<slug>.toml`` are still always
-    written for the *current* project -- these flags affect only which
-    project(s) the initial baseline is built from.
-    """
-    now = now or datetime.now(timezone.utc)
-    config_dir = Path(config_dir)
-    projects_root_path = Path(projects_root_path)
-
-    detection = detect(
-        config_dir, projects_root_path, extra_projects_roots=extra_projects_roots, find_wsl_roots=find_wsl_roots
-    )
-
-    stdout.write("claude-token-lens init\n")
-    stdout.write(f"- config directory: {'exists' if detection.config_dir_exists else 'will be created'}\n")
-    stdout.write(f"- current project: {detection.project_slug}\n")
-    stdout.write(f"- projects discovered under projects root: {detection.project_count}\n")
-    for found in detection.wsl_roots:
-        stdout.write(f"- Claude Code sessions found in {discovery.source_label(found)}: {found}\n")
-    stdout.write(f"- config snapshots on file: {detection.snapshot_count}\n")
-    stdout.write(f"- usage log present: {'yes' if detection.usage_log_present else 'no'}\n")
-    # claude_root: Claude Code's own folder (``--claude-root``, else
-    # $CLAUDE_CONFIG_DIR, else ~/.claude), never config_dir's parent.
-    health = hook_health.check(config_dir, now=now, claude_root=claude_root)
-    stdout.write(f"- config snapshot hook: {health.summary()}\n")
-    stdout.write("\n")
-    _offer_hook_repair(health, repair_hook=repair_hook, non_interactive=non_interactive, stdin=stdin, stdout=stdout, now=now)
-
-    try:
-        answers = gather_answers(
-            detection=detection,
-            answers_path=answers_path,
-            non_interactive=non_interactive,
-            stdin=stdin,
-            stdout=stdout,
-        )
-    except OnboardingError as exc:
-        stdout.write(f"claude-token-lens init: {exc}\n")
-        return 2
-
-    for note in answers.notes:
-        stdout.write(f"(derived) {note}\n")
-    if answers.notes:
-        stdout.write("\n")
-
+def config_updates(answers: Answers, detection: Detection, now: datetime) -> dict:
+    """The ``config.toml`` values ``answers`` sets. Writes nothing."""
     updates: dict = {
         "billing": answers.billing,
         "exclude_projects": answers.exclude_projects,
@@ -799,7 +758,13 @@ def run_init(
     }
     if answers.tz is not None:
         updates["tz"] = answers.tz
+    return updates
 
+
+def save_config(config_dir: Path, updates: dict, *, answers: Answers | None = None, stdout: IO[str]) -> int:
+    """Write ``updates`` to ``config.toml`` and, when ``answers`` is
+    given, this project's ``projects/<slug>.toml``. Returns 0, or 2 when
+    ``config.toml`` can't be validated (nothing is written then)."""
     try:
         written_path = write_config_values(config_dir, updates)
     except ConfigError as exc:
@@ -812,6 +777,8 @@ def run_init(
             "(the existing config.toml had a shape init could not merge automatically -- "
             "reconcile config.toml.new by hand and rename it into place)\n"
         )
+    if answers is None:
+        return 0
 
     project_config = ProjectConfig(
         kind=None,
@@ -821,59 +788,51 @@ def run_init(
     )
     project_slug = discovery.slug_for(os.getcwd())
     project_path = save_project_config(config_dir, project_slug, project_config)
-    stdout.write(f"Wrote {_relative_label(project_path, config_dir)}\n\n")
+    # The file is named after the project's folder, user name and all;
+    # the output names it the redacted way.
+    stdout.write(f"Wrote this project's settings, projects/{discovery.redact_slug(project_path.stem)}.toml\n")
+    return 0
 
-    if connect_step:
-        # cli.py's connect step follows run_init: it shows the exact
-        # settings.json change and asks before writing it.
-        pass
-    elif no_install:
-        stdout.write("Install step skipped (--no-install).\n\n")
-    else:
-        stdout.write(
-            "Install step -- these are not written to settings.json automatically; "
-            "merge them in yourself (or run 'claude-token-lens snapshot-config "
-            "--install-hook' for the hook script itself):\n\n"
-        )
-        stdout.write(hook_fragment.rstrip("\n") + "\n\n")
-        stdout.write(statusline_fragment.rstrip("\n") + "\n\n")
 
-    config = load_config(config_dir)
+def baseline_project_dirs(
+    config: Config,
+    *,
+    projects_root_path: Path,
+    extra_projects_roots: list[Path] | None = None,
+    all_projects: bool = False,
+    project: list[str] | None = None,
+    project_family: str | None = None,
+) -> list[Path]:
+    """The project folders the initial baseline reads: the current
+    folder's own, unless a selection flag says otherwise (fix S6)."""
     baseline_slugs = list(project) if project else None
     if not all_projects and not project_family and not baseline_slugs:
-        baseline_slugs = [project_slug]
-    project_dirs = discovery.resolve_project_dirs(
+        baseline_slugs = [discovery.slug_for(os.getcwd())]
+    return discovery.resolve_project_dirs(
         discovery.projects_roots([projects_root_path, *(extra_projects_roots or ())], config.extra_projects_roots),
         slugs=baseline_slugs,
         all_projects=all_projects,
         family_regex=project_family,
         exclude_projects=config.exclude_projects,
     )
-    if not project_dirs:
-        stdout.write(
-            f"No recorded Claude Code sessions found yet for {detection.project_slug} -- "
-            "skipping the initial baseline capture.\n"
-        )
-    else:
-        try:
-            pricing = load_pricing(path=config.pricing_path, config_dir=config_dir)
-        except PricingError as exc:
-            stdout.write(f"claude-token-lens init: {exc}\n")
-            pricing = None
-        if pricing is not None:
-            record, _model = baseline_mod.build_baseline(
-                config=config,
-                pricing=pricing,
-                config_dir=config_dir,
-                project_dirs=project_dirs,
-                now=now,
-            )
-            report_markdown = baseline_mod.render_onboarding_report(record)
-            baseline_path = baseline_mod.save_baseline(config_dir, record, report_markdown)
-            stdout.write(f"Wrote initial baseline {_relative_label(baseline_path, config_dir)}\n")
-            stdout.write(f"Sessions analysed: {record['sessions_analysed']}\n")
 
-    status = baseline_mod.capture_status(config, now=now)
-    stdout.write(baseline_mod.format_capture_status(status) + "\n")
 
-    return 0
+def run_baseline(config_dir: Path, project_dirs: list[Path], *, now: datetime, stdout: IO[str]) -> tuple[dict, Path] | None:
+    """Build and save the initial baseline from ``project_dirs``. Returns
+    the record and the path it was saved to, or ``None`` when pricing
+    can't be loaded (said on ``stdout``)."""
+    config = load_config(config_dir)
+    try:
+        pricing = load_pricing(path=config.pricing_path, config_dir=config_dir)
+    except PricingError as exc:
+        stdout.write(f"claude-token-lens init: {exc}\n")
+        return None
+    record, _model = baseline_mod.build_baseline(
+        config=config,
+        pricing=pricing,
+        config_dir=config_dir,
+        project_dirs=project_dirs,
+        now=now,
+    )
+    report_markdown = baseline_mod.render_onboarding_report(record)
+    return record, baseline_mod.save_baseline(config_dir, record, report_markdown)

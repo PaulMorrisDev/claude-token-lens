@@ -1,0 +1,27 @@
+id = "plan-then-build"
+name = "Plan, then build"
+for = ["plan-then-build"]
+archetype = "single-model"
+notes = """
+For corpora where at least half the main sessions have a plan approved \
+with ExitPlanMode and then edit files in the same session \
+(habits.habits_by_shape's "plan_build" row, share column). That is not \
+an archetype: workstyle.detect_archetype sees one model planning and \
+building, so it stays "single-model". Not implementation-heavy, whose \
+plan-high-implement-low archetype hands the build to a cheaper model or \
+agent: this profile keeps one model and changes no model setting. \
+The build after a big plan re-reads every token of planning in context \
+(plan_handoff.plan_handoff_summary's tokens_carried_median and \
+saving_usd columns), so once a big plan is approved, run /clear and ask \
+Claude to carry out the plan file (saved under ~/.claude/plans), one \
+phase per session. promptCacheTtl is pinned to 1h for the same reason \
+as planning-requirements: long planning exchanges re-read their context \
+often (ttl.ttl_by_agent_type's top-level gap_p90_s column). To plan on \
+Opus and build on Sonnet, the "Cheaper models where it's safe" goal \
+prices model = opusplan from plan_handoff.plan_handoff_summary's build_usd and \
+build_usd_sonnet columns; choose it in the model picker, which overrides \
+settings.json.
+"""
+
+[settings]
+promptCacheTtl = "1h"

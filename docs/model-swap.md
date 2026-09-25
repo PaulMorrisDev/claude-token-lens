@@ -54,6 +54,12 @@ Every row's "best cheaper alternative" state is one of:
   own volumes are already cheaper than the next tier down at today's
   rates. The best-cheaper-alternative column is empty and the saving
   is `0.0` in both dollars and percent, never a stale positive number.
+- **main_floor** — the main session (`top-level`) runs on Sonnet.
+  Haiku is never suggested for the main session: it does the hard,
+  open-ended work, and the saving isn't worth the quality trade. The
+  alternative is empty and the saving `0.0`, so no card, Savings lever,
+  goal or quick action offers it; the `Cost at <model-id>` columns still
+  show what Haiku would have cost.
 - **unknown_tier** — the observed model's family isn't recognised, or
   the rate card has no alias for the next family down.
 - **no_data** — no priced turns for this agent type.
@@ -80,6 +86,13 @@ caveat every time. Per-agent-type advice is suppressed under an
 archetype that never spawns subagents of its own (`chat-only`) — the
 top-level row's own model is a real lever regardless of archetype, so
 it is never suppressed.
+
+`advice.finish` then rewords the cards for the dashboard. Subagent
+cards merge into one `model-tier` card with a change per agent type,
+largest saving first. The main session's card becomes `model-tier-main`
+on its own: its model is a quality trade that's yours to make, so it
+sorts after every other card of the same severity (below the compaction
+tips, say), however large its saving.
 
 ## API and wiring
 

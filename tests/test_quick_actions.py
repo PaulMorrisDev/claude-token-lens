@@ -22,7 +22,7 @@ API_MD = Path(__file__).resolve().parent.parent / "docs" / "api.md"
 SRC = Path(__file__).resolve().parent.parent / "src" / "claude_token_lens"
 #: Every module that can build a ``Recommendation`` -- see recommend.py's
 #: own ``recommend()`` entry point, which folds each of these in.
-_RULE_MODULES = ("recommend.py", "advice.py", "carry.py", "compaction_sim.py", "model_swap.py", "waste.py",
+_RULE_MODULES = ("recommend.py", "advice.py", "carry.py", "compaction_sim.py", "handoff.py", "model_swap.py", "waste.py",
                   "elasticity.py")
 
 UNITS = Units(billing_mode="api", currency="USD")

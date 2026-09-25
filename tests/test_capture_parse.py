@@ -241,18 +241,18 @@ def test_a_pre_rendered_capture_note_still_takes_the_fallback_path(tmp_path):
     ``_attachment_content_chars``), not silently come back sized ``None``.
 
     Pinned against real numbers, not just internal consistency: the
-    essentials level's SessionStart note is exactly 753 characters, and
+    essentials level's SessionStart note is exactly 799 characters, and
     the wrapper Claude Code puts around a hook's additional context
     (``_HOOK_CONTEXT_WRAPPER_CHARS``, 63) plus ``len("SessionStart")``
-    (12) is exactly 75, for 828 total.
+    (12) is exactly 75, for 874 total.
     """
     text = capture_catalogue.note_text(capture_catalogue.level_metrics("essentials"), "main")
-    assert len(text) == 753
+    assert len(text) == 799
     line = _note(text, hook="SessionStart", rendered=False)
     assert "rendered" not in line
     event = events.classify_line(line)
     assert (event.kind, event.subkind) == (EventKind.HOOK_OUTPUT, "capture_note")
-    assert event.size_chars == 828
+    assert event.size_chars == 874
 
 
 def test_other_hook_context_is_unchanged():

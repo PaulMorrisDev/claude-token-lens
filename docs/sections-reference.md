@@ -9,7 +9,7 @@ the commands that print them.
 `report.build_report` assembles these sections into one `ReportModel`,
 in this order: `overview`, `usage`, `elasticity` (only under
 subscription billing with usage-log readings), `sessions`, `recache`, `ttl`,
-`limits`, `carry`, `compaction_sim`, `model_swap`, `waste`,
+`limits`, `carry`, `compaction_sim`, `plan_handoff`, `model_swap`, `waste`,
 `compactions`, `agent_startup`, `agents`, `quality`, `workstyle`, `habits`,
 `workflows`, `phases` (only with `--phases`), `config` (only when config
 snapshots exist), `context_budget`, `capture`, `scorecard`, and
@@ -52,6 +52,7 @@ and it's still useful when you want one section by itself.
 | `limits` | Usage limits | `limits.py` | usage-cap pauses (5-hour/weekly), harness-forced subagent terminations, and the desktop app's resume pings, as first-class attributable facts instead of behavioural noise — see [`limits.md`](limits.md) |
 | `carry` | Context carry cost per tool | `carry.py` | cost of a tool result riding along in the cached prefix on every turn after the one it entered on, by tool and by agent type, plus the saving a truncation cap would have made — see [`carry.md`](carry.md) |
 | `compaction_sim` | Compaction-window sweep | `compaction_sim.py` | modelled cost under other `autoCompactWindow` settings, a fidelity check against each session's actually-configured window, and a conservative "at least W" recommendation — see [`compaction-sim.md`](compaction-sim.md) |
+| `plan_handoff` | Building fresh after a plan | `handoff.py` | what the replies after each approved plan would have cost in a fresh session started from the plan alone, and the same build at Sonnet's prices — see [`plan-handoff.md`](plan-handoff.md) |
 | `model_swap` | Model-swap counterfactual | `model_swap.py` | ceiling saving from repricing every already-observed turn one model tier down, per agent type and corpus-wide — see [`model-swap.md`](model-swap.md) |
 | `waste` | Wasted-turn spend | `waste.py` | spend on turns whose output was never used (tool error, interrupt, tool denial, harness-killed subagent), by cause, agent type and top session — see [`waste.md`](waste.md) |
 | `compactions` | Compactions | `compaction.py` | compaction count, trigger mix, pre/post/dropped tokens, and the re-cache cost of the turn right after each compaction |
@@ -465,6 +466,34 @@ dropped and `long-context-share` keeps only its workflow advice, whether
 or not `compaction-window` fires: the replay is the one answer on the
 setting.
 
+## `plan_handoff` (`handoff.py`)
+
+Full write-up: [`docs/plan-handoff.md`](plan-handoff.md). Main sessions
+only; scheduled ones are left out.
+
+- `plan_handoff_summary` — one row (`main sessions`): main sessions,
+  sessions with an approved plan, sessions where a fresh start pays,
+  the median planning context those plans kept, the saving (an upper
+  bound) and its share of main-session cost, main-session cost, and
+  the replies after approved plans priced as they ran (`build_usd`) and
+  at Sonnet's prices (`build_usd_sonnet`, `null` when the rate card has
+  no `sonnet` alias).
+- `plan_handoff_by_session` — one row per session with an approved plan,
+  largest saving first (top `plan_handoff_top_n`, default 20): approved
+  plans, the most context any of them would have dropped, replies after
+  them, whether any counts, the saving, and its build replies and cost
+  at both prices.
+
+`recommend.recommend()` runs the `plan-handoff` rule (`handoff.RULES`,
+category `workflow`, no lever, no setting change). It fires when at
+least `plan_handoff_min_sessions` (default 3) sessions have a plan that
+counts and the saving is at least `plan_handoff_min_saving_share_pct`
+(default 1%) of main-session cost. Its action says to `/clear` and
+carry out the plan file, and that `/branch` saves nothing because it
+copies the whole conversation. Its saving overlaps with
+`compaction-window`'s, so the Overview's available saving doesn't add
+it on top.
+
 ## `model_swap` (`model_swap.py`)
 
 Full contract: [`docs/model-swap.md`](model-swap.md).
@@ -506,6 +535,10 @@ changes a figure.
 alternative, sample and saving thresholds cleared) and names the exact
 lever: `settings.json`'s `"model"` key for the top-level conversation,
 or the subagent's `.claude/agents/<type>.md` frontmatter `model:` line.
+A Sonnet main session never gets Haiku: its row's state is
+`main_floor`, with no alternative and no saving. `advice.finish` gives
+the main session's card its own id, `model-tier-main`, ranked last
+among cards of its severity.
 
 ## `waste` (`waste.py`)
 
@@ -767,6 +800,15 @@ capture is off or no feedback has been given.
   ...): pieces of work, messages, cost, per piece, the most common kind
   of task, what slowed it most, what would have helped most, and where
   the answers came from (`/tl-feedback` or a dashboard rating).
+- `habits_by_shape` — main sessions by shape (`handoff.plan_shape`):
+  `plan_build` (a plan approved with `ExitPlanMode`, then files edited in
+  the same session), `plan_only` (approved, nothing edited after it) and
+  `no_plan`. Per shape: sessions, their share, the average cost, the
+  median planning context a fresh start would have dropped
+  (`handoff.plan_carried`), the pieces of work rated, the share that met
+  its goal, the shares worth it and too costly, and the /tl-feedback
+  handoff answers (`yes`, `partly`, `no`). The `plan-handoff` card and
+  the suggested profile read it.
 - `habits_self_report` — Claude's own reports against your feedback: per
   `level` word (`easy`, `normal`, `hard`) and `brief` word (`clear`,
   `partial`, `vague`) it tagged a message with, the messages that carries,

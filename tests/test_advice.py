@@ -64,15 +64,14 @@ def test_model_tier_cards_merge_into_one_with_a_change_per_agent_type():
     tier = [r for r in out if r.id == "model-tier"]
     assert len(tier) == 1
     changes = tier[0].changes
-    # Largest saving first; workflow subagents can't be changed.
+    # Largest saving first; workflow subagents can't be changed; the main
+    # session gets a card of its own.
     assert [(c.agent, c.value) for c in changes] == [
         ("reviewer", "haiku"),
-        (None, "sonnet"),
         ("general-purpose", "haiku"),
     ]
-    reviewer, main, builtin = changes
+    reviewer, builtin = changes
     assert reviewer.target == "agent" and reviewer.scope == "repo" and not reviewer.new_agent_file
-    assert main.target == "settings" and main.key == "model"
     assert builtin.new_agent_file
     # PROF-02: an agent-level change has no session-only path (unlike a
     # settings change, which --launch can scope to one session), so it's
@@ -80,13 +79,36 @@ def test_model_tier_cards_merge_into_one_with_a_change_per_agent_type():
     # most" session-ceiling framing, unlike the top-level change.
     assert reviewer.note == "Persistent: affects every task this agent runs, not only one session."
     assert reviewer.saving and not reviewer.saving.startswith("At most")
-    assert main.note == "This changes the model for your main session in every project."
-    assert main.saving.startswith("At most")
-    assert tier[0].saving_usd == 90.0
-    assert tier[0].estimated_saving.startswith("At most 90.00 USD")
+    assert tier[0].saving_usd == 60.0
+    assert tier[0].estimated_saving.startswith("At most 60.00 USD")
     fixes.attach_fixes(tier)
     assert fixes.command_for(reviewer, tier[0].scope).startswith("claude-token-lens apply --set model=haiku")
-    assert tier[0].fixes[2]["command"] is None  # a built-in needs a new agent file
+    assert tier[0].fixes[1]["command"] is None  # a built-in needs a new agent file
+
+    (main_card,) = [r for r in out if r.id == "model-tier-main"]
+    (main,) = main_card.changes
+    assert main.target == "settings" and main.key == "model" and main.value == "sonnet"
+    assert main.note == "This changes the model for your main session in every project."
+    assert main.saving.startswith("At most")
+    assert main_card.saving_usd == 30.0
+    assert main_card.title == "Your main session could run on Sonnet"
+    assert "yours to make" in main_card.why
+
+
+def test_the_main_session_model_card_ranks_after_the_other_advice():
+    """A quality trade on your own model comes after the tips that keep
+    it, however large its saving."""
+    report = _model_swap_report([["top-level", "claude-opus-5-5", "claude-sonnet-5", 500.0]])
+    snap = Snapshot(path=None, ts="2026-09-20T00:00:00Z", data={"agents": {}})
+    compaction = Recommendation(
+        id="compaction-window",
+        severity="advice",
+        category="settings",
+        title="Summarise at 100,000 tokens",
+        saving_usd=20.0,
+    )
+    out = advice.finish([_tier("top-level"), compaction], report, snap, Units())
+    assert [r.id for r in out] == ["compaction-window", "model-tier-main"]
 
 
 def test_model_tier_leaves_out_agents_already_on_the_cheaper_model():

@@ -18,8 +18,10 @@ section is the dashboard-facing summary.
 Nothing is tracked automatically. `POST /api/whatif` (the "what if?"
 tool behind Create a profile, a profile's detail, and Setup ›
 Profiles' editor) only logs a prediction when the caller sets `"log":
-true` — the dashboard sets it for a change you actually tick or save,
-never while you drag a slider to explore. A logged row
+true`. The dashboard sets it when you save a profile made from a goal
+(the ticked changes), and the first time you copy a profile's prompt or
+command after opening it: changes you mean to make, never a tick or a
+slider moved while you explore. A logged row
 goes to this tool's own `prediction-log.jsonl`
 (`config.append_prediction_log`), is picked up by the file watcher's
 next tick (`service.watcher._scan_predictions`) into the store's
@@ -47,14 +49,24 @@ number can never compound (see "Calibration" below).
    own windowing: up to `impact.LOOKBACK_DAYS` (14) before the change,
    or back to the previous change point if that's sooner, and from the
    change until the *next* change point after it, or now if there isn't
-   one yet.
+   one yet (`impact.sides` and `impact.neighbours`). A change made in
+   one project (an apply to its settings files, or a change only its
+   own settings files made) is judged on that project's sessions only,
+   and only changes that apply there bound it.
 3. **Measure.** The dollar quantity a prediction estimated is always
    either the whole session's cost (a main-session-level setting) or
    one agent's cost per spawn (an agent-scoped setting) — the same two
    totals `whatif.estimate` itself reprices from. Its before/after
    estimate is `impact._measure_row`'s own ratio-of-sums,
    stratum-reweighted, Holm-tested row (unchanged from EST-P3), called
-   for this one measure instead of a change point's whole table.
+   for this one measure instead of a change point's whole table. When
+   `counterfactual.py` can undo the predicted setting on the sessions
+   after the change themselves (repriced, simulated or approximate, see
+   [concepts](concepts.md#6-windows-what-if-estimates-and-beforeafter-comparisons)),
+   that figure is the measured total instead: it prices the same
+   sessions both ways, so nothing else that differs between the two
+   sides counts. It has no noise to test, so any difference of a cent
+   or more reads as real.
 4. **Measured total.** `impact._measure_row` gives a *rate* (dollars
    per session, or per spawn) before and after. `(before_rate -
    after_rate) * after_n` turns the rate's drop (or rise) into a dollar

@@ -276,8 +276,13 @@ to the page" link before the sidebar moves focus to the page title
 (`#page-title`, the one `h1`).
 
 **The status line** gives the service's state in words beside a dot: Up
-to date, Scanning your history, Last scan failed, Not updating, or Can't
-reach the service. Under it: "Last scan", when the last scan finished;
+to date, Scanning your history, Checking for new sessions (a later scan
+running while the figures are up to date), Last scan failed, Not
+updating, or Can't reach the service. While a scan runs, a line under it
+says how far it has got (`scanProgressText`, from `/api/health`'s
+`scan`): "Found 1,204 transcript files so far", "Read 12 of 40 changed
+files" or "Stored 30 of 40 sessions". Under that: "Last scan", when the
+last scan finished;
 "Figures updated", the time of the oldest figures drawn
 (`X-Figures-As-Of`), both as "5 min ago" with the time on hover
 (`timeNode`), moved on at each health poll; the capture level as a link
@@ -389,12 +394,13 @@ all-projects report, `loadProjects()`).
 ### Banners
 
 **The health banner** sits under the page header, from `/api/health`.
-`pollHealth()` asks every 3 seconds while `status` is `"starting"` and
-every minute otherwise. The banner hides while the status is `"ok"`.
-Otherwise it shows the route's `message`: the first scan's progress with
-a bar, or a warning with the restart command when `"degraded"` or
-`"stale"`. When a scan finishes, the banner and the status line offer
-**Redraw figures**, which drops every drawn view and the report cache
+`pollHealth()` asks every 3 seconds while `status` is `"starting"` or a
+later scan is running, and every minute otherwise. The banner hides
+while the status is `"ok"`. Otherwise it shows the route's `message`:
+the first scan's progress with a bar, or a warning with the restart
+command when `"degraded"` or `"stale"`. When a scan finishes (the first
+one, or a later one that stored sessions), the banner and the status
+line offer **Redraw figures**, which drops every drawn view and the report cache
 and redraws the view on screen. Views never redraw under the reader.
 
 **The capture banner** sits under it (`#capture-banner`,
@@ -411,9 +417,15 @@ N tokens · <amount> (x% of spend) · tagged on P% of messages") and links
 to Setup › Capture and Work habits. **Dismiss for a week** hides the
 notes until they change.
 
-**The logon warning** shows on the Overview and Data quality when
-`/api/health` says the service won't start at logon
-(`renderLogonNotice`).
+**The Setup card** tops the Overview while a part that matters isn't
+working yet (`/api/setup/status`, `renderSetupCard`): how you pay, the
+connection to Claude Code, the dashboard at logon, and capture when it's
+on. Each part says what's wrong and gives the command that fixes it to
+copy. The dashboard at logon says why it matters: Claude Code deletes
+transcripts after `cleanupPeriodDays`. It shows before any session is
+read too, and says "Setup is almost done." when all that's left is
+waiting for the first Claude Code session. Data quality has the whole
+checklist.
 
 ## Pages
 
@@ -472,7 +484,9 @@ detail scrolls) and the one picked.
 - **Filters** narrow the list by importance (Do this, Worth considering,
   For your information) and by area (Models, Cache, Context, Agents,
   Habits, Data and settings), each with its count. The area comes from
-  `RULE_AREA` in `page-actions.js`.
+  `RULE_AREA` in `page-actions.js`. Once you've ignored something, a
+  **Show: To do · Ignored** row comes first, and the other filters count
+  what it leaves.
 - **Groups.** A rule that fires per agent type (`ttl-switch`, `spawn-*`
   and the rest) is one item for all of them ("7 agent types are sent
   your CLAUDE.md files every time they start").
@@ -484,8 +498,23 @@ detail scrolls) and the one picked.
   the action, with a table when there is more than one change; in a
   group, picking a row shows that agent's change. Then the fixes as
   command blocks (a `scope: "managed"` card says your organisation's
-  policy sets it), **The numbers behind this** as evidence links, and
-  **The check this answers**.
+  policy sets it), **The numbers behind this** as evidence links,
+  **Not for you?** with **Ignore this recommendation**, and **The check
+  this answers**.
+- **Ignoring** (`ignores.py`, `POST /api/recommendations/ignore`) hides
+  an item in the project on screen, or in every project from the
+  all-projects view, while the profile `apply` last marked active stays
+  active. It shows again when it starts suggesting something else, and
+  its detail then says why ("It shows again because it now suggests
+  120000 (you ignored 100000)"). An ignored item's detail says when,
+  where and under which profile it was ignored, with **Stop ignoring**
+  (**Stop ignoring in every project** when an every-project ignore is
+  seen from one project). Ignored items leave every other list: the
+  Overview's next best actions, the Actions badge, search, "Feeds N
+  actions" and the checks' links (`groupRecommendations` leaves them out
+  unless asked), and **Start from my recommendations**. The Overview's
+  available saving comes from the report's tables, so it still counts
+  them.
 - A notice above the inbox says the figures are provisional while a
   baseline capture window is open. An id the window doesn't have opens
   the first item with a note.
@@ -518,13 +547,16 @@ subscription billing with usage-limit readings.
 **Answers:** "Which change saves the most, and how sure is it?"
 
 Chart 2 heads the page: the four ways to save side by side, hatched
-unless measured. A bar leads to the row its figure comes from. Then four
+unless measured. A bar leads to the row its figure comes from. Then five
 sections, each from its own route rather than the full report:
 
 - `/api/carry`: what tool output kept in context costs, and what a cap
   would save;
 - `/api/compaction-sim`: the conversation-summary sweep, the best size
   per agent type and the fidelity check, with chart 3;
+- `/api/plan-handoff`: what building in a fresh session after each big
+  approved plan could have saved (no bar in chart 2: it overlaps with
+  the conversation-summary saving);
 - `/api/model-swap`: the most a one-tier-cheaper model could save;
 - `/api/waste`: spend on replies whose output was never used.
 
@@ -690,14 +722,17 @@ CLI commands instead.
 
 **Answers:** "What did Token Lens install, and can I trust its figures?"
 
-1. **What this tool installed, and what to expect** (`/api/setup`): each
+1. **Your setup** (`/api/setup/status`, `renderSetupList`): each part
+   `Done`, `Waiting`, `Off` or `Needs attention`, with the command that
+   fixes it, as `claude-token-lens status` prints it.
+2. **What this tool installed, and what to expect** (`/api/setup`): each
    thing installed, what it does, its token cost and how to undo it, and
    "Remove everything".
-2. **Service health** (`/api/health`, `renderHealth`): status, version,
+3. **Service health** (`/api/health`, `renderHealth`): status, version,
    last scan, the watcher's counts and recent errors.
-3. Any report section no other view claims (`SECTION_PAGE_MAP`'s
+4. Any report section no other view claims (`SECTION_PAGE_MAP`'s
    fallback).
-4. `/api/diagnostics`: whether the hook and the status line work, then
+5. `/api/diagnostics`: whether the hook and the status line work, then
    the parse-quality counters, matching the CLI report's Diagnostics.
 
 ### Glossary › Terms
@@ -744,7 +779,7 @@ Every helper builds nodes with `textContent`; server text goes through
 | Panel | `panel` | a surface with a hairline border, a header and a body. Never nested |
 | Callout | `callout`, `errorNotice` | info, success, warning or critical: a tint, an icon and a label. An error says what happened and offers "Try again" when a retry can help |
 | Empty state | `emptyState` | what happened, why, and what would fill it. Never "No data" |
-| Skeleton | `skeleton` | grey bars in the shape of what is loading, with a 1.4-second shimmer |
+| Skeleton | `skeleton`, `loadingNode` | grey bars in the shape of what is loading, with a 1.4-second shimmer. `loadingNode` puts what is loading above them in words ("Loading the report…"), which stay when reduced motion stops the shimmer |
 | Command block | `commandBlock`, `renderFix` | the ways to make a change as a tab list (a prompt, a dry-run command, a one-session trial), each with Copy, then `fixes.build_fix`'s explainer and `fixes.RESTART_NOTE` |
 | Popover | `popoverButton`, `helpButton` | the (i) and (?) help. Closes on Esc, a click outside, or a link inside |
 | Tooltip | `attachTooltip` | on hover and focus after 40ms, value first; a text tip is also the element's `aria-describedby` |
@@ -1098,7 +1133,10 @@ Every view's data comes from `fetch('/api/...')` and the envelope
 `docs/api.md` describes. `fetchJson` unwraps `{"ok": true, "data": ...}`,
 or the view shows `error.message` inline on `{"ok": false, ...}`; the
 API never sends a stack trace. `loadInto` calls a view's render with the
-data first and the container second. `postJson` sends ratings, profiles
+data first and the container second. The first load shows a
+`loadingNode`; a refetch (a new window, project or redraw) keeps the
+last figures in place, dimmed under an "Updating…" label
+(`.is-refreshing`, with `aria-busy`), until the new ones arrive. `postJson` sends ratings, profiles
 and capture changes; session tags go through `fetchJson` with `POST`. No
 view holds state the server doesn't have, so a reload is always safe.
 
@@ -1164,7 +1202,7 @@ hand with Playwright against a dev service.
 | `charts.js` | `CHART_SPECS`, `fillSummary`, `ENTITY_COLOURS`, axes, tooltip, keyboard reading, the table view, resize, `drawChart`, `holdChart`, `chartError` |
 | `charts-types.js` | the eight forms, `renderChart`, `sectionChart`, `sessionContextChart`, `savingsLevers`, `dailyChanges`, `sparkline`, `meter`, `habitSparkline` |
 | `costs.js` | pricing helpers for Actions, Cache and the Glossary: `pricingFacts`, `priced`, `modelSentence`, `avoidableRebuilds`, `cardRuleText` |
-| `shell.js` | on every view: the health banner, the status line, the capture banner, `RETRY_SECONDS`, `renderHealth`, `renderLogonNotice` |
+| `shell.js` | on every view: the health banner, the status line, the capture banner, `RETRY_SECONDS`, `renderHealth`, the setup checklist (`renderSetupCard`, `renderSetupList`) |
 | `icons.js` | `icon(name, opts)` and `ICON_NAMES` |
 | `palette.js` | `openPalette`, `matchScore`, `GO_KEYS`, `showShortcuts`, `initPalette` |
 | `d3.js` | the one door to the vendored d3 |

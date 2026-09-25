@@ -1010,6 +1010,32 @@ def simulate_compaction_windows(
     return stats
 
 
+def replay_cost(
+    results: list[TranscriptResult],
+    rates: "RatesArg | RatesLookup",
+    window: int | None,
+    thresholds: CompactionSimThresholds | None = None,
+) -> float:
+    """What ``results`` would have cost with ``window`` as the
+    ``autoCompactWindow``: each transcript replayed the way
+    :meth:`CompactionSimStats.add_transcript` replays it, with the
+    summary size, trigger reserve and cached prefix measured from
+    ``results`` themselves, and each real compaction kept.
+    ``window=None`` gives the cost as it ran. Used by
+    ``counterfactual.py`` for a change that raised the window."""
+    th = thresholds or _DEFAULT_THRESHOLDS
+    lookup = _as_lookup(rates)
+    summary, _ = _corpus_summary_tokens(results, th)
+    reserve, _ = _corpus_trigger_reserve(results, {}, th)
+    share, _ = _corpus_cached_prefix_share(results, th)
+    shape = _Shape(summary, reserve, share)
+    total = 0.0
+    for tr in results:
+        priced = _priced_turns(tr.turns)
+        total += _replay_transcript(priced, lookup, window, shape, _real_compaction_turn_indices(tr, priced, th)).cost
+    return total
+
+
 # -- report section -----------------------------------------------------
 
 
@@ -1513,6 +1539,7 @@ __all__ = [
     "CompactionSimFidelityRow",
     "CompactionSimStats",
     "simulate_compaction_windows",
+    "replay_cost",
     "build_section",
     "RULES",
 ]

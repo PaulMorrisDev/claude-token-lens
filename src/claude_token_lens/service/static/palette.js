@@ -161,6 +161,8 @@ function firstPrompt(rec) {
 function recommendationEntries(recs) {
   var list = [];
   recs.forEach(function (rec) {
+    // Ignored ones are on Actions' Ignored list only.
+    if (rec.ignored) return;
     var key = rec.key || rec.id;
     var title = plainText(rec.title || rec.id);
     var words = String(rec.id || "").replace(/-/g, " ") + " " + (rec.agent_type || "");

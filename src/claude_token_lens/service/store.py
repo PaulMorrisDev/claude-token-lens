@@ -255,6 +255,19 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
 }
 
 
+
+def window_column(window_by: str) -> str:
+    """The ``sessions`` column a window reads: ``last_ts`` for
+    ``"last-reply"`` (a session counts when it was last active in the
+    window, the default everywhere) and ``first_ts`` for
+    ``"first-reply"`` (when it started, the "since my last change"
+    window's rule)."""
+    if window_by == "last-reply":
+        return "last_ts"
+    if window_by == "first-reply":
+        return "first_ts"
+    raise ValueError(f"unknown window_by: {window_by!r}")
+
 class Store:
     """One SQLite-backed store, rooted at ``path``.
 
@@ -1266,11 +1279,14 @@ class Store:
         since: str | None = None,
         until: str | None = None,
         project_slugs: list[str] | None = None,
+        window_by: str = "last-reply",
     ) -> dict:
         """Corpus-wide totals: session/transcript counts and cost/token
         sums, optionally restricted to a ``window_days``/``since``/
         ``until`` window (the same three params ``sessions``/
-        ``compactions`` accept).
+        ``compactions`` accept). ``window_by="first-reply"`` counts the
+        sessions whose first reply falls in the window instead (see
+        :meth:`_session_ids_in_window`).
 
         The windowed branch counts exactly the sessions/transcripts a
         report over the same window would (``report.py``'s "overview"
@@ -1304,7 +1320,7 @@ class Store:
             }
 
         since_dt, until_dt = _resolve_window(window_days, since, until)
-        session_ids = self._session_ids_in_window(since_dt, until_dt, project_slugs=project_slugs)
+        session_ids = self._session_ids_in_window(since_dt, until_dt, project_slugs=project_slugs, window_by=window_by)
         if not session_ids:
             return {
                 "window_days": window_days,
@@ -1347,17 +1363,21 @@ class Store:
         until_dt: datetime | None,
         *,
         project_slugs: list[str] | None = None,
+        window_by: str = "last-reply",
     ) -> list[str]:
         """Sessions whose last reply falls in the window: the rule
         ``service.rebuild.corpus_from_store`` and ``corpus.load_corpus``
-        use to decide what a windowed report counts. ``project_slugs``
-        (additive), when given, further restricts to sessions whose raw
-        ``slug`` is one of them."""
-        rows = self._connection().execute("SELECT id, slug, last_ts FROM sessions").fetchall()
+        use to decide what a windowed report counts. With
+        ``window_by="first-reply"``, sessions whose first reply does: the
+        "since my last change" window, whose sessions all started on the
+        new settings. ``project_slugs`` (additive), when given, further
+        restricts to sessions whose raw ``slug`` is one of them."""
+        column = window_column(window_by)
+        rows = self._connection().execute("SELECT id, slug, first_ts, last_ts FROM sessions").fetchall()
         if project_slugs is not None:
             allowed = set(project_slugs)
             rows = [row for row in rows if row["slug"] in allowed]
-        return [row["id"] for row in rows if ts_in_window(row["last_ts"], since_dt, until_dt)]
+        return [row["id"] for row in rows if ts_in_window(row[column], since_dt, until_dt)]
 
     def resolve_project_slug(self, redacted: str) -> list[str] | None:
         """The raw ``sessions.slug`` value(s) that redact
@@ -1383,13 +1403,15 @@ class Store:
         since: str | None = None,
         until: str | None = None,
         project_slugs: list[str] | None = None,
+        window_by: str = "last-reply",
     ) -> list[dict]:
         """The most recent ``limit`` sessions (by ``first_ts`` descending),
         one summary dict each — no transcript paths. ``source`` says
         where it ran ("This computer" or "WSL: <distro>", see
         ``discovery.source_label``). ``window_days``/``since``/``until``
         keep only the sessions a report over that window counts (last
-        reply in the window). ``project_slugs`` (additive), when given,
+        reply in the window, or first with ``window_by="first-reply"``).
+        ``project_slugs`` (additive), when given,
         further restricts to raw slugs in that list -- see
         ``resolve_project_slug``."""
         where_sql = ""
@@ -1416,7 +1438,7 @@ class Store:
             rows = [
                 row
                 for row in self._connection().execute(query, where_params).fetchall()
-                if ts_in_window(row["last_ts"], since_dt, until_dt)
+                if ts_in_window(row[window_column(window_by)], since_dt, until_dt)
             ][offset : offset + limit]
         result = [dict(row) for row in rows]
         for item in result:
@@ -1464,9 +1486,16 @@ class Store:
         until: str | None = None,
         split: str | None = None,
         project_slugs: list[str] | None = None,
+        window_by: str = "last-reply",
     ) -> list[dict]:
         """Per-day, per-model token/cost rollups, joined from
         ``turns_agg`` (no per-transcript or path detail).
+
+        ``window_by="first-reply"`` keeps only the replies of the
+        sessions whose first reply falls in the window (see
+        :meth:`_session_ids_in_window`), so the days add up to
+        :meth:`summary`'s total for the same window rather than taking in
+        every session on the window's first day.
 
         ``days`` keeps its original meaning for existing callers -- a
         trailing window from now -- but ``since``/``until`` (ISO 8601)
@@ -1504,6 +1533,13 @@ class Store:
             placeholders = ",".join("?" * len(project_slugs))
             conditions.append(f"s2.slug IN ({placeholders})")
             params.extend(project_slugs)
+        if window_by != "last-reply" and (since_dt is not None or until_dt is not None):
+            session_ids = self._session_ids_in_window(since_dt, until_dt, project_slugs=project_slugs, window_by=window_by)
+            if not session_ids:
+                return []
+            placeholders = ",".join("?" * len(session_ids))
+            conditions.append(f"a.transcript_id IN (SELECT id FROM transcripts WHERE session_id IN ({placeholders}))")
+            params.extend(session_ids)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         if split == "agent":
             project_join = " JOIN sessions s2 ON s2.id = t.session_id" if project_slugs else ""
@@ -1558,6 +1594,7 @@ class Store:
         since: str | None = None,
         until: str | None = None,
         project_slugs: list[str] | None = None,
+        window_by: str = "last-reply",
     ) -> dict[str, int]:
         """``cache_read_tokens`` summed per model over the sessions a
         window counts, for ``/api/summary``'s additive ``cache_saved``
@@ -1567,8 +1604,8 @@ class Store:
         Day buckets would pull in other sessions' reads whenever a bound
         falls mid-day (a 1-hour window, or "the same hours yesterday").
         With no window and no project, every turn counts.
-        ``project_slugs`` (additive): see :meth:`summary`'s own parameter
-        of the same name."""
+        ``project_slugs`` (additive) and ``window_by``: see
+        :meth:`summary`'s own parameters of the same names."""
         since_dt, until_dt = _resolve_window(days, since, until)
         conn = self._connection()
         if since_dt is None and until_dt is None and project_slugs is None:
@@ -1576,7 +1613,7 @@ class Store:
                 "SELECT model, COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens FROM turns_agg GROUP BY model"
             ).fetchall()
             return {row["model"]: row["cache_read_tokens"] for row in rows}
-        session_ids = self._session_ids_in_window(since_dt, until_dt, project_slugs=project_slugs)
+        session_ids = self._session_ids_in_window(since_dt, until_dt, project_slugs=project_slugs, window_by=window_by)
         if not session_ids:
             return {}
         placeholders = ",".join("?" * len(session_ids))
@@ -1607,6 +1644,7 @@ class Store:
         since: str | None = None,
         until: str | None = None,
         project_slugs: list[str] | None = None,
+        window_by: str = "last-reply",
     ) -> list[dict]:
         """Every recorded compaction event (no transcript path — only
         the opaque, store-local ``transcript_id``), oldest first; with a
@@ -1615,7 +1653,22 @@ class Store:
         list -- see ``resolve_project_slug``; reaching a project needs
         two joins ``compactions`` otherwise skips
         (``transcript_id -> transcripts.session_id -> sessions.slug``),
-        added only when filtering is requested."""
+        added only when filtering is requested. ``window_by="first-reply"``
+        keeps only the compactions of the sessions whose first reply falls
+        in the window (see :meth:`_session_ids_in_window`)."""
+        since_dt, until_dt = _resolve_window(window_days, since, until)
+        wanted: set | None = None
+        if window_by != "last-reply" and (since_dt is not None or until_dt is not None):
+            session_ids = self._session_ids_in_window(since_dt, until_dt, project_slugs=project_slugs, window_by=window_by)
+            if not session_ids:
+                return []
+            placeholders = ",".join("?" * len(session_ids))
+            wanted = {
+                row["id"]
+                for row in self._connection().execute(
+                    f"SELECT id FROM transcripts WHERE session_id IN ({placeholders})", session_ids
+                ).fetchall()
+            }
         if project_slugs:
             placeholders = ",".join("?" * len(project_slugs))
             rows = self._connection().execute(
@@ -1639,8 +1692,11 @@ class Store:
                 ORDER BY ts
                 """
             ).fetchall()
-        since_dt, until_dt = _resolve_window(window_days, since, until)
-        return [dict(row) for row in rows if ts_in_window(row["ts"], since_dt, until_dt)]
+        return [
+            dict(row)
+            for row in rows
+            if ts_in_window(row["ts"], since_dt, until_dt) and (wanted is None or row["transcript_id"] in wanted)
+        ]
 
     def snapshots(self) -> list[dict]:
         """Every captured config snapshot's identity and digest (already
@@ -1939,4 +1995,34 @@ def read_predictions(path: str | Path) -> list[dict]:
     return rows
 
 
-__all__ = ["Store", "encode_digest_blob", "decode_digest_blob", "read_session_marks", "read_predictions"]
+def read_entrypoint_counts(path: str | Path) -> dict[str, dict]:
+    """:meth:`Store.entrypoint_counts`, read from the store at ``path``
+    without writing to it, for ``claude-token-lens status``. Empty when
+    there is no store or it can't be read (a lock held too long)."""
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return {}
+    conn.row_factory = sqlite3.Row
+    try:
+        with contextlib.closing(conn):
+            rows = conn.execute(
+                "SELECT COALESCE(entrypoint, '') AS entrypoint, COUNT(*) AS n, MAX(last_ts) AS last_ts "
+                "FROM sessions GROUP BY 1"
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    return {row["entrypoint"]: {"count": row["n"], "last_ts": row["last_ts"]} for row in rows}
+
+
+__all__ = [
+    "Store",
+    "encode_digest_blob",
+    "decode_digest_blob",
+    "read_session_marks",
+    "read_predictions",
+    "read_entrypoint_counts",
+]

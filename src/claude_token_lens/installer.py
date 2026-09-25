@@ -58,7 +58,11 @@ __all__ = [
     "plan_service_install",
     "is_registered",
     "registered_python",
+    "http_health_ok",
+    "http_health_version",
+    "DEFAULT_URL",
     "install",
+    "plan_lines",
     "uninstall",
     "TASK_NAME",
     "SYSTEMD_UNIT_NAME",
@@ -544,14 +548,62 @@ def registered_python(
         return None
 
 
+#: Where ``serve`` answers when installed with the default ``--bind``
+#: and ``--port`` (:func:`plan_service_install`).
+DEFAULT_URL = "http://127.0.0.1:8765"
+
+
+def http_health_ok(url: str) -> bool:
+    """Best-effort ``GET <url>/api/health``: ``True`` only on a real
+    ``200`` with a JSON ``ok: true`` body, ``False`` for absolutely any
+    failure (connection refused, timeout, non-200, malformed body) --
+    never raises. A short timeout (this is a courtesy check, not a
+    readiness gate anything blocks on).
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{url}/api/health", timeout=2) as resp:
+            if resp.status != 200:
+                return False
+            body = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, ValueError):
+        return False
+    return bool(body.get("ok"))
+
+
+def http_health_version(url: str) -> str | None:
+    """The ``version`` the dashboard at ``url`` reports in
+    ``/api/health``, or ``None`` when it can't be read (an old copy from
+    before 0.4.1 reports none). Never raises."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{url}/api/health", timeout=2) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, ValueError):
+        return None
+    data = body.get("data") if isinstance(body, dict) else None
+    version = data.get("version") if isinstance(data, dict) else None
+    return version if isinstance(version, str) else "older than 0.4.1"
+
+
+def plan_lines(action: str, plan: InstallPlan, *, commands: list[list[str]], files: list[Path]) -> list[str]:
+    """What ``plan`` writes and runs, one line each."""
+    lines = [f"claude-token-lens {action}: {plan.description}"]
+    lines += [f"  will write: {path}" for path in files]
+    lines += [f"  will run:   {' '.join(command)}" for command in commands]
+    lines += [f"  note: {note}" for note in plan.notes]
+    return lines
+
+
 def _print_plan(action: str, plan: InstallPlan, *, commands: list[list[str]], files: list[Path]) -> None:
-    print(f"claude-token-lens {action}: {plan.description}")
-    for path in files:
-        print(f"  will write: {path}")
-    for command in commands:
-        print(f"  will run:   {' '.join(command)}")
-    for note in plan.notes:
-        print(f"  note: {note}")
+    for line in plan_lines(action, plan, commands=commands, files=files):
+        print(line)
 
 
 def install(
@@ -559,25 +611,30 @@ def install(
     *,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     dry_run: bool = False,
+    quiet: bool = False,
 ) -> int:
     """Write ``plan.files_to_write`` then run ``plan.commands``, in
     that order (a systemd/launchd unit must exist on disk before
-    ``daemon-reload``/``bootstrap`` can see it). Always prints exactly
-    what it is about to do before doing it. ``dry_run`` prints the same
-    plan and returns without writing or running anything. Returns 0 on
-    success; raises :class:`InstallerError` if any command's injected
-    ``runner`` reports a non-zero exit code.
+    ``daemon-reload``/``bootstrap`` can see it). Prints exactly what it
+    is about to do before doing it, unless ``quiet`` (``init``, which
+    showed the plan in its review and says what it's doing in its own
+    words). ``dry_run`` prints the same plan and returns without writing
+    or running anything. Returns 0 on success; raises
+    :class:`InstallerError` if any command's injected ``runner`` reports
+    a non-zero exit code.
     """
-    _print_plan("install-service", plan, commands=plan.commands, files=list(plan.files_to_write))
+    say = (lambda _text: None) if quiet else print
+    if not quiet:
+        _print_plan("install-service", plan, commands=plan.commands, files=list(plan.files_to_write))
 
     if dry_run:
-        print("Dry run -- nothing written or run.")
+        say("Dry run -- nothing written or run.")
         return 0
 
     for path, content in plan.files_to_write.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        print(f"Wrote {path}")
+        say(f"Wrote {path}")
 
     for command in plan.commands:
         result = runner(command, capture_output=True, text=True, **_no_window())
@@ -586,7 +643,7 @@ def install(
             stderr = getattr(result, "stderr", "") or ""
             raise InstallerError(f"command failed ({returncode}): {' '.join(command)}\n{stderr}")
 
-    print("Service install complete.")
+    say("Service install complete.")
     return 0
 
 

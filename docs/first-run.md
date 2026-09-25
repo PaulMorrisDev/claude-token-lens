@@ -114,26 +114,45 @@ proxy blocks either, use Route A instead.
 py -3 -m claude_token_lens init
 ```
 
-(or `py -3 claude-token-lens.pyz init` for Route A). One line each for
-what it asks and why — every question has a sensible default, so
-pressing Enter through all of them is a reasonable first pass:
+(or `py -3 claude-token-lens.pyz init` for Route A). It prints
+`Looking for Claude Code history...`, then how many projects it found
+(naming any WSL distro, whose sessions it includes), and asks up to
+four questions:
 
 | Question | Means |
 |---|---|
-| How do you pay for Claude Code? | `subscription` for a Pro, Max, Team or Enterprise plan (typing the plan name works too), `api` for pay-per-token, `auto` to decide from usage-limit readings. Sets whether amounts are shown as money or as a share of your usage limits |
+| How do you pay for Claude Code? | `1` for a Pro, Max, Team or Enterprise plan: amounts show as a share of your usage limits. `2` for an API key: amounts show in dollars. With nothing saved yet, Enter asks again; a saved answer is the default |
+| Connect to Claude Code? `[Y/n]` | Adds a SessionStart hook to Claude Code's `settings.json` that records which settings each session ran with, and a status line if you have none. Skipped when it's already connected |
+| Start it at logon? `[Y/n]` | Registers the dashboard to start when you log on (a Scheduled Task on Windows), because Claude Code deletes transcripts after 30 days. Skipped when it's already running; a logon task whose dashboard doesn't answer is offered a repair instead |
+| Turn on sharper tips? `[y/N]` | Metrics capture at Essentials for 14 days, plus the `/tl-feedback` skill (see "Metrics capture" below). Needs the connection, so it isn't asked if you said no to it. Not asked when capture is already on at another level, which stays as it is |
+
+Nothing is written yet. It then lists every change under
+`Ready to set up:` and asks once: `Go ahead? (d shows the exact changes)
+[Y/n/d]`. `d` prints the `settings.json` diff, the skill's file and the
+logon task's commands, then asks again; `n` writes nothing. After a yes
+it saves `config.toml`, copies the hook files, changes `settings.json`,
+writes the skill, starts the dashboard and reads this project's history
+for a first baseline, one line each. It ends with `Your setup`: each
+item done, off or needing attention, and what to open next. The same
+list comes back any time with `claude-token-lens status`.
+
+`init --advanced` also asks these, before the review:
+
+| Question | Means |
+|---|---|
 | Projects to always leave out | Folder names under `~/.claude/projects`; their transcripts are skipped everywhere (reports, dashboard, exports) |
 | Do you start Claude Code with `--settings` or `CLAUDE_CONFIG_DIR` | Affects where a later `apply` writes a profile. Most people answer no |
 | Is this project's `.claude` folder committed to a repo colleagues use | Same: affects `apply`'s default scope |
 | Time zone | Used to group reports by day; blank uses this computer's |
 | Where should changes you apply go by default | `user` (all your projects), `project-local` (this project, just you) or `repo` (this project, everyone) |
 | How many days to collect data before the first baseline | How long `baseline` waits before it has enough data for a confident first read (default 7) |
-| Claude Code also runs in WSL: Ubuntu on this computer. Include those sessions? | Asked only when `init` finds Claude Code sessions inside a WSL distro (it runs `wsl -l -q` and looks in each distro's `/home/*/.claude/projects`). Yes adds the folder to `config.toml`'s `extra_projects_roots`, and the dashboard and every command read it alongside your Windows folder. Default yes; `--non-interactive` adds it and says so |
-| Metrics capture level: off, free, essentials, standard, deep | Asked last, after a warning that this uses your Claude tokens and a table of what each level would have cost over your last 14 days of your own sessions. Default `off`. Turning a level on asks one more question — a 14-day time-box that switches capture back off by itself unless you say otherwise — see "Metrics capture" below |
-| Add the /tl-feedback skill? | A short survey you can run yourself after a piece of work, at any capture level (even off). Default no; skipped when you picked Deep, which includes it. See "Metrics capture" below |
+| Claude Code also runs in WSL: Ubuntu on this computer. Include those sessions? | Asked only when `init` finds Claude Code sessions inside a WSL distro (it runs `wsl -l -q` and looks in each distro's `/home/*/.claude/projects`). Yes adds the folder to `config.toml`'s `extra_projects_roots` |
+| Metrics capture level: off, free, essentials, standard, deep | In place of the sharper tips question, after a warning that this uses your Claude tokens and a table of what each level would have cost over your last 14 days of your own sessions. Turning a level on asks one more question, about a 14-day time-box |
+| Add the /tl-feedback skill? | A short survey you can run yourself after a piece of work, at any capture level (even off). Skipped when you picked Deep, which includes it |
 
 Running it unattended (a script, or just to skip the prompts) derives
-every answer instead of asking, and prints exactly what it derived and
-why:
+every answer instead of asking, prints what it derived and why, then
+the review and the checklist:
 
 ```powershell
 py -3 -m claude_token_lens init --non-interactive --no-install --no-service `
@@ -147,11 +166,9 @@ that variable is set) — the same place Claude Code itself already
 keeps its transcripts, so on an ordinary machine you don't need to pass
 either.
 
-Unattended, `init` doesn't touch `settings.json`. Without `--no-install`
-it prints the hook and statusline fragments for you to add by hand. Add
-`--connect` to make
-that change without asking (it is still printed, and the file backed up
-first).
+Unattended, `init` leaves `settings.json` alone unless you add
+`--connect`. `--dry-run` prints the review and every exact change, and
+writes nothing at all.
 
 **What `init` writes under `<config-dir>`:**
 
@@ -159,33 +176,35 @@ first).
   key-by-key. If its shape can't be merged automatically,
   `config.toml.new` is written instead and `init` says so, leaving the
   original untouched.
-- `projects\<slug>.toml` — this project's own settings.
+- `projects\<slug>.toml` — this project's own settings, with
+  `--advanced` only.
 - `baselines\<id>.json` + `<id>.md` — an initial baseline, if any
   sessions were already found for this project.
-- `hooks\snapshot-config.py` — a copy of the hook script, made during
-  the connect step below.
+- `hooks\snapshot-config.py` — a copy of the hook script, and the
+  capture hook's files when sharper tips are on.
 
 Running `init` again keeps the capture window where it is: only the
 first `init` sets its start. To start a new window, delete the
 `capture_started` line from `config.toml` and run `init` again.
 
-**Connecting to Claude Code — shown, then asked.** `init` then shows
-the exact change to Claude Code's own `settings.json`
-(`%USERPROFILE%\.claude\settings.json`, or `%CLAUDE_CONFIG_DIR%\settings.json`
-when that is set; `--claude-root` names another folder):
+**Connecting to Claude Code.** The change to Claude Code's own
+`settings.json` (`%USERPROFILE%\.claude\settings.json`, or
+`%CLAUDE_CONFIG_DIR%\settings.json` when that is set; `--claude-root`
+names another folder) is:
 
 - a `SessionStart` hook that records your settings when a session
   starts, added only if no hook runs `snapshot-config.py` yet;
 - a `statusLine` command, added only if you have no statusline. Yours
-  is never replaced.
+  is never replaced;
+- with sharper tips on, the capture hooks.
 
-It writes the change only after you answer yes (the default is no). It
-first copies the file to `settings.json.bak-<UTC time>` beside it. The
-hook command names your main Python install and the script by full
-path; the script needs only the standard library, so a deleted
-virtual environment can't break it. The statusline command names the
-Python you installed claude-token-lens into. Neither needs the `py`
-launcher or a `%VARIABLE%`, so both run under Git Bash. Say no and
+It is written only after the review's yes, and the file is first
+copied to `settings.json.bak-<UTC time>` beside it. The hook command
+names your main Python install and the script by full path; the
+script needs only the standard library, so a deleted virtual
+environment can't break it. The statusline command names the Python
+you installed claude-token-lens into. Neither needs the `py` launcher
+or a `%VARIABLE%`, so both run under Git Bash. Say no and
 `settings.json` is left as it was; `claude-token-lens init --connect`
 makes the change later. `--no-install` skips this step.
 
@@ -193,21 +212,18 @@ If your existing hook command is broken (a mis-escaped path, a missing
 interpreter or a `%VARIABLE%`), `init` shows the fixed command at the
 start and asks before changing it. See the troubleshooting table.
 
-**Metrics capture — optional, and it costs tokens.** `init`'s last two
-questions are the only place this tool ever spends your Claude usage.
-Say yes to a level above `off` and Claude reads a short note at the
-start of a session (and a subagent's) and ends each reply with a
-one-line tag you will see, such as `[tl: task=bugfix brief=clear]`;
-`init` shows what each level would have cost over your last 14 days
-before you pick one, and turning a level on adds a follow-up question
-about a 14-day time-box (capture switches itself off then, unless you
-say otherwise — `claude-token-lens capture on --for 30d` keeps it on
-longer, or answer the question yes for no limit at all). The last
-question offers `/tl-feedback`, an optional self-review skill that
-costs nothing until you run it. Skip either at `init` time and turn it on
-later with `claude-token-lens capture on`/`capture feedback on`, which
-ask the same way and show the same `settings.json`/skill-file diff
-first. Full detail: [`docs/onboarding.md`](onboarding.md).
+**Metrics capture — optional, and it costs tokens.** The sharper tips
+question (or, with `--advanced`, the capture questions) is the only
+place this tool ever spends your Claude usage. Say yes and Claude reads
+a short note at the start of a session (and a subagent's) and ends each
+reply with a one-line tag you will see, such as
+`[tl: task=bugfix brief=clear]`. Capture switches itself off after 14
+days unless you say otherwise: `claude-token-lens capture on --for 30d`
+keeps it on longer. `/tl-feedback` is an optional self-review skill that
+costs nothing until you run it. Skip either at `init` time and turn it
+on later with `claude-token-lens capture on`/`capture feedback on`,
+which ask the same way and show the same `settings.json`/skill-file
+diff first. Full detail: [`docs/onboarding.md`](onboarding.md).
 
 ## What to expect
 
@@ -437,8 +453,10 @@ after the restart, so the first page load can be slow.
 
 | Symptom | Fix |
 |---|---|
-| WSL sessions missing from the dashboard | Run `init` again and say yes to the WSL folder, or add it to `extra_projects_roots` in `config.toml` and run `install-service` to restart the dashboard. See the README's [Using Claude Code in WSL too](../README.md#using-claude-code-in-wsl-too) |
+| WSL sessions missing from the dashboard | Run `init` again: it adds any WSL folder it finds. Or add it to `extra_projects_roots` in `config.toml` and run `install-service` to restart the dashboard. See the README's [Using Claude Code in WSL too](../README.md#using-claude-code-in-wsl-too) |
 | Dashboard still shows the old version after an update (see the foot of its sidebar) | Something else still holds port 8765: an older copy started by hand, from another Python install, or from Docker. The README's [An old dashboard won't go away](../README.md#an-old-dashboard-wont-go-away) shows how to find and stop it; then run `update --finish` with the Python you updated (section 8), which on Windows offers to stop an older copy itself |
+| Not sure setup worked | Run `claude-token-lens status`. It lists each part as done, off or needing attention, with the command that fixes it, and exits 1 only when something essential needs attention |
+| pip stops with "Failed to write executable" and `[WinError 2] ... claude-token-lens.exe' -> '...claude-token-lens.exe.deleteme'` | pip couldn't create the `claude-token-lens.exe` launcher in your Python's `Scripts` folder: you can't write there, or antivirus blocked the new `.exe`. Nothing here needs that launcher. Install for your user instead (`py -3 -m pip install --user --force-reinstall ...`), or use Route A, which pip never touches |
 | `claude-token-lens` not found | Use the full path to the venv's `Scripts\claude-token-lens.exe`, or `python -m claude_token_lens` (works regardless of `PATH`) |
 | The Data quality page says the SessionStart hook isn't running | The hook command names a Python that isn't installed (`py` with no launcher), uses `%USERPROFILE%` (Claude Code runs hooks through Git Bash, which doesn't expand it), or has a path broken by single backslashes in JSON. Run `claude-token-lens init --repair-hook`: it shows the fixed command and changes it without asking, after copying `settings.json` to `settings.json.bak-<UTC time>`. It keeps your own Python when it's found and writes any `%VARIABLE%` out in full; otherwise it names your main Python install by full path. It can only fix a command whose script exists: if the script is missing, run `claude-token-lens init --connect` first, which copies it back into `<config-dir>\hooks\` |
 | No usage-limit readings | The statusline runs only in Claude Code in a terminal, not in the desktop app or an IDE. Amounts stay list-price equivalents until readings arrive |

@@ -534,6 +534,9 @@ class Feedback:
     slow: tuple[str, ...] = ()
     worth: str | None = None
     helped: tuple[str, ...] = ()
+    #: Whether the build could have started fresh from the plan: asked
+    #: only after an approved plan.
+    handoff: str | None = None
     #: "tag" | "answers" | "skipped".
     source: str = "tag"
 

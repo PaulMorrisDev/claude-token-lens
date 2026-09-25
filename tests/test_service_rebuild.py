@@ -196,6 +196,31 @@ def test_corpus_from_store_window_filters_like_discovery(tmp_path: Path):
     assert {b.session_id for b in corpus_recent.sessions} == {"sess-new"}
 
 
+def test_corpus_from_store_first_reply_leaves_out_sessions_already_running(tmp_path: Path):
+    """``window_by="first-reply"`` (the "since my last change" window)
+    keeps the sessions that started in the window, not those that were
+    only still running in it."""
+    root = tmp_path / "projects"
+    project_dir = root / "proj-a"
+    project_dir.mkdir(parents=True)
+    write_jsonl(
+        project_dir / "sess-running.jsonl",
+        [turn_line(timestamp="2026-09-17T10:00:00.000Z"), turn_line(timestamp="2026-09-18T10:00:00.000Z")],
+    )
+    write_jsonl(project_dir / "sess-started.jsonl", [turn_line(timestamp="2026-09-18T09:00:00.000Z")])
+
+    options = ServeOptions(projects_root=root, config_dir=tmp_path / "config")
+    store = Store(":memory:")
+    store.open()
+    FileWatcher(store, options).run_once()
+
+    since = "2026-09-17T12:00:00Z"
+    last = corpus_from_store(store, since=since)
+    assert {b.session_id for b in last.sessions} == {"sess-running", "sess-started"}
+    first = corpus_from_store(store, since=since, window_by="first-reply")
+    assert {b.session_id for b in first.sessions} == {"sess-started"}
+
+
 def test_corpus_from_store_filters_by_project_slugs(tmp_path: Path):
     """``project_slugs`` (additive, project-filter work) keeps only
     sessions whose raw ``sessions.slug`` is in the given list, and

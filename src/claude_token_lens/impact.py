@@ -8,7 +8,9 @@ writes that rebuilt expired context, summaries per session, the context
 at session start, and, for a change to one agent, that agent's cost and
 start-up context per spawn. "Before" is the sessions started in the
 :data:`LOOKBACK_DAYS` before the change (and after the change before
-it); "after" is those started from the change until the next one.
+it); "after" is those started from the change until the next one. A
+change made in one project (``ChangePoint.project``) is judged on that
+project's sessions only, and only changes that apply there bound it.
 
 Sessions differ in size and kind of work, so a difference is a signal,
 not proof; with fewer than :data:`MIN_SESSIONS` on either side there is
@@ -19,7 +21,9 @@ as :mod:`quality`, duplicated here since the pairs a measure draws from
 sessions aren't :class:`quality.Run` signals). The "after" side is
 stratum-reweighted to "before"'s mix of task/purpose (EST-P3) first, so
 a change in the kind of work people did after a change doesn't read as
-the change's own effect. Main sessions a scheduled task started with no
+the change's own effect. Once at least half the sessions compared carry
+metrics capture's ``level`` and ``size`` tags, how hard and how big the
+work was split the strata too (:func:`stratum_fields`). Main sessions a scheduled task started with no
 message of yours are a stratum of their own: their cost still counts,
 but more or fewer of them running after a change doesn't read as a
 saving or a rise. ``label_key`` carries the closed verdict:
@@ -48,9 +52,10 @@ from datetime import datetime, timedelta, timezone
 from . import capture as capture_mod
 from . import classify as classify_mod
 from . import quality, recache
-from .change_points import ChangePoint
+from .change_points import ChangePoint, applies_to
 from .model import EventKind, TranscriptResult, scheduled_main_session
 from .pricing import Pricing, price_turn
+from . import snapshots as snapshots_mod
 from .units import Units
 
 #: Sessions needed on each side of a change before comparing.
@@ -107,6 +112,10 @@ class SessionFacts:
     #: The kind of task Claude reported (metrics capture's task=), or None
     #: without at least two tagged messages agreeing (see classify.reported_task).
     task: str | None = None
+    #: How hard and how big Claude reported the work (capture's level= and
+    #: size=), the same way as ``task``; they refine its stratum.
+    level: str | None = None
+    size: str | None = None
     #: Heuristic purpose and mode (classify.classify_session), used to
     #: stratify the "after" side onto "before"'s mix of work (EST-P3).
     purpose: str = ""
@@ -121,6 +130,8 @@ class SessionFacts:
     spawns: list[tuple[str, _Transcript]] = field(default_factory=list)
     #: Quality counts per transcript: the main session and each spawn.
     runs: list[quality.Run] = field(default_factory=list)
+    #: The project, as ``snapshots.snapshot_project_key`` names it.
+    project: str = ""
 
     @property
     def cost(self) -> float:
@@ -175,6 +186,8 @@ def session_facts(corpus, pricing: Pricing) -> list[SessionFacts]:
                 main=_transcript(top, pricing),
                 session_id=bundle.session_id,
                 task=task,
+                level=classify_mod.reported_word(top, "level")[0],
+                size=classify_mod.reported_word(top, "size")[0],
                 purpose=classification.purpose,
                 mode=classification.mode,
                 scheduled=scheduled_main_session(top),
@@ -182,20 +195,38 @@ def session_facts(corpus, pricing: Pricing) -> list[SessionFacts]:
                 runs=quality.session_runs(bundle, pricing),
                 messages=len(cycles),
                 tagged=sum(1 for cycle in cycles if cycle.tag is not None),
+                project=snapshots_mod.snapshot_project_key(bundle.slug) if bundle.slug else "",
             )
         )
     out.sort(key=lambda s: s.start)
     return out
 
 
-def stratum(session: SessionFacts) -> str:
+#: Capture fields that refine a stratum, in order (:func:`stratum_fields`).
+STRATUM_FIELDS = ("level", "size")
+
+
+def stratum_fields(sessions: list[SessionFacts]) -> tuple[str, ...]:
+    """The :data:`STRATUM_FIELDS` at least half of ``sessions`` carry.
+    Fewer would put the rest in strata of their own, with nothing like
+    them on the other side of the change."""
+    return tuple(
+        name for name in STRATUM_FIELDS if sessions and 2 * sum(1 for s in sessions if getattr(s, name)) >= len(sessions)
+    )
+
+
+def stratum(session: SessionFacts, fields: tuple[str, ...] = ()) -> str:
     """EST-P3's stratification key: ``"(scheduled)"`` for a main session a
     scheduled task started with no message of yours, else the
     capture-reported task where we have one, else the heuristic purpose,
-    else a catch-all bucket."""
+    else a catch-all bucket; then each of ``fields`` (how hard and how
+    big, from :func:`stratum_fields`), so like is compared with like."""
     if session.scheduled:
         return "(scheduled)"
-    return session.task or session.purpose or "(unspecified)"
+    key = session.task or session.purpose or "(unspecified)"
+    for name in fields:
+        key += "/" + (getattr(session, name) or "-")
+    return key
 
 
 # -- measures ------------------------------------------------------------
@@ -280,9 +311,10 @@ def _stratified_estimate(
     pooled = _ratio_estimate(_pairs(measure, after))
     if not before or not after:
         return pooled
+    fields = stratum_fields(before + after)
     weights: dict[str, float] = {}
     for session in before:
-        key = stratum(session)
+        key = stratum(session, fields)
         weights[key] = weights.get(key, 0.0) + 1.0
     total = sum(weights.values())
     if total <= 0:
@@ -293,7 +325,7 @@ def _stratified_estimate(
     contributed = False
     for key, count in weights.items():
         weight = count / total
-        group = [s for s in after if stratum(s) == key]
+        group = [s for s in after if stratum(s, fields) == key]
         est = _ratio_estimate(_pairs(measure, group)) if group else pooled
         if est.value is None:
             est = pooled
@@ -446,14 +478,12 @@ def compare(
     previous: ChangePoint | None = None,
     following: ChangePoint | None = None,
     now: datetime | None = None,
+    without=None,
 ) -> dict:
-    now = now or datetime.now(timezone.utc)
-    start = point.ts - timedelta(days=LOOKBACK_DAYS)
-    if previous is not None and previous.ts > start:
-        start = previous.ts
-    end = following.ts if following is not None else now
-    before = [s for s in sessions if start <= s.start < point.ts]
-    after = [s for s in sessions if point.ts <= s.start < end]
+    """``without``, when given, is called with ``(point, before, after)``
+    for what the sessions after the change would have cost without it
+    (``counterfactual.for_impact``); its answer is ``"without"``."""
+    before, after = sides(point, sessions, previous=previous, following=following, now=now)
     enough = len(before) >= MIN_SESSIONS and len(after) >= MIN_SESSIONS
     rows = [_measure_row(measure, before, after, units) for measure in measures_for(point)]
     _label_rows(rows)
@@ -465,7 +495,46 @@ def compare(
         "verdict": _verdict(rows, len(before), len(after), enough),
         "measures": rows,
         "quality": _quality(point, before, after, units),
+        "without": without(point, before, after) if without is not None else None,
     }
+
+
+def sides(
+    point: ChangePoint,
+    sessions: list[SessionFacts],
+    *,
+    previous: ChangePoint | None = None,
+    following: ChangePoint | None = None,
+    now: datetime | None = None,
+) -> tuple[list[SessionFacts], list[SessionFacts]]:
+    """The sessions before ``point`` (back :data:`LOOKBACK_DAYS`, or to
+    ``previous``) and after it (to ``following``, or ``now``), in the
+    project it applies to."""
+    now = now or datetime.now(timezone.utc)
+    start = point.ts - timedelta(days=LOOKBACK_DAYS)
+    if previous is not None and previous.ts > start:
+        start = previous.ts
+    end = following.ts if following is not None else now
+    mine = [s for s in sessions if applies_to(point, s.project)]
+    before = [s for s in mine if start <= s.start < point.ts]
+    after = [s for s in mine if point.ts <= s.start < end]
+    return before, after
+
+
+def _overlap(a: ChangePoint, b: ChangePoint) -> bool:
+    """Whether two changes apply in a project in common."""
+    return not a.project or not b.project or a.project == b.project
+
+
+def neighbours(points: list[ChangePoint], point: ChangePoint) -> tuple[ChangePoint | None, ChangePoint | None]:
+    """The nearest earlier and later change outside :data:`TOGETHER` of
+    ``point`` that applies in a project in common with it: the changes
+    that bound its before and after."""
+    earlier = [p for p in points if p.ts < point.ts and _overlap(p, point)]
+    later = [p for p in points if p.ts > point.ts and _overlap(p, point)]
+    previous = next((p for p in reversed(earlier) if point.ts - p.ts > TOGETHER), None)
+    following = next((p for p in later if p.ts - point.ts > TOGETHER), None)
+    return previous, following
 
 
 def quality_groups(point: ChangePoint) -> list[str]:
@@ -519,15 +588,16 @@ def _verdict(rows: list[dict], before: int, after: int, enough: bool) -> str:
     )
 
 
-def impact(points: list[ChangePoint], sessions: list[SessionFacts], units: Units, *, limit: int = 10) -> list[dict]:
+def impact(
+    points: list[ChangePoint], sessions: list[SessionFacts], units: Units, *, limit: int = 10, without=None
+) -> list[dict]:
     """Newest change first, at most ``limit``. A change made within
-    :data:`TOGETHER` of another doesn't bound its before or after."""
+    :data:`TOGETHER` of another doesn't bound its before or after.
+    ``without`` is passed to :func:`compare`."""
     out = []
-    for index in range(len(points) - 1, -1, -1):
-        point = points[index]
-        previous = next((p for p in reversed(points[:index]) if point.ts - p.ts > TOGETHER), None)
-        following = next((p for p in points[index + 1 :] if p.ts - point.ts > TOGETHER), None)
-        out.append(compare(point, sessions, units, previous=previous, following=following))
+    for point in reversed(points):
+        previous, following = neighbours(points, point)
+        out.append(compare(point, sessions, units, previous=previous, following=following, without=without))
         if len(out) >= limit:
             break
     return out
@@ -541,7 +611,9 @@ __all__ = [
     "compare",
     "impact",
     "measures_for",
+    "neighbours",
     "quality_groups",
     "session_facts",
+    "sides",
     "stratum",
 ]

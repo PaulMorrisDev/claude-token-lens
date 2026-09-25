@@ -107,7 +107,7 @@ def test_daily_spend_says_why_its_total_differs_from_spend() -> None:
         assert text.startswith("Replies sent {span} cost {total}.")
         assert "{sessionsTotal}" in text
     assert "earlier replies" in spec["alt"]["sessions"]
-    assert "began before this window" in spec["alt"]["firstDay"]
+    assert "counts all of the first day" in spec["alt"]["firstDay"]
     for text in [spec["summary"], *spec["alt"].values()]:
         assert "$" not in text and "USD" not in text
     columns = _body("charts-types.js", "stackedColumns")
@@ -116,7 +116,11 @@ def test_daily_spend_says_why_its_total_differs_from_spend() -> None:
     assert 'variant: sessionsTotal ? (sessionsUsd > grand ? "sessions" : "firstDay") : null' in columns
     assert "sessionsTotal: sessionsTotal," in columns
     assert "span: spanText(days)," in columns
-    assert '"Every session with a reply in this window, earlier replies included."' in _body("page-overview.js", "renderTiles")
+    tiles = _body("page-overview.js", "renderTiles")
+    assert '"Every session with a reply in this window, earlier replies included."' in tiles
+    # The change window counts the sessions started since (api._window_query).
+    assert 'state.window === "change"' in tiles
+    assert '"Every session started since your last change, so all of it ran on the new settings."' in tiles
 
 
 def test_both_daily_spend_charts_get_the_sessions_and_the_window() -> None:

@@ -206,8 +206,15 @@ size. No text is kept (`context_files.py`).
   change straight away; they hold few sessions, so read them as a quick
   signal, not a verdict.
 - **Since my last change**: starts at the latest change point: an
-  `apply`, its undo, a settings change the snapshot hook saw, or a
-  change to metrics capture (`change_points.py`).
+  `apply`, its undo, a settings change the snapshot hook saw, a change
+  to metrics capture, or a model, effort or CLAUDE.md size change your
+  sessions show (`change_points.py`). Unlike the other windows, it
+  counts the sessions that *started* after the change, so every figure
+  on the page, the daily spend chart included, is work done wholly on
+  the new settings. A session already running at the change isn't
+  counted, however long it ran on. With at least 3 sessions started
+  since, the Overview adds what those sessions would have cost without
+  it (see "Without this change" below).
 - **What-if estimate** (`whatif.py`): what a change would have saved
   over the window, looked up in the report's own simulations rather
   than computed afresh: the model-swap repricing for a model change, the
@@ -225,10 +232,22 @@ size. No text is kept (`context_files.py`).
   that change should move (cost per reply for a model or effort change,
   cost per spawn for a change to one agent, summaries per session for
   `autoCompactWindow`, cache rebuild share for a TTL change, and so on).
-  Nothing is said until each side has at least 3 sessions, and the
-  result always notes that other things (the work itself, Claude Code
-  updates) change too. [Profiles](profiles.md#on-the-dashboard) has the
-  full rules.
+  The sessions after it are weighted to the mix of work before it: the
+  kind of task, and how hard and how big it was once at least half the
+  sessions carry capture's `level` and `size` tags. Nothing is said
+  until each side has at least 3 sessions, and the result always notes
+  that other things (the work itself, Claude Code updates) change too.
+  [Profiles](profiles.md#on-the-dashboard) has the full rules.
+- **Without this change** (`counterfactual.py`): the sessions after a
+  change, priced as if it hadn't been made. A model or fast mode change
+  is repriced reply by reply; a cache lifetime change, or a compaction
+  window the change raised, is replayed under the old setting; context
+  a change took off or added (CLAUDE.md, MCP servers, plugins, skills)
+  is priced as carried on every reply. Anything else, and a change to
+  several settings at once, uses the sessions before it: their cost per
+  reply for each kind of work, times the replies after. Repricing keeps
+  the replies Claude actually wrote, so read it as the price of the same
+  work. [The API reference](api.md#get-apiimpact) has each method.
 
 ## 7. Quality signals
 

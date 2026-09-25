@@ -286,4 +286,5 @@ def test_a_real_session_start_note_is_read_back():
     assert result.meta.cap_metrics == ("task", "brief", "level", "shift", "retry")
     assert [turn.cap_note_chars for turn in result.turns] == [len(rendered)]
     assert (result.turns[0].cap.task, result.turns[0].cap.level) == ("research", "easy")
-    assert rendered == f"<system-reminder>\nSessionStart hook additional context: {cat.note_text(cat.level_metrics('essentials'), 'main')}\n</system-reminder>"
+    # Recorded before Essentials carried size: the note for the metrics it names.
+    assert rendered == f"<system-reminder>\nSessionStart hook additional context: {cat.note_text(result.meta.cap_metrics, 'main')}\n</system-reminder>"

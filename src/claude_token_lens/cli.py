@@ -34,7 +34,7 @@ from pathlib import Path
 from zoneinfo import available_timezones
 
 from . import __version__, baseline as baseline_mod, capture_catalogue, capture_view, classify, discovery, installer as installer_mod
-from . import invocation, onboarding
+from . import invocation, onboarding, setup_flow
 from . import pages
 from . import helptext, hook_health, probe as probe_mod, recache, signals as signals_mod, snapshots
 from . import statusline as statusline_mod
@@ -49,6 +49,7 @@ from .config import (
     CaptureConfig,
     Config,
     ConfigError,
+    feedback_ids,
     load_config,
     load_session_overrides,
     prune_capture_log,
@@ -102,6 +103,7 @@ SUBCOMMANDS: tuple[str, ...] = (
     "uninstall-service",
     "update",
     "changes",
+    "status",
     "review",
     "check",
     "uninstall",
@@ -657,11 +659,6 @@ def _add_uninstall_args(sub: argparse.ArgumentParser) -> None:
 #: ``capture``'s actions; "status" is the default.
 CAPTURE_ACTIONS = ("status", "on", "off", "level", "enable", "disable", "connect", "remove", "feedback", "brief", "prune")
 
-#: What ``capture feedback on`` turns on, and what ``off`` turns off: the
-#: skill and the reminders to run it. The dashboard rating stays as set.
-_FEEDBACK_ON = ("feedback_skill", "feedback_note")
-_FEEDBACK_OFF = ("feedback_skill", "feedback_note", "feedback_reminder")
-
 #: ``capture <action> on|off`` -> the skill it adds or removes, what the
 #: change is called, and what it turns on.
 _SKILL_SWITCHES = {
@@ -894,13 +891,20 @@ def _add_init_args(sub: argparse.ArgumentParser) -> None:
     sub.add_argument(
         "--non-interactive",
         action="store_true",
-        help="never prompt on stdin; any question --answers doesn't cover uses a "
-        "derived default, printed as '(derived) ...' so nothing is guessed silently",
+        help="never prompt on stdin, and make the changes without asking for a yes; any question --answers "
+        "doesn't cover uses a derived default, printed as '(derived) ...' so nothing is guessed silently",
+    )
+    sub.add_argument(
+        "--advanced",
+        action="store_true",
+        help="also ask about projects to leave out, launch overlays, a shared .claude folder, the time zone, "
+        "where applied changes go, the capture window and WSL folders, and the full metrics capture and "
+        "feedback questions (the default asks only how you pay, connecting, the logon task and sharper tips)",
     )
     sub.add_argument(
         "--no-install",
         action="store_true",
-        help="skip connecting to Claude Code: no SessionStart hook / statusLine change and no fragments printed",
+        help="skip connecting to Claude Code: settings.json and Claude Code's skills folder are left alone",
     )
     sub.add_argument(
         "--repair-hook",
@@ -912,8 +916,9 @@ def _add_init_args(sub: argparse.ArgumentParser) -> None:
     sub.add_argument(
         "--connect",
         action="store_true",
-        help="add the config snapshot hook (and a statusline, if you have none) to "
-        "Claude Code's settings.json without asking; the change is still printed and the file backed up first",
+        help="connect to Claude Code without asking: add the config snapshot hook (and a statusline, if you "
+        "have none) to its settings.json; the change is still shown and the file backed up first. Needed for "
+        "--non-interactive to change settings.json at all",
     )
     service_group = sub.add_mutually_exclusive_group()
     service_group.add_argument(
@@ -927,15 +932,15 @@ def _add_init_args(sub: argparse.ArgumentParser) -> None:
         "--no-service",
         action="store_true",
         dest="no_service",
-        help="skip init's final 'run the service at logon?' step entirely -- no "
+        help="skip the 'start the dashboard at logon?' step entirely -- no "
         "question asked, nothing installed",
     )
     sub.add_argument(
         "--dry-run",
         action="store_true",
         dest="dry_run",
-        help="show the settings.json change and the service-install plan without "
-        "making either (config.toml and the initial baseline are still written)",
+        help="show every change init would make (the settings.json diff and the logon task included) and "
+        "write nothing: no config.toml, no hook files, no baseline",
     )
     sub.add_argument(
         "--capture-level",
@@ -1079,6 +1084,7 @@ def _make_parser() -> argparse.ArgumentParser:
             "uninstall-service": "remove a logon/boot registration made by install-service (or by init)",
             "update": "install the newest version, restart the dashboard on it and tidy up what an older one left",
             "changes": "list what this tool has installed and changed, and the command that undoes each",
+            "status": "check the setup works: how you pay, the Claude Code connection, the dashboard, sharper tips",
             "review": "review your CLAUDE.md files or skills: size, how often each is sent, cost, and fixes",
             "check": "quick actions: answer one token question (or all of them) with evidence and fixes",
             "uninstall": "remove the hook, statusline and logon service, optionally undo applied changes and delete data",
@@ -1144,7 +1150,7 @@ def _make_parser() -> argparse.ArgumentParser:
             _add_update_args(sub)
         if name == "uninstall":
             _add_uninstall_args(sub)
-        if name == "changes":
+        if name in ("changes", "status"):
             _add_claude_root_arg(sub)
         if name == "init":
             _add_init_args(sub)
@@ -2424,116 +2430,112 @@ def _cmd_pricing_check(args: argparse.Namespace) -> int:
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
-    """``init``: detect what's on the machine, ask (or derive, under
-    ``--non-interactive``) the "Asked, not guessed" questions, write
-    ``config.toml``/``projects/<slug>.toml``, print the install-step
-    fragments, and run an initial baseline. The two fragments (the
-    SessionStart hook's and the statusLine's) are resolved here, via the
-    same dynamic-import/``statusline`` module this CLI already uses for
-    ``snapshot-config``/``statusline`` -- ``onboarding.py`` itself never
-    imports either, so it stays plain and unit-testable (see its module
-    docstring).
+    """``init`` (:mod:`setup_flow`): a few questions, one review of every
+    change, then the changes and a summary. ``onboarding.py`` and
+    ``setup_flow.py`` never import this module: the snapshot hook (a
+    dynamic import of the packaged script), the commands settings.json
+    runs and the capture and feedback questions reach them as
+    :class:`setup_flow.Tools`.
     """
+    options, tools = _setup_flow_inputs(args)
+    # sys.stdin/sys.stdout looked up here, on every call, rather than
+    # bound as default arguments: pytest's capsys swaps sys.stdout per
+    # test, and a default bound at import time would miss it.
+    return setup_flow.run(options, tools, stdin=sys.stdin, stdout=sys.stdout)
+
+
+def _setup_flow_inputs(args: argparse.Namespace) -> tuple[setup_flow.Options, setup_flow.Tools]:
+    """``init``'s flags as :class:`setup_flow.Options`, and what the flow
+    needs from here as :class:`setup_flow.Tools`. Builds command strings
+    only; writes nothing."""
     config_dir = _resolve_config_dir(args.config_dir)
     service_roots = _service_projects_roots(args)
-    projects_root_path = service_roots[0]
-
     claude_root = _resolve_claude_root(args.claude_root)
     extra_args = _config_dir_args(config_dir)
-
     hook = _load_snapshot_hook_module()
-    hook_fragment = hook.hook_fragment_text(
-        script=Path(config_dir).resolve() / "hooks" / "snapshot-config.py", extra_args=extra_args
+    options = setup_flow.Options(
+        config_dir=config_dir,
+        projects_roots=service_roots,
+        claude_root=claude_root,
+        answers_path=args.answers,
+        non_interactive=args.non_interactive,
+        advanced=args.advanced,
+        no_install=args.no_install,
+        connect=args.connect,
+        install_service=args.install_service,
+        no_service=args.no_service,
+        dry_run=args.dry_run,
+        repair_hook=args.repair_hook,
+        capture_level=args.capture_level,
+        feedback=args.feedback,
+        # Fix S6: the shared --all-projects/--project/--project-family
+        # flags pick what the first baseline reads.
+        all_projects=args.all_projects,
+        project=args.project,
+        project_family=args.project_family,
     )
-    statusline_fragment = statusline_mod.print_install_fragment(extra_args=extra_args)
-
-    try:
-        rc = onboarding.run_init(
-            config_dir=config_dir,
-            projects_root_path=projects_root_path,
-            extra_projects_roots=service_roots[1:],
-            find_wsl_roots=discovery.find_wsl_projects_roots,
-            answers_path=args.answers,
-            non_interactive=args.non_interactive,
-            no_install=args.no_install,
-            repair_hook=args.repair_hook,
-            connect_step=not args.no_install and (args.connect or not args.non_interactive),
-            hook_fragment=hook_fragment,
-            statusline_fragment=statusline_fragment,
-            # Resolved here rather than relying on run_init's own
-            # sys.stdin/sys.stdout default parameter values: a default
-            # argument is bound once, at function-definition time, so it
-            # would keep pointing at whatever sys.stdout/sys.stdin were
-            # when onboarding.py was first imported -- not whatever a
-            # caller (e.g. pytest's capsys, which monkeypatches
-            # sys.stdout per test) has made current by the time this
-            # actually runs. Referencing sys.stdin/sys.stdout here,
-            # inside the function body, re-resolves them fresh on every
-            # call, same as every other subcommand's own bare print().
-            stdin=sys.stdin,
-            stdout=sys.stdout,
-            # Fix S6: honour the shared --all-projects/--project/
-            # --project-family selection flags for the initial baseline
-            # capture, the same fallback-to-cwd-slug rule
-            # _resolve_project_dirs_for_args already uses for every
-            # report-like subcommand.
-            all_projects=args.all_projects,
-            project=args.project,
-            project_family=args.project_family,
-            claude_root=claude_root,
-        )
-    except onboarding.OnboardingError as exc:
-        print(f"claude-token-lens init: {exc}", file=sys.stderr)
-        return 2
-
-    if rc != 0:
-        return rc
-
-    # v3: init's final step -- offer to register `serve` at logon, kept
-    # a separate function (rather than folded into onboarding.run_init's
-    # own Q&A) so onboarding.py stays free of installer.py's real
-    # subprocess/file-write side effects, the same "onboarding.py never
-    # itself installs anything" boundary its module docstring already
-    # draws for the hook/statusLine fragments above.
-    if not args.no_install and (args.connect or not args.non_interactive):
-        _cmd_init_connect_step(args, config_dir=config_dir, hook=hook, claude_root=claude_root)
-    rc = _cmd_init_service_step(args, config_dir=config_dir, projects_root_path=service_roots)
-    _cmd_init_capture_step(args, config_dir=config_dir, claude_root=claude_root)
-    _cmd_init_feedback_step(args, config_dir=config_dir, claude_root=claude_root)
-    return rc
+    tools = setup_flow.Tools(
+        hook_command=hook.hook_command(
+            script=Path(config_dir).resolve() / "hooks" / hook_health.HOOK_SCRIPT_NAME, extra_args=extra_args
+        ),
+        install_hook=hook.install_hook,
+        statusline_command=statusline_mod.install_command(extra_args=extra_args),
+        capture_commands=_capture_hook_commands(config_dir),
+        capture_choice=lambda stdin, stdout, now: _init_capture_choice(
+            args, config_dir=config_dir, stdin=stdin, stdout=stdout, now=now
+        ),
+        feedback_choice=lambda stdin, stdout: _init_feedback_choice(
+            args, config_dir=config_dir, claude_root=claude_root, stdin=stdin, stdout=stdout
+        ),
+        find_wsl_roots=discovery.find_wsl_projects_roots,
+    )
+    return options, tools
 
 
-def _cmd_init_capture_step(
-    args: argparse.Namespace, *, config_dir: Path, claude_root: Path, stdin=None, stdout=None, now=None
-) -> None:
-    """``init``'s last question: metrics capture
-    (:func:`onboarding.ask_capture_level`, which warns that it uses
-    tokens and shows what each level would have cost over your last
-    :data:`CAPTURE_HISTORY_DAYS` days). A level other than ``off``
-    is followed by :func:`onboarding.ask_capture_until`'s time-box
-    question, then both are saved to config.toml together; the
-    settings.json entries the level needs are shown and added after a
-    yes (or ``--connect``), as in ``capture on``; when init isn't
-    connecting to Claude Code, the command that adds them is printed.
-    Capture already on is left as it is unless ``--capture-level`` or
-    the answers file names a level."""
-    stdin = stdin if stdin is not None else sys.stdin
-    stdout = stdout if stdout is not None else sys.stdout
-    now = now or datetime.now(timezone.utc)
+def _init_capture_choice(
+    args: argparse.Namespace, *, config_dir: Path, stdin, stdout, now: datetime
+) -> tuple[str, str | None] | None:
+    """``init``'s full metrics capture question (:func:`onboarding.
+    ask_capture_level`, which warns that capture uses tokens and shows
+    what each level would have cost over your last
+    :data:`CAPTURE_HISTORY_DAYS` days) and its time-box question, asked
+    or taken from ``--capture-level``/``--capture-for``/
+    ``--capture-no-limit`` and the answers file: the ``(level, until)``
+    to save, or ``None`` to leave capture as it is (said on ``stdout``).
+    Capture already on is left as it is unless ``--capture-level`` or the
+    answers file names a level. Raises :class:`onboarding.OnboardingError`
+    for a ``--capture-for`` it can't use. Writes nothing."""
     try:
         config = load_config(config_dir)
         given = onboarding.capture_answer(args.answers, args.capture_level)
     except (ConfigError, onboarding.OnboardingError) as exc:
         stdout.write(f"Metrics capture: skipped ({exc}).\n")
-        return
+        return None
+    # A flag init can't act on stops it before anything is read or
+    # written.
+    hours = None
+    if args.capture_for and args.capture_no_limit:
+        raise onboarding.OnboardingError("--capture-for and --capture-no-limit can't both be given.")
+    if args.capture_for:
+        match = _DURATION_RE.fullmatch(args.capture_for)
+        if not match or int(match.group(1)) == 0:
+            raise onboarding.OnboardingError(
+                f"--capture-for {args.capture_for!r}: use a number and h, d or w, such as 12h, 7d or 2w."
+            )
+        hours = int(match.group(1)) * _DURATION_UNIT_HOURS[match.group(2).lower()]
     if config.capture.is_on and given is None:
         stdout.write(
             f"\nMetrics capture is {capture_view.describe(config.capture)}. "
             "'claude-token-lens capture' shows what it costs and changes it.\n"
         )
-        return
+        return None
 
     def estimates() -> list[str]:
+        if args.dry_run:
+            # Reading history keeps its digest cache and salt in the
+            # config folder, as every command that reads it does; a dry
+            # run writes nothing.
+            return []
         past, units = _capture_history(args, config, config_dir)
         return _capture_estimate_lines(past, units) if past is not None else []
 
@@ -2551,22 +2553,14 @@ def _cmd_init_capture_step(
             f"{level!r} isn't a level, so metrics capture is left as it is. "
             "'claude-token-lens capture on --level LEVEL' turns it on.\n"
         )
-        return
+        return None
     if level == "off" and not config.capture.is_on:
         if not notes:
             stdout.write("Metrics capture left off.\n")
-        return
+        return None
     until = None
     if level != "off":
-        if args.capture_for and args.capture_no_limit:
-            stdout.write("--capture-for and --capture-no-limit can't both be given.\n")
-            return
-        if args.capture_for:
-            match = _DURATION_RE.fullmatch(args.capture_for)
-            if not match or int(match.group(1)) == 0:
-                stdout.write(f"--capture-for {args.capture_for!r}: use a number and h, d or w, such as 12h, 7d or 2w.\n")
-                return
-            hours = int(match.group(1)) * _DURATION_UNIT_HOURS[match.group(2).lower()]
+        if hours is not None:
             until = (now + timedelta(hours=hours)).isoformat(timespec="seconds")
         else:
             until, timebox_notes = onboarding.ask_capture_until(
@@ -2579,54 +2573,25 @@ def _cmd_init_capture_step(
             )
             for note in timebox_notes:
                 stdout.write(f"(derived) {note}\n")
-    try:
-        capture = set_capture(config_dir, level=level, until=until, now=now)
-    except ConfigError as exc:
-        stdout.write(f"{exc}\n")
-        return
-    if level == "off":
-        stdout.write("Metrics capture switched off.\n")
-        return
-    stdout.write(f"Saved to config.toml: metrics capture {capture_view.describe(capture)}.\n")
-    wanted = hook_health.capture_specs(capture.active_metrics())
-    if args.no_install or not (args.connect or not args.non_interactive):
-        if hook_health.check_capture(wanted, claude_root=claude_root, config_dir=config_dir).missing:
-            stdout.write("Add the hook entries it needs with: claude-token-lens capture connect\n")
-        return
-    done = _capture_settings_step(
-        wanted,
-        config_dir=config_dir,
-        claude_root=claude_root,
-        dry_run=args.dry_run,
-        assume_yes=args.connect,
-        stdin=stdin,
-        stdout=stdout,
-    )
-    if not done and wanted and not args.dry_run:
-        stdout.write("Until then the chosen metrics can't be captured.\n")
+    return level, until
 
 
-def _cmd_init_feedback_step(
-    args: argparse.Namespace, *, config_dir: Path, claude_root: Path, stdin=None, stdout=None, now=None
-) -> None:
-    """``init``'s feedback question (:func:`onboarding.ask_feedback`),
-    after capture's: the ``/tl-feedback`` skill and its status-line
-    reminder, which work at any capture level. A yes is saved to
-    config.toml, then the skill is shown and written after a yes (or
-    ``--connect``), as in ``capture feedback on``; when init isn't
-    connecting to Claude Code, that command is printed. Feedback already
-    on is left as it is unless ``--feedback`` or the answers file says;
-    when it's on without its skill file (picking Deep turns it on), the
-    question is skipped and the skill is offered as above."""
-    stdin = stdin if stdin is not None else sys.stdin
-    stdout = stdout if stdout is not None else sys.stdout
-    now = now or datetime.now(timezone.utc)
+def _init_feedback_choice(
+    args: argparse.Namespace, *, config_dir: Path, claude_root: Path, stdin, stdout
+) -> tuple[bool, bool, list[str]] | None:
+    """``init``'s feedback question (:func:`onboarding.ask_feedback`):
+    the ``/tl-feedback`` skill and its status-line reminder, asked or
+    taken from ``--feedback`` and the answers file. Returns ``(on,
+    was_on, derived notes)``, or ``None`` when there's nothing to decide
+    (said on ``stdout``). Feedback on in config.toml without its skill
+    file (picking Deep turns it on) returns on, so the flow writes the
+    skill. Writes nothing."""
     try:
         config = load_config(config_dir)
         given = onboarding.feedback_answer(args.answers, getattr(args, "feedback", None))
     except (ConfigError, onboarding.OnboardingError) as exc:
         stdout.write(f"Feedback: skipped ({exc}).\n")
-        return
+        return None
     current = config.capture
     was_on = "feedback_skill" in current.feedback
     if was_on and given is None:
@@ -2634,7 +2599,7 @@ def _cmd_init_feedback_step(
 
         if footprint.read_feedback_skill(claude_root) == capture_catalogue.feedback_skill_text():
             stdout.write("\nThe /tl-feedback skill is on. 'claude-token-lens capture feedback off' turns it off.\n")
-            return
+            return None
         # On in config.toml without its skill file: picking Deep just
         # turned it on (config.set_capture), or the file went missing.
         stdout.write(
@@ -2642,165 +2607,11 @@ def _cmd_init_feedback_step(
             + (", as part of Deep" if current.level == "deep" else "")
             + ". 'claude-token-lens capture feedback off' turns it off.\n"
         )
-        on, notes = True, []
-    else:
-        on, notes = onboarding.ask_feedback(
-            preset=given, non_interactive=args.non_interactive, stdin=stdin, stdout=stdout
-        )
+        return True, was_on, []
+    on, notes = onboarding.ask_feedback(preset=given, non_interactive=args.non_interactive, stdin=stdin, stdout=stdout)
     for note in notes:
         stdout.write(f"(derived) {note}\n")
-    if on != was_on:
-        feedback = [i for i in current.feedback if i not in _FEEDBACK_OFF]
-        if on:
-            feedback = list(current.feedback) + [i for i in _FEEDBACK_ON if i not in current.feedback]
-        try:
-            set_capture(config_dir, feedback=feedback, now=now)
-        except ConfigError as exc:
-            stdout.write(f"{exc}\n")
-            return
-        stdout.write("Saved to config.toml: feedback " + ("on" if on else "off") + ".\n")
-    elif not on:
-        if not notes:
-            stdout.write("Feedback left off.\n")
-        return
-    if args.no_install or not (args.connect or not args.non_interactive):
-        from . import footprint
-
-        text = footprint.read_feedback_skill(claude_root)
-        if on and text != capture_catalogue.feedback_skill_text():
-            stdout.write("Add the skill with: claude-token-lens capture feedback on\n")
-        elif not on and text is not None and footprint.is_own_feedback_skill(text):
-            stdout.write("Remove the skill with: claude-token-lens capture feedback off\n")
-        return
-    _capture_skill_step(
-        on, claude_root=claude_root, dry_run=args.dry_run, assume_yes=args.connect, stdin=stdin, stdout=stdout
-    )
-
-
-def _cmd_init_connect_step(
-    args: argparse.Namespace, *, config_dir: Path, hook, claude_root: Path | None = None, stdin=None, stdout=None
-) -> None:
-    """``init``'s "Connect to Claude Code" step: install the snapshot
-    hook script into this tool's own folder, then show the exact
-    ``settings.json`` change that runs it (and adds a statusline when
-    you have none) and write it only after a yes, or with ``--connect``;
-    ``--dry-run`` shows it and writes nothing. ``settings.json`` is
-    backed up first. Commands name a Python and the script by full
-    path, so they need neither the ``py`` launcher nor shell variables,
-    and carry ``--config-dir`` when this tool's folder is not the
-    default (:func:`_config_dir_args`). ``settings.json`` is the one in
-    ``claude_root`` (:func:`_resolve_claude_root`), never next to
-    ``--config-dir``."""
-    stdin = stdin if stdin is not None else sys.stdin
-    stdout = stdout if stdout is not None else sys.stdout
-    claude_root = claude_root if claude_root is not None else _resolve_claude_root(None)
-    extra_args = _config_dir_args(config_dir)
-    script = hook.install_hook(Path(config_dir).resolve())
-    command = hook.hook_command(script=script, extra_args=extra_args)
-    stdout.write("Connect to Claude Code\n")
-    if command is None:
-        # ROB-P9: the interpreter's or script's own path can't be safely
-        # written into a command string -- refuse rather than write a
-        # broken or unsafe one into settings.json.
-        stdout.write(
-            f"- Could not build a safe hook command: {sys.executable} or {script} holds a quote, $, backtick, "
-            "or is a UNC path. Move claude-token-lens's data folder (or this Python) somewhere with a plain "
-            "path, then run 'claude-token-lens init --connect' again.\n\n"
-        )
-        return
-    plan = hook_health.plan_connect(
-        config_dir,
-        hook_command=command,
-        statusline_command=statusline_mod.install_command(extra_args=extra_args),
-        claude_root=claude_root,
-    )
-    if plan.new_text is None:
-        for line in plan.changes:
-            stdout.write(f"- {line}\n")
-        if not plan.changes:
-            stdout.write("- Already connected: settings.json runs the snapshot hook.\n")
-        stdout.write("\n")
-        return
-    stdout.write(f"This adds to {plan.settings_path}:\n")
-    for line in plan.changes:
-        stdout.write(f"- {line}\n")
-    stdout.write("\n" + plan.diff + "\n")
-    if getattr(args, "dry_run", False):
-        stdout.write("Dry run: settings.json left unchanged. Run 'claude-token-lens init --connect' to make it.\n\n")
-        return
-    stdout.write("To undo it later: claude-token-lens uninstall (or restore the backup named below).\n")
-    if not args.connect:
-        stdout.write("Make this change? settings.json is backed up first. (y/n) [n]: ")
-        stdout.flush()
-        if (stdin.readline() or "").strip().lower() not in ("y", "yes"):
-            stdout.write("Left unchanged. Run 'claude-token-lens init --connect' to make it later.\n\n")
-            return
-    try:
-        backup = hook_health.connect(plan)
-    except (OSError, ValueError) as exc:
-        stdout.write(f"Could not change settings.json: {exc}\n\n")
-        return
-    stdout.write(
-        "Connected." + (f" The previous settings.json is at {backup}" if backup else "") + f"\n{RESTART_NOTE}\n\n"
-    )
-
-
-def _cmd_init_service_step(
-    args: argparse.Namespace,
-    *,
-    config_dir: Path,
-    projects_root_path: list[Path],
-    stdin=None,
-    stdout=None,
-) -> int:
-    """``init``'s final step (v3): "Run the service at logon?" --
-    default yes when asked interactively; under ``--non-interactive``
-    the derived default is no, *unless* ``--install-service`` was
-    given; ``--no-service`` skips the step entirely (no question, no
-    install). ``stdin``/``stdout`` default to the live ``sys.stdin``/
-    ``sys.stdout`` at call time, same reasoning as ``_cmd_init``'s own
-    comment above -- resolved here (not as a bound default argument) so
-    a test's ``capsys``/piped-stdin fixture is always the one actually
-    read.
-    """
-    stdin = stdin if stdin is not None else sys.stdin
-    stdout = stdout if stdout is not None else sys.stdout
-
-    if args.no_service:
-        stdout.write("Service-at-logon step skipped (--no-service).\n")
-        return 0
-
-    if args.install_service:
-        should_install = True
-    elif args.non_interactive:
-        should_install = False
-        stdout.write(
-            "(derived) run_service: not given on the command line; used default False "
-            "(pass --install-service to install non-interactively)\n"
-        )
-    else:
-        stdout.write("Run the service at logon? (y/n) [y]: ")
-        stdout.flush()
-        raw = (stdin.readline() or "").strip().lower()
-        should_install = raw in ("", "y", "yes")
-
-    if not should_install:
-        stdout.write(
-            "Service not installed. Run 'claude-token-lens install-service' any time to add it later.\n"
-        )
-        return 0
-
-    plan = installer_mod.plan_service_install(sys.executable, projects_root_path, config_dir)
-    try:
-        installer_mod.install(plan, dry_run=args.dry_run)
-    except installer_mod.InstallerError as exc:
-        print(f"claude-token-lens init: {exc}", file=sys.stderr)
-        return 2
-
-    if not args.dry_run:
-        _probe_service_after_install(plan.platform)
-
-    return 0
+    return on, was_on, notes
 
 
 #: Short pause (seconds) before probing a just-installed service, so a
@@ -2811,41 +2622,10 @@ def _cmd_init_service_step(
 _POST_INSTALL_PROBE_DELAY_S = 1.0
 
 
-def _http_health_ok(url: str) -> bool:
-    """Best-effort ``GET <url>/api/health``: ``True`` only on a real
-    ``200`` with a JSON ``ok: true`` body, ``False`` for absolutely any
-    failure (connection refused, timeout, non-200, malformed body) --
-    never raises. A short timeout (this is a one-shot post-install
-    courtesy check, not a readiness gate anything blocks on).
-    """
-    import urllib.error
-    import urllib.request
-
-    try:
-        with urllib.request.urlopen(f"{url}/api/health", timeout=2) as resp:
-            if resp.status != 200:
-                return False
-            body = json.loads(resp.read().decode("utf-8"))
-    except (OSError, urllib.error.URLError, ValueError):
-        return False
-    return bool(body.get("ok"))
-
-
-def _http_health_version(url: str) -> str | None:
-    """The ``version`` the dashboard at ``url`` reports in
-    ``/api/health``, or ``None`` when it can't be read (an old copy from
-    before 0.4.1 reports none). Never raises."""
-    import urllib.error
-    import urllib.request
-
-    try:
-        with urllib.request.urlopen(f"{url}/api/health", timeout=2) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except (OSError, urllib.error.URLError, ValueError):
-        return None
-    data = body.get("data") if isinstance(body, dict) else None
-    version = data.get("version") if isinstance(data, dict) else None
-    return version if isinstance(version, str) else "older than 0.4.1"
+#: Moved to :mod:`installer` (``setup_status`` needs them too, and
+#: can't import this module); the old names stay for callers here.
+_http_health_ok = installer_mod.http_health_ok
+_http_health_version = installer_mod.http_health_version
 
 
 def _probe_service_after_install(
@@ -3133,7 +2913,7 @@ def _cmd_update_finish(
     health = hook_health.check(config_dir, claude_root=claude_root)
     if health.fixed_command is not None:
         changed_any = True
-        onboarding._offer_hook_repair(
+        onboarding.offer_hook_repair(
             health, repair_hook=args.yes, non_interactive=args.dry_run, stdin=stdin, stdout=stdout, now=now
         )
     try:
@@ -3265,6 +3045,27 @@ def _cmd_changes(args: argparse.Namespace) -> int:
         print(f"- {title}. {pages.plain(text)}")
     print(f"\nTo remove everything: {footprint.UNINSTALL_COMMAND}")
     return 0
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    """``status``: whether each part of the setup works
+    (:func:`setup_status.check_setup`). Exits 1 only when an essential
+    part is a problem; waiting and off parts exit 0."""
+    from . import setup_status
+    from .service.serve import STORE_FILENAME
+    from .service.store import read_entrypoint_counts
+
+    config_dir = _resolve_config_dir(args.config_dir)
+    items = setup_status.check_setup(
+        config_dir,
+        _resolve_claude_root(getattr(args, "claude_root", None)),
+        entrypoints=read_entrypoint_counts(config_dir / STORE_FILENAME),
+    )
+    print("Token Lens setup\n")
+    for line in setup_status.lines(items):
+        print(pages.plain(line))
+    print(f"\n{setup_status.verdict(items)}")
+    return 1 if setup_status.essential_problem(items) else 0
 
 
 _DURATION_RE = re.compile(r"\s*(\d+)\s*([hdw])\s*", re.IGNORECASE)
@@ -3814,10 +3615,8 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
             if len(args.values) != 1 or args.values[0] not in ("on", "off"):
                 raise ValueError(f"'capture {action}' needs on or off")
             on = args.values[0] == "on"
-            if action == "feedback" and on:
-                changes["feedback"] = list(current.feedback) + [i for i in _FEEDBACK_ON if i not in current.feedback]
-            elif action == "feedback":
-                changes["feedback"] = [i for i in current.feedback if i not in _FEEDBACK_OFF]
+            if action == "feedback":
+                changes["feedback"] = feedback_ids(current.feedback, on)
             elif on:
                 changes["coaching"] = list(current.coaching) + [
                     i for i in ("brief_templates",) if i not in current.coaching
@@ -4828,6 +4627,8 @@ def _run(args: argparse.Namespace) -> int:
         return _cmd_team_report(args)
     if command == "changes":
         return _cmd_changes(args)
+    if command == "status":
+        return _cmd_status(args)
     if command == "review":
         return _cmd_review(args)
     if command == "check":

@@ -241,6 +241,40 @@ def test_already_cheapest_state_reports_no_saving():
     assert row_cells[saving_idx] == 0.0
 
 
+def test_a_sonnet_main_session_is_never_offered_haiku():
+    """The main session does the hard, open-ended work, so Sonnet is its
+    floor: no alternative, no saving, and so no card, lever or goal."""
+    tr = _transcript([_turn(model=SONNET, input_tokens=1_000_000, output_tokens=500_000)], kind="top-level")
+    stats = model_swap.compute_model_swap([tr], PRICING)
+    row = stats.by_key["top-level"]
+
+    assert row.tier_verdict.state == "main_floor"
+    assert row.tier_verdict.alt_model is None
+    assert row.tier_verdict.saving_usd == 0.0
+    assert "smallest model suggested for your main session" in row.tier_verdict.label
+    # What Haiku would have cost is still shown, as information only.
+    assert row.cost_by_model[HAIKU] > 0
+
+    report = ReportModel(
+        meta=ReportMeta(pricing=PricingMeta(coverage_pct=100.0)),
+        sections=[model_swap.build_section(stats)],
+        diagnostics=Diagnostics(lines=1000),
+    )
+    th = model_swap.ModelSwapThresholds(min_sessions=1, min_turns=1)
+    assert model_swap.RULES["model-tier"](report, th, archetype=None, snapshot=None) == []
+
+
+def test_a_sonnet_subagent_is_still_offered_haiku():
+    tr = _transcript(
+        [_turn(model=SONNET, input_tokens=1_000_000, output_tokens=500_000)],
+        kind="subagent",
+        agent_type="reviewer",
+    )
+    stats = model_swap.compute_model_swap([tr], PRICING)
+    assert stats.by_key["reviewer"].tier_verdict.state == "cheaper_available"
+    assert stats.by_key["reviewer"].tier_verdict.alt_model == HAIKU
+
+
 def test_no_priced_turns_reports_no_data_not_a_false_already_cheapest():
     tr = _transcript([], kind="subagent", agent_type="claude-implementer")
     stats = model_swap.compute_model_swap([tr], PRICING)

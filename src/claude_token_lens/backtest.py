@@ -34,7 +34,12 @@ Method, in full (see also ``docs/backtest.md``):
    to one or the other). Its before/after estimate is
    ``impact._measure_row``'s own ratio-of-sums, stratum-reweighted,
    Holm-tested row -- unchanged from EST-P3, just called for one measure
-   instead of a change point's whole table.
+   instead of a change point's whole table. When :mod:`counterfactual`
+   can undo the predicted setting on the sessions after the change
+   itself (repriced, simulated or approximate, not its from-before
+   fallback), that figure is the measured saving instead: it prices the
+   same sessions both ways, so other differences between the two sides
+   don't count.
 4. **Measured total.** ``impact._measure_row`` gives a *rate*
    (dollars per session, or per spawn) before and after. Multiplying the
    rate's drop (or rise) by how many sessions/spawns actually happened
@@ -55,10 +60,10 @@ Method, in full (see also ``docs/backtest.md``):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from . import change_points as change_points_mod
-from . import impact
+from . import counterfactual, impact
 from .change_points import ChangePoint
 from .pricing import Pricing
 from .units import Units
@@ -116,18 +121,6 @@ def _match_point(prediction: dict, points: list[ChangePoint]) -> ChangePoint | N
     return best
 
 
-def _neighbors(points: list[ChangePoint], point: ChangePoint) -> tuple[ChangePoint | None, ChangePoint | None]:
-    """The nearest earlier/later change point outside :data:`impact.TOGETHER`
-    of ``point`` -- the same neighbour rule :func:`impact.impact` uses for
-    each point in its own list, so a back-tested window and an impact
-    comparison of the same change never disagree about its bounds."""
-    earlier = [p for p in points if p.ts < point.ts]
-    later = [p for p in points if p.ts > point.ts]
-    previous = next((p for p in reversed(earlier) if point.ts - p.ts > impact.TOGETHER), None)
-    following = next((p for p in later if p.ts - point.ts > impact.TOGETHER), None)
-    return previous, following
-
-
 def _measure_for(prediction: dict) -> impact.Measure:
     agent = prediction.get("agent")
     if agent:
@@ -161,7 +154,27 @@ class _Judgement:
     enough: bool
 
 
-def _judge_row(prediction: dict, before: list[impact.SessionFacts], after: list[impact.SessionFacts], units: Units) -> _Judgement:
+def _exact_saving(prediction: dict, point: ChangePoint, before, after, bundles: dict, pricing: Pricing):
+    """The counterfactual's own figure for the predicted setting
+    (a ``counterfactual.KeyResult``), when it has one that prices the
+    after sessions both ways, else ``None``."""
+    result = counterfactual.without_change(point, before, after, bundles, pricing)
+    if result is None:
+        return None
+    wanted = (prediction.get("agent") or None, prediction.get("measure_key"))
+    return next((row for row in result.per_key if (row.agent or None, row.key) == wanted and row.fidelity != "before"), None)
+
+
+def _judge_row(
+    prediction: dict, before: list[impact.SessionFacts], after: list[impact.SessionFacts], units: Units, exact=None
+) -> _Judgement:
+    if exact is not None:
+        # The same sessions priced both ways: no noise to test, so any
+        # difference past the negligible line is a real one.
+        measured_usd = round(exact.without_usd - exact.paid_usd, 6)
+        label = "no_clear_change" if abs(measured_usd) < _NEGLIGIBLE_USD else "lower" if measured_usd > 0 else "higher"
+        pct = round((exact.paid_usd - exact.without_usd) / exact.without_usd * 100.0, 1) if exact.without_usd else None
+        return _Judgement(_verdict(prediction["predicted_usd"], measured_usd, label), measured_usd, pct, True)
     measure = _measure_for(prediction)
     row = impact._measure_row(measure, before, after, units)
     # A single-row list: Holm correction over one tested measure is the
@@ -192,19 +205,18 @@ def judge_predictions(
     if not points:
         return 0
     sessions = impact.session_facts(corpus, pricing)
+    bundles = {bundle.session_id: bundle for bundle in corpus.sessions}
     judged = 0
     for prediction in store.predictions(judged=False):
         point = _match_point(prediction, points)
         if point is None:
             continue
-        previous, following = _neighbors(points, point)
-        start = point.ts - timedelta(days=impact.LOOKBACK_DAYS)
-        if previous is not None and previous.ts > start:
-            start = previous.ts
-        end = following.ts if following is not None else now
-        before = [s for s in sessions if start <= s.start < point.ts]
-        after = [s for s in sessions if point.ts <= s.start < end]
-        result = _judge_row(prediction, before, after, units)
+        # impact's own bounds and project, so a back-tested window and an
+        # impact comparison of the same change never disagree.
+        previous, following = impact.neighbours(points, point)
+        before, after = impact.sides(point, sessions, previous=previous, following=following, now=now)
+        exact = _exact_saving(prediction, point, before, after, bundles, pricing)
+        result = _judge_row(prediction, before, after, units, exact)
         if not result.enough:
             if following is None:
                 # The after-window is still open -- more sessions may

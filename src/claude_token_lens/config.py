@@ -643,6 +643,17 @@ def resolve_billing(config: Config, config_dir: Path) -> None:
         )
 
 
+def saved_billing(config_dir: str | Path | None = None) -> str | None:
+    """``billing`` as written in ``config.toml`` (``api``,
+    ``subscription`` or ``auto``, before :func:`resolve_billing` works
+    ``auto`` out), or ``None`` when the file or the key is missing: the
+    "how do you pay" question has never been answered. Raises
+    :class:`ConfigError` as :func:`load_config` does."""
+    data = _read_toml(_resolve_config_dir(config_dir) / "config.toml", what="config file")
+    value = (data or {}).get("billing")
+    return value if isinstance(value, str) and value in _ALLOWED_BILLING else None
+
+
 def load_config(config_dir: str | Path | None = None) -> Config:
     """Load ``<config_dir>/config.toml`` (``config_dir`` defaults to
     ``~/.claude/token-lens``, honouring ``CLAUDE_CONFIG_DIR``). A missing
@@ -895,23 +906,12 @@ def write_config_values(config_dir: str | Path | None, updates: dict) -> Path:
     describe. Returns the path actually written.
     """
     resolved_dir = _resolve_config_dir(config_dir)
-    path = resolved_dir / "config.toml"
-    existing = _read_toml(path, what="config file") or {}
-
-    merged = dict(existing)
-    for key, value in updates.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged_sub = dict(merged[key])
-            merged_sub.update(value)
-            merged[key] = merged_sub
-        else:
-            merged[key] = value
-
     # Validate before writing anything -- raises ConfigError on a bad
     # value/shape, same as loading a hand-edited file would.
-    _build_config(merged, path)
+    merged = _merged_values(resolved_dir, updates)
 
     resolved_dir.mkdir(parents=True, exist_ok=True)
+    path = resolved_dir / "config.toml"
     try:
         text = _dump_toml_table(merged)
     except ConfigError:
@@ -920,6 +920,29 @@ def write_config_values(config_dir: str | Path | None, updates: dict) -> Path:
         return new_path
     _write_atomic(path, text, verify_toml=True)
     return path
+
+
+def check_config_values(config_dir: str | Path | None, updates: dict) -> None:
+    """Raise :class:`ConfigError` when :func:`write_config_values` would
+    refuse ``updates``; write nothing. ``init`` checks its answers before
+    it shows them for review."""
+    _merged_values(_resolve_config_dir(config_dir), updates)
+
+
+def _merged_values(resolved_dir: Path, updates: dict) -> dict:
+    """``config.toml`` with ``updates`` merged in (see
+    :func:`write_config_values`), validated."""
+    path = resolved_dir / "config.toml"
+    merged = dict(_read_toml(path, what="config file") or {})
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged_sub = dict(merged[key])
+            merged_sub.update(value)
+            merged[key] = merged_sub
+        else:
+            merged[key] = value
+    _build_config(merged, path)
+    return merged
 
 
 def _flat_part(data: dict) -> dict:
@@ -978,6 +1001,21 @@ def _in_catalogue_order(chosen: list[str], known: tuple[str, ...]) -> list[str]:
     kept, last, for validation to name."""
     wanted = set(chosen)
     return [i for i in known if i in wanted] + [i for i in dict.fromkeys(chosen) if i not in known]
+
+
+#: What turning the ``/tl-feedback`` survey on turns on (``capture
+#: feedback on``, ``init``), and what turning it off turns off: the skill
+#: and the reminders to run it. The dashboard rating stays as set.
+FEEDBACK_ON = ("feedback_skill", "feedback_note")
+FEEDBACK_OFF = ("feedback_skill", "feedback_note", "feedback_reminder")
+
+
+def feedback_ids(current: list[str], on: bool) -> list[str]:
+    """``[capture] feedback`` with the ``/tl-feedback`` skill and its
+    notes switched on or off (:data:`FEEDBACK_ON`/:data:`FEEDBACK_OFF`)."""
+    if on:
+        return list(current) + [i for i in FEEDBACK_ON if i not in current]
+    return [i for i in current if i not in FEEDBACK_OFF]
 
 
 def set_capture(
@@ -1228,6 +1266,11 @@ __all__ = [
     "Config",
     "ProjectConfig",
     "load_config",
+    "saved_billing",
+    "check_config_values",
+    "FEEDBACK_ON",
+    "FEEDBACK_OFF",
+    "feedback_ids",
     "load_project_configs",
     "save_project_config",
     "write_config_values",

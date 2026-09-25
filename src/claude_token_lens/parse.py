@@ -1094,7 +1094,10 @@ def _accumulate_tool_results(
                 if block.get("is_error") is True:
                     current.feedback = Feedback(source="skipped")
                 else:
-                    current.feedback = capture_tags.feedback_from_answers(d.get("toolUseResult")) or current.feedback
+                    answered = capture_tags.feedback_from_answers(d.get("toolUseResult"))
+                    if answered is not None and current.feedback is not None and current.feedback.source == answered.source:
+                        answered = capture_tags.merge_feedback(current.feedback, answered)
+                    current.feedback = answered or current.feedback
 
 
 def _is_async_launch(d: dict) -> bool:

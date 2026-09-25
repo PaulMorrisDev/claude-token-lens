@@ -807,16 +807,23 @@ def reported_task(top: TranscriptResult | None) -> tuple[str | None, int]:
     """The kind of task Claude reported (metrics capture's ``task=``) for
     at least half of a session's tagged messages, twice or more, and how
     many messages it tagged."""
+    return reported_word(top, "task")
+
+
+def reported_word(top: TranscriptResult | None, field: str) -> tuple[str | None, int]:
+    """The word Claude reported for one capture tag field (``task``,
+    ``level``, ``size``...) on at least half of a session's messages that
+    carry it, twice or more, and how many messages carry it."""
     if top is None:
         return None, 0
-    tasks = [t.cap.task for t in top.turns if t.cap is not None and t.cap.has_tl and t.cap.task]
-    if len(tasks) < 2:
-        return None, len(tasks)
+    words = [getattr(t.cap, field) for t in top.turns if t.cap is not None and t.cap.has_tl and getattr(t.cap, field)]
+    if len(words) < 2:
+        return None, len(words)
     counts: dict[str, int] = {}
-    for task in tasks:
-        counts[task] = counts.get(task, 0) + 1
-    task = max(counts, key=lambda k: (counts[k], k))
-    return (task if 2 * counts[task] >= len(tasks) else None), len(tasks)
+    for word in words:
+        counts[word] = counts.get(word, 0) + 1
+    word = max(counts, key=lambda k: (counts[k], k))
+    return (word if 2 * counts[word] >= len(words) else None), len(words)
 
 
 def classify_session(
@@ -1122,6 +1129,7 @@ __all__ = [
     "classify_purpose",
     "classify_session",
     "reported_task",
+    "reported_word",
     "REPORTED_PURPOSES",
     "build_session_record",
     "group_sessions",

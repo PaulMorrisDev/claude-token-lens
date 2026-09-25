@@ -14,8 +14,8 @@ Costs rise with depth, so capture comes in levels, each including every metric o
 |---|---|---|---|
 | Off | Nothing is captured and no tokens are used. | – | – |
 | Free | Local signals from hooks that log to a file. Uses no Claude tokens. | – | – |
-| Essentials | Claude tags each piece of work: what kind it was, how clear the request was, how hard, and when the task changed. Subagents say whether they finished. | ~207 tokens | ~107 tokens |
-| Standard | Adds size, what the request lacked, planning, skills, research, and each subagent's view of its model, rules and brief. | ~336 tokens | ~190 tokens |
+| Essentials | Claude tags each piece of work: what kind it was, how clear the request was, how hard, how big, and when the task changed. Subagents say whether they finished. | ~218 tokens | ~107 tokens |
+| Standard | Adds what the request lacked, planning, skills, research, and each subagent's view of its model, rules and brief. | ~336 tokens | ~190 tokens |
 | Deep | Adds how much earlier context was needed, how the change was checked, and a short rating after large tool outputs. Also turns on the /tl-feedback survey, its reminder note, and Claude's one-line reminder to run it when a piece of work is done. | ~420 tokens | ~190 tokens |
 | Custom | Any other set of metrics, turned on one by one (`capture enable`/`capture disable`). | depends what's on | depends what's on |
 
@@ -27,13 +27,13 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 
 | Metric | Level | ~Output tokens each time | Feeds |
 |---|---|---|---|
-| Kind of task (`task`) | Essentials | ~3 | Profiles per kind of task, Cost per finished piece of work, Model and effort fit |
+| Kind of task (`task`) | Essentials | ~3 | Profiles per kind of task, Cost per finished piece of work, Model and effort fit, Measuring your changes |
 | How clear the request was (`brief`) | Essentials | ~3 | Giving Claude information |
-| How hard the work was (`level`) | Essentials | ~3 | Model and effort fit, Profiles per kind of task, Planning |
+| How hard the work was (`level`) | Essentials | ~3 | Model and effort fit, Profiles per kind of task, Planning, Measuring your changes |
 | Task changes (`shift`) | Essentials | ~1 | Breaking down work, Clearing context, Planning |
+| Size of the work (`size`) | Essentials | ~2 | Breaking down work, Measuring your changes |
 | Did the agent finish (`result`) | Essentials | ~4 | Delegating to agents, Model and effort fit, Cost per finished piece of work |
 | Why an agent was run again (`retry`) | Essentials | ~1 | Delegating to agents, Model and effort fit |
-| Size of the work (`size`) | Standard | ~2 | Breaking down work |
 | What the request lacked (`missing`) | Standard | ~4 | Giving Claude information, Researching |
 | Planning (`plan`) | Standard | ~2 | Planning |
 | Skills (`skill`) | Standard | ~3 | Using skills |
@@ -61,7 +61,7 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 | Where research happens (`research_split`) | Always measured, no hook | – | Researching, Delegating to agents |
 | Coaching line (`coaching_line`) | Live coaching, any level | – | Clearing context, Tool output, Researching |
 | Brief templates (`brief_templates`) | Live coaching, any level | – | Giving Claude information |
-| Feedback skill (`feedback_skill`) | Feedback, any level; switching to Deep turns it on | – | Cost per finished piece of work |
+| Feedback skill (`feedback_skill`) | Feedback, any level; switching to Deep turns it on | – | Cost per finished piece of work, Planning, Profiles per kind of task |
 | Feedback reminder in the status line (`feedback_note`) | Feedback, any level; switching to Deep turns it on | – | Cost per finished piece of work |
 | Feedback reminder from Claude (`feedback_reminder`) | Feedback, any level; switching to Deep turns it on | ~20 | Cost per finished piece of work |
 | Rate sessions on the dashboard (`dashboard_rating`) | Feedback, any level | – | Cost per finished piece of work |
@@ -76,7 +76,7 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 - **Tag:** `task=feature|bugfix|refactor|debug|docs|review|test|research|plan|ops|chat`
 - **Costs:** about 3 output tokens each time
 - **Hook:** SessionStart
-- **Powers:** Profiles per kind of task, Cost per finished piece of work, Model and effort fit
+- **Powers:** Profiles per kind of task, Cost per finished piece of work, Model and effort fit, Measuring your changes
 
 ### How clear the request was (`brief`)
 
@@ -96,7 +96,7 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 - **Tag:** `level=easy|normal|hard`
 - **Costs:** about 3 output tokens each time
 - **Hook:** SessionStart
-- **Powers:** Model and effort fit, Profiles per kind of task, Planning
+- **Powers:** Model and effort fit, Profiles per kind of task, Planning, Measuring your changes
 
 ### Task changes (`shift`)
 
@@ -110,13 +110,13 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 
 ### Size of the work (`size`)
 
-- **Level:** Standard
+- **Level:** Essentials
 - **Captures:** How big each piece of work was, from xs to xl.
-- **Why:** How you break work down: big asks that end in compaction or rework, and tiny asks that each pay the start-up cost.
+- **Why:** How you break work down: big asks that end in compaction or rework, and tiny asks that each pay the start-up cost. With the kind and difficulty of the work, it lets a change be judged on like-for-like work before and after it.
 - **Tag:** `size=xs|s|m|l|xl`
 - **Costs:** about 2 output tokens each time
 - **Hook:** SessionStart
-- **Powers:** Breaking down work
+- **Powers:** Breaking down work, Measuring your changes
 
 ### What the request lacked (`missing`)
 
@@ -398,10 +398,10 @@ Every metric here has to earn its keep. Something has to read it and turn it int
 ### Feedback skill (`feedback_skill`)
 
 - **Level:** Feedback, any level; switching to Deep turns it on
-- **Captures:** A /tl-feedback skill you run after a piece of work. It asks four checkbox questions: the outcome, what slowed it, whether it was worth the tokens, and what would have helped.
-- **Why:** Cost per piece of work that met its goal, which outranks what Claude reports about itself.
-- **Tag:** `[tl-fb: outcome=met|partly|missed|stopped slow=unclear,rework,tools,none worth=yes|fair|no helped=context,plan,smaller,none]`
-- **Powers:** Cost per finished piece of work
+- **Captures:** A /tl-feedback skill you run after a piece of work. It asks four checkbox questions: the outcome, what slowed it, whether it was worth the tokens, and what would have helped. After an approved plan it asks a fifth: whether the build could have started fresh from the plan.
+- **Why:** Cost per piece of work that met its goal, which outranks what Claude reports about itself. The plan answer tells the fresh-session tip and the suggested profile how you work.
+- **Tag:** `[tl-fb: outcome=met|partly|missed|stopped slow=unclear,rework,tools,none worth=yes|fair|no helped=context,plan,smaller,none handoff=yes|partly|no]`
+- **Powers:** Cost per finished piece of work, Planning, Profiles per kind of task
 
 ### Feedback reminder in the status line (`feedback_note`)
 
@@ -443,7 +443,7 @@ A subagent's note asks for `[result: done|partial|blocked]` when nothing else ne
 
 Starting an agent again after its last run fell short is marked at the start of its brief instead of the end of a report: `[retry: model|brief|tools|scope|other]`.
 
-The `/tl-feedback` skill ends with its own line: `[tl-fb: outcome=met|partly|missed|stopped slow=unclear,rework,tools,none worth=yes|fair|no helped=context,plan,smaller,none]`.
+The `/tl-feedback` skill ends with its own line: `[tl-fb: outcome=met|partly|missed|stopped slow=unclear,rework,tools,none worth=yes|fair|no helped=context,plan,smaller,none handoff=yes|partly|no]`.
 
 If Claude writes more than one tag, the last one wins, key by key.
 

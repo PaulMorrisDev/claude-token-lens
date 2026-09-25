@@ -60,6 +60,18 @@ def _estimate(settings=None, agents=None, **kw):
     return whatif.estimate(settings or {}, agents or {}, _model(), UNITS, period=PERIOD, **kw)
 
 
+def test_opusplan_reprices_the_builds_after_approved_plans_at_sonnet():
+    model = _model()
+    model.sections.append(NS(key="plan_handoff", tables=[_table("plan_handoff_summary", [
+        {"scope": "main sessions", "build_usd": 30.0, "build_usd_sonnet": 18.0},
+    ])]))
+    [row] = whatif.estimate({"model": "opusplan"}, {}, model, UNITS, period=PERIOD)["rows"]
+    assert (row["saving_usd"], row["fidelity"]) == (12.0, "ceiling")
+    assert "without a plan run on Sonnet too" in row["basis"]
+    [none] = _estimate({"model": "opusplan"})["rows"]
+    assert none["saving_usd"] is None and none["fidelity"] == "none"
+
+
 def test_a_cheaper_main_model_is_repriced_from_the_model_swap_table():
     [row] = _estimate({"model": "sonnet"})["rows"]
     assert row["saving_usd"] == 40.0
