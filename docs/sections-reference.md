@@ -562,7 +562,7 @@ the agents/skills/workflows it spawns" with numbers only:
 
 ## `quality` (`quality.py`)
 
-Whether the work went well, not just what it cost. One *run* is one
+Whether the work went well, not only what it cost. One *run* is one
 transcript (a main session or one subagent run); every signal is a
 ratio of two counts summed over runs. Definitions, the significance
 test and privacy are in [concepts](concepts.md#7-quality-signals).

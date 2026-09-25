@@ -226,8 +226,11 @@ A project slug (`C--Dev-claude-token-lens`) reads as its folder
 folder and the one parent your projects share, and a worktree reads
 after its project ("claude-token-lens / ui-redesign"). The full slug
 stays in the tooltip. A slug can't tell a hyphen from a path separator,
-so the name is a best guess. Model ids read as names (`modelName`). A
-long name ends in an ellipsis rather than wrapping in a grid cell.
+so the name is a best guess. Model ids read as names wherever they
+show: `modelName` for one id, and `modelNames` for any text (a grid
+cell, a table's value, a changes table), with the id in the tooltip.
+`claude-sonnet-5[1m]` reads "Sonnet 5 (1M context)". A long name
+ends in an ellipsis rather than wrapping in a grid cell.
 
 ## Navigation
 
@@ -1109,7 +1112,7 @@ hand with Playwright against a dev service.
 | `app.js` | the entry point: the router (`resolveRoute`, `changeView`, `showView`, `VIEW_RENDERERS`), the sidebar, the page header, `menuControl`, the theme toggle and `init()` |
 | `core.js` | `el`, `clear`, the storage helpers, `state`, `WINDOW_OPTIONS`, `renderedViews`, the `goTo` and project hooks, `onParams`, `highlight` and `listenHighlight` |
 | `links.js` | `PAGES`, `viewLabel`, `viewIntro`, `parseHash`, `formatHash`, `scopeParams`, `OLD_TAB_VIEWS`, `SECTION_PAGE_MAP`, `TABLE_PAGE_MAP`, `pageLink`, `GLOSSARY`, `JARGON`, `COST_CARDS`, `termLink`, `cardLink`, the `{{page:}}` pattern |
-| `format.js` | `formatCell`, `money`, `moneyText`, `moneyNode`, `moneyParts`, `moneyUnit`, `moneyAxis`, `readableAmounts`, `compactNumber`, `signedPercent`, `fraction`, `shortTs`, `relativeTime`, `modelName`, `projectName`, `setKnownProjects` |
+| `format.js` | `formatCell`, `money`, `moneyText`, `moneyNode`, `moneyParts`, `moneyUnit`, `moneyAxis`, `readableAmounts`, `compactNumber`, `signedPercent`, `fraction`, `shortTs`, `relativeTime`, `modelName`, `modelNames`, `projectName`, `setKnownProjects` |
 | `api.js` | `fetchJson`, `loadInto`, `postJson`, `withWindow`, `withProject`, `scopeKey`, `loadReport`, `loadProjects`, `loadRecommendations`, `loadQuickActions`, `prefetchActions`, `actionIndex`, `findSection`, the figures-as-of stamp, the connection state |
 | `ui.js` | the components in the table above, plus `prose`, `countUp`, `enterInTurn` and `motionOK` |
 | `grid.js` | `dataGrid`, `pulseRow`, `pulseNode`, `renderTable`, `renderPlacedTables`, `renderMappedSections`, `renderReportBackedSection`, `simpleTable`, `setSectionChart`, `NEWEST_LAST`, `formatEvidenceValue` |
