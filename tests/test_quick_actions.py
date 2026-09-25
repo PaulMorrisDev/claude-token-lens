@@ -3,6 +3,7 @@ contract (``quick_actions``)."""
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -18,6 +19,11 @@ from claude_token_lens.units import Units
 from test_whatif import _model, _table
 
 API_MD = Path(__file__).resolve().parent.parent / "docs" / "api.md"
+SRC = Path(__file__).resolve().parent.parent / "src" / "claude_token_lens"
+#: Every module that can build a ``Recommendation`` -- see recommend.py's
+#: own ``recommend()`` entry point, which folds each of these in.
+_RULE_MODULES = ("recommend.py", "advice.py", "carry.py", "compaction_sim.py", "model_swap.py", "waste.py",
+                  "elasticity.py")
 
 UNITS = Units(billing_mode="api", currency="USD")
 FIX_KEYS = {"key", "agent", "explainer", "command", "command_warning", "prompt", "title"}
@@ -85,6 +91,33 @@ def test_check_ids_documented_in_api_md_match_the_code():
     ids_text = " ".join(match.group(1).split())
     ids = [part.strip() for part in re.split(r",| and ", ids_text) if part.strip()]
     assert ids == list(qa.CHECK_IDS)
+
+
+def _all_recommendation_ids() -> set[str]:
+    """Every literal ``id="..."`` a ``Recommendation(...)`` call passes,
+    across every module ``recommend.recommend()`` folds in -- the real
+    id space a quick-action's ``rule_ids`` can point into."""
+    ids: set[str] = set()
+    for name in _RULE_MODULES:
+        tree = ast.parse((SRC / name).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Recommendation":
+                for kw in node.keywords:
+                    if kw.arg == "id" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                        ids.add(kw.value.value)
+    return ids
+
+
+def test_every_checks_rule_id_is_a_real_recommendation_id():
+    """Additive ``Check.rule_ids`` (Task Group B, item 6): each id it
+    names must be one some rule module can actually produce, so a
+    dashboard link from a check to `/api/recommendations?id=...` never
+    points at nothing."""
+    known = _all_recommendation_ids()
+    assert known, "the scan found no recommendation ids"
+    for check in qa.CHECKS:
+        for rule_id in check.rule_ids:
+            assert rule_id in known, (check.id, rule_id)
 
 
 def test_an_empty_report_is_no_data_everywhere_but_never_fails(tmp_path):

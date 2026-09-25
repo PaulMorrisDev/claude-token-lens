@@ -125,6 +125,17 @@ def test_cache_read_dominance_does_not_fire_below_threshold():
     assert not any(rec.id == "cache-read-dominance" for rec in recs)
 
 
+def test_a_recommendation_with_no_agent_type_keeps_id_as_its_key():
+    """``key`` (Task Group B, item 5) only needs to disambiguate a rule
+    id that repeats per agent type; a corpus-wide recommendation like
+    cache-read-dominance has no agent_type, so its key is just its id."""
+    r = _base_report(cache_read_cost_share_pct=60.0)
+    recs = recommend_fn(r, config=_config(), archetype=None)
+    rec = next(rec for rec in recs if rec.id == "cache-read-dominance")
+    assert rec.agent_type is None
+    assert rec.key == "cache-read-dominance"
+
+
 # -- ttl-switch ---------------------------------------------------------
 
 

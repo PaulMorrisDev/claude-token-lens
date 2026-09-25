@@ -403,6 +403,7 @@ def test_apply_covered_by_drops_the_saving_and_names_the_rule_when_it_fired():
     key_idx = [c.key for c in table.columns].index("habit")
     saving_idx = [c.key for c in table.columns].index("saving")
     covered_idx = [c.key for c in table.columns].index("covered_by")
+    covered_rule_idx = [c.key for c in table.columns].index("covered_by_rule")
     row = list(table.rows[0])
     row[key_idx] = "effort_fit"
     row[saving_idx] = 3.5
@@ -417,10 +418,14 @@ def test_apply_covered_by_drops_the_saving_and_names_the_rule_when_it_fired():
     covered_row = next(r for r in table.rows if r[key_idx] == "effort_fit")
     assert covered_row[saving_idx] is None
     assert covered_row[covered_idx] == "High effort is being spent on easy work"
+    # Additive: the rule id itself, alongside its title, so a caller can
+    # link straight to the recommendation.
+    assert covered_row[covered_rule_idx] == "effort-mismatch"
     # A row for an item not in COVERED_BY, or whose rule didn't fire, is
     # untouched.
     uncovered_row = next(r for r in table.rows if r[key_idx] == "tool_loops")
     assert uncovered_row[covered_idx] == ""
+    assert uncovered_row[covered_rule_idx] == ""
 
 
 def test_apply_covered_by_leaves_the_saving_alone_when_the_rule_did_not_fire():
@@ -434,6 +439,7 @@ def test_apply_covered_by_leaves_the_saving_alone_when_the_rule_did_not_fire():
     key_idx = [c.key for c in table.columns].index("habit")
     saving_idx = [c.key for c in table.columns].index("saving")
     covered_idx = [c.key for c in table.columns].index("covered_by")
+    covered_rule_idx = [c.key for c in table.columns].index("covered_by_rule")
     row = list(table.rows[0])
     row[key_idx] = "effort_fit"
     row[saving_idx] = 3.5
@@ -447,6 +453,7 @@ def test_apply_covered_by_leaves_the_saving_alone_when_the_rule_did_not_fire():
     covered_row = next(r for r in table.rows if r[key_idx] == "effort_fit")
     assert covered_row[saving_idx] == 3.5
     assert covered_row[covered_idx] == ""
+    assert covered_row[covered_rule_idx] == ""
 
 
 def test_allow_routine_states_its_security_trade_off_and_a_permissions_undo():

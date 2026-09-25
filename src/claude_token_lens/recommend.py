@@ -2180,6 +2180,36 @@ def _rule_limit_pressure(report: ReportModel, th: RecommendThresholds) -> list[R
     ]
 
 
+# -- key assignment -------------------------------------------------------
+#
+# ``id`` alone repeats: a rule like ``spawn-claude-md`` fires once per
+# agent type, so several recommendations in the same list share one id.
+# ``key`` disambiguates them for a stable dashboard link
+# (``#/actions/recommendations?id=<key>``), staying URL-safe
+# (``[a-z0-9._:-]``) even for an agent type a user named with spaces or
+# capitals.
+
+_KEY_UNSAFE_RE = re.compile(r"[^a-z0-9._-]+")
+
+
+def _key_slug(text: str) -> str:
+    """``text`` lower-cased, with every run of characters outside
+    ``[a-z0-9._-]`` collapsed to one ``-`` and leading/trailing ``-``
+    trimmed -- the agent-type half of a recommendation ``key``."""
+    return _KEY_UNSAFE_RE.sub("-", text.lower()).strip("-")
+
+
+def _rec_key(rec: Recommendation) -> str:
+    """``rec``'s deterministic, URL-safe key: ``id`` alone when it isn't
+    agent-scoped, else ``id`` plus a slug of ``agent_type`` so the many
+    recommendations one rule produces (one per agent type) each get a
+    key that's unique within the list and stable across two runs of the
+    same corpus."""
+    if not rec.agent_type:
+        return rec.id
+    return f"{rec.id}:{_key_slug(rec.agent_type)}"
+
+
 # -- entry point --------------------------------------------------------
 
 
@@ -2277,6 +2307,10 @@ def recommend(
     # with enough usage-limit readings.
     elasticity_th = elasticity.ElasticityThresholds.from_config(config.thresholds)
     recs.extend(elasticity.RULES[0](dataclasses.replace(report, recommendations=list(recs)), elasticity_th))
+    # Last step, after every rule (including the merges/drops above) has
+    # had its say on the final list: assign each recommendation's key.
+    for rec in recs:
+        rec.key = _rec_key(rec)
     return recs
 
 

@@ -240,13 +240,16 @@ class _ServerHandle:
         self.thread.join(timeout=5)
 
 
-def _start_server(tmp_path, monkeypatch, **handler_kwargs) -> _ServerHandle:
+def _start_server(tmp_path, monkeypatch, *, corpus=None, **handler_kwargs) -> _ServerHandle:
     """Shared setup behind the ``server`` fixture below -- factored out
     so a test that needs a non-default ``make_handler`` keyword (e.g.
     v3's ``service_registered``) can build its own handle without
-    duplicating this whole sequence.
+    duplicating this whole sequence. ``corpus`` defaults to
+    ``_build_corpus`` (3 turns, below recommend()'s minimum sample) --
+    pass a bigger one (see ``test_recommend_contract.py``'s pattern) for
+    a test that needs a recommendation to actually fire.
     """
-    corpus = _build_corpus(tmp_path)
+    corpus = corpus if corpus is not None else _build_corpus(tmp_path)
     _install_fake_rebuild(monkeypatch, corpus)
 
     store = Store(tmp_path / "service.db")
@@ -1218,6 +1221,45 @@ def test_recommendations_route(server):
     assert resp.status == 200
     assert isinstance(body["data"], list)
     assert_privacy(body)
+
+
+def test_recommendations_carry_a_key_and_saving_usd(tmp_path, monkeypatch):
+    """Additive (Task Group B): every recommendation gets a deterministic
+    key and its saving as a plain number, alongside the existing fields.
+    The default ``server`` fixture's 3-turn corpus never clears
+    recommend()'s minimum sample, so this builds its own bigger,
+    cache-read-heavy one (same shape as
+    test_recommend_contract.py's), which does."""
+    project_dir = tmp_path / "projects" / "proj-b"
+    project_dir.mkdir(parents=True)
+    write_jsonl(
+        project_dir / "session-b.jsonl",
+        [
+            turn_line(
+                timestamp=f"2026-09-{10 + (i % 15):02d}T12:00:00.000Z",
+                input_tokens=100,
+                output_tokens=50,
+                ephemeral_5m_input_tokens=1000,
+                cache_read_input_tokens=5000,
+            )
+            for i in range(220)
+        ],
+    )
+    corpus = corpus_mod.load_corpus([project_dir])
+    handle = _start_server(tmp_path, monkeypatch, corpus=corpus)
+    try:
+        resp, body = handle.get_json("/api/recommendations")
+        assert resp.status == 200
+        recs = body["data"]
+        assert recs, "expected at least one recommendation from this cache-read-heavy corpus"
+        keys = [rec["key"] for rec in recs]
+        assert all(keys)
+        assert len(keys) == len(set(keys))
+        for rec in recs:
+            assert "saving_usd" in rec
+            assert rec["key"] == rec["id"] or rec["key"].startswith(rec["id"] + ":")
+    finally:
+        handle.close()
 
 
 def test_ttl_and_recommendations_accept_since_until(server):
@@ -2258,10 +2300,12 @@ def test_quick_actions_list_and_detail(server):
     checks = payload["data"]["checks"]
     assert [c["id"] for c in checks][:2] == ["models", "effort"]
     assert all(c["status"] in ("act", "ok", "no_data") and c["summary"] for c in checks)
+    assert all(isinstance(c["rule_ids"], list) for c in checks)
     for check in checks:
         resp, payload = server.get_json(f"/api/quick-actions/{check['id']}")
         assert resp.status == 200
-        assert set(payload["data"]) >= {"question", "table", "fixes", "tips"}
+        assert set(payload["data"]) >= {"question", "table", "fixes", "tips", "rule_ids"}
+        assert payload["data"]["rule_ids"] == check["rule_ids"]
     resp, _payload = server.get_json("/api/quick-actions/nope")
     assert resp.status == 404
 

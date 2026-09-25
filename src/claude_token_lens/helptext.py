@@ -724,6 +724,10 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "Already covered by",
                 "The recommendation that already reports this saving, when one has fired -- blank otherwise.",
             ),
+            "covered_by_rule": (
+                "Covering rule",
+                "The id of the recommendation in \"Already covered by\", for linking to it -- blank otherwise.",
+            ),
         },
         value_labels={
             **{key: title for key, (_theme, title) in HABIT_ITEMS.items()},

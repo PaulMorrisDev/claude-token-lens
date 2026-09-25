@@ -616,11 +616,19 @@ window rather than a fresh corpus scan.
 Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
 routes: windowing query params" above).
 
-`data`: `[{"id", "severity", "category", "title", "action", "lever", "scope", "evidence": [[label, value, source_table, row_key], ...], "agent_type", "why", "estimated_saving", "saving_basis", "changes": [{"target", "key", "agent", "value", "suggested", "note", "unconfirmed", "current", "new_agent_file"}, ...], "fixes": [{"key", "agent", "explainer": [[heading, text], ...], "command", "command_warning", "prompt"}, ...]}, ...]` —
+`data`: `[{"id", "severity", "category", "title", "action", "lever", "scope", "evidence": [[label, value, source_table, row_key], ...], "agent_type", "why", "estimated_saving", "saving_basis", "saving_usd", "changes": [{"target", "key", "agent", "value", "suggested", "note", "unconfirmed", "current", "new_agent_file"}, ...], "fixes": [{"key", "agent", "explainer": [[heading, text], ...], "command", "command_warning", "prompt"}, ...], "key"}, ...]` —
 exactly `render/json_out.py`'s existing `Recommendation` encoding.
 `fixes` (from `fixes.py`) holds, per change, the six-part explainer, an
 `apply --set ... --dry-run` command (`null` when the value needs
-judgement) and a prompt for Claude.
+judgement) and a prompt for Claude. `saving_usd` is `estimated_saving`
+as a plain number (USD at list price, `null` when not estimated) —
+used to order recommendations of the same severity, and safe for a
+client to format or sort by directly. `key` (additive) is a
+deterministic, URL-safe id for this recommendation: `id` alone repeats
+across agent types (the same rule can fire once per subagent type), so
+`key` adds a slug of `agent_type` when one is set, and stays the same
+across two runs of the same corpus. A dashboard link can use it as
+`#/actions/recommendations?id=<key>`.
 
 ### `GET /api/diagnostics`
 
@@ -769,10 +777,11 @@ do".
 
 Query: the windowing params above.
 
-`data`: `{"period", "checks": [{"id", "question", "why", "status", "summary", "fix_count", "tip_count"}, ...]}`.
+`data`: `{"period", "checks": [{"id", "question", "why", "status", "summary", "rule_ids", "fix_count", "tip_count"}, ...]}`.
 `period` is the window as a phrase ("over the last 30 days", "in the
 last hour"). `status` is `act` (worth a look), `ok` (nothing to do) or
-`no_data`.
+`no_data`. `rule_ids` (additive) lists the `/api/recommendations` rule
+ids this check draws on -- `[]` for a check with no rule behind it.
 
 ### `GET /api/quick-actions/<id>`
 
@@ -780,12 +789,14 @@ One check in full. `404` for an unknown id.
 
 Query: the windowing params above.
 
-`data`: `{"id", "question", "why", "period", "status", "summary", "table": {"columns": [{"key", "label"}, ...], "rows": [[cell, ...], ...]}|null, "fixes": [Fix, ...], "tips": [{"title", "text"}, ...]}`,
+`data`: `{"id", "question", "why", "period", "rule_ids", "status", "summary", "table": {"columns": [{"key", "label"}, ...], "rows": [[cell, ...], ...]}|null, "fixes": [Fix, ...], "tips": [{"title", "text"}, ...]}`,
 where each row is a list of display values in column order, `table` is
 `null` when there is nothing to show, and a `Fix` is the `fixes.py`
 shape `/api/recommendations` uses, plus an optional `title`. Environment-variable fixes (`BASH_MAX_OUTPUT_LENGTH`,
 `MAX_MCP_OUTPUT_TOKENS`) carry a prompt and no command: this tool never
-writes the `env` block.
+writes the `env` block. `rule_ids` (additive, same list as
+`/api/quick-actions`'s own) names the recommendation rule ids this
+check relates to; `[]` when none does.
 
 ### `GET /api/claude-md`
 

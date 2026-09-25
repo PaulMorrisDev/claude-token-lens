@@ -1852,6 +1852,9 @@ def playbook_table(h: Habits, items: list[Item]) -> Table:
             # this report actually fired are known -- "" until then, and
             # for any item COVERED_BY doesn't name.
             "",
+            # Additive: covered_by_rule, filled in alongside covered_by
+            # by the same call.
+            "",
         ])
     return Table(
         name="habits_playbook",
@@ -1872,6 +1875,12 @@ def playbook_table(h: Habits, items: list[Item]) -> Table:
             Column(key="trade_off", label="Trade-off", kind="str"),
             Column(key="how_to_undo", label="How to undo it", kind="str"),
             Column(key="covered_by", label="Already covered by", kind="str"),
+            #: Additive: the same fact as ``covered_by``, as the
+            #: recommendation's own rule id rather than its title, so a
+            #: caller (the dashboard) can link straight to it -- ``""``
+            #: until ``apply_covered_by`` fills it in, same as
+            #: ``covered_by`` itself.
+            Column(key="covered_by_rule", label="Covering rule", kind="str"),
         ],
         rows=rows,
         notes=[] if rows else [
@@ -1905,12 +1914,14 @@ def apply_covered_by(report: "ReportModel") -> None:
     key_idx = next(i for i, c in enumerate(table.columns) if c.key == "habit")
     saving_idx = next(i for i, c in enumerate(table.columns) if c.key == "saving")
     covered_idx = next(i for i, c in enumerate(table.columns) if c.key == "covered_by")
+    covered_rule_idx = next(i for i, c in enumerate(table.columns) if c.key == "covered_by_rule")
     rule_titles = {rec.id: rec.title for rec in report.recommendations}
     for row in table.rows:
         rule_id = COVERED_BY.get(row[key_idx])
         if rule_id is not None and rule_id in rule_titles:
             row[saving_idx] = None
             row[covered_idx] = rule_titles[rule_id]
+            row[covered_rule_idx] = rule_id
 
 
 def digest_table(h: Habits, items: list[Item] | None = None) -> Table:
