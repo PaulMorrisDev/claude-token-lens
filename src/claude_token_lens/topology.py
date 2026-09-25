@@ -664,17 +664,15 @@ def _build_spawn_write_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "Spawn write is the first priced turn's cache_creation_tokens for"
-            " each subagent transcript: the briefing, system prompt and any"
-            " preloaded skills the parent pays to write into that agent's cache.",
-            "A snapshot's MCP/plugin counts (config.py/snapshots.py) are not"
-            " joined against this table -- there is currently no per-session"
-            " link between a spawn's write size and the snapshot in effect"
-            " when it happened.",
-            "Mean briefing chars is the spawning turn's own Agent/Task"
-            " tool_use prompt length (Turn.agent_brief_chars), joined by"
-            " tool_use_id -- empty for a spawn reached only transitively"
-            " (no tool_use_id of its own) or whose call carried no prompt.",
+            "The startup write is the cache write on each subagent's first"
+            " reply. It holds the task prompt, system prompt and any preloaded"
+            " skills you pay to write into that agent's cache.",
+            "Your MCP servers and plugins aren't matched against this table:"
+            " nothing yet links a subagent's startup write to the settings in"
+            " effect when it ran.",
+            "Average task prompt is the length of the prompt in the call that"
+            " started each subagent. It is empty when a subagent can't be"
+            " matched to that call, or the call carried no prompt.",
         ],
     )
 
@@ -698,10 +696,9 @@ def _build_session_baseline_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "The top-level transcript's own first priced turn: system prompt,"
-            " CLAUDE.md and prefix-loaded tool schemas. A snapshot's MCP/plugin"
-            " counts (config.py/snapshots.py) are not correlated against this"
-            " baseline -- there is currently no join between the two.",
+            "The main session's own first reply: system prompt, CLAUDE.md and"
+            " the tool definitions loaded up front. Your MCP servers and"
+            " plugins aren't matched against it: nothing yet links the two.",
         ],
     )
 
@@ -726,10 +723,9 @@ def _build_upward_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "From the TOP transcript's own tool_result_chars/tool_result_calls"
-            " totals only — not split by agent type (the top transcript"
-            " doesn't record which subagent produced which Agent-tool result)."
-            " See the report-proxy table below for a per-agent-type alternative.",
+            "From the main session's own totals only, not split by agent type:"
+            " the main session doesn't record which subagent produced which"
+            " report. The report size table below splits it by agent type.",
         ],
     )
 
@@ -751,12 +747,12 @@ def _build_report_proxy_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "Report size = the report each subagent handed back, measured"
-            " where it arrived: the parent's Agent tool_result, or a"
-            " background agent's task notification, in characters over"
-            f" {_CHARS_PER_TOKEN_APPROX}. When the parent side wasn't found"
-            " it falls back to the subagent's own last reply's output"
-            " tokens, an approximation.",
+            "Report size is the report each subagent handed back, in"
+            f" characters divided by {_CHARS_PER_TOKEN_APPROX}. It is measured"
+            " where the report arrived: the Agent tool's result in the parent,"
+            " or a background agent's task notification. When the parent side wasn't found,"
+            " it falls back to the output tokens of the subagent's own last"
+            " reply, an approximation.",
         ],
     )
 
@@ -792,14 +788,12 @@ def _build_skills_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "Spawned cost is the transitive closure of agents reached from"
-            " the skill's invoking turns via tool_use_id (direct spawns) and"
-            " then parent_agent_id (further agents those spawns started), so"
-            " a skill that fans out is costed as a whole.",
-            "Agents whose subagent .meta.json carries no toolUseId (observed"
-            " for workflow-nested agents) cannot be linked to an invoking"
-            " turn this way and are excluded from a skill's spawned cost;"
-            " use workflows.link_workflow_agents for those.",
+            "Subagent cost counts every subagent the skill's replies started,"
+            " and every subagent those started in turn. So a skill that fans"
+            " out is costed as a whole.",
+            "Agents inside a workflow don't record the call that started"
+            " them. So they can't be linked to a skill this way, and are left"
+            " out of its subagent cost. The workflows section covers them.",
         ],
     )
 
@@ -816,9 +810,9 @@ def _build_spawn_depth_table(stats: TopologyStats) -> Table:
     ]
     rows = [[str(depth), count] for depth, count in sorted(stats.spawn_depth_histogram.items())]
     mean_spawns_per_session = _mean(stats.spawns_per_session)
-    note = f"Sessions seen: {stats.sessions_seen}; total spawns: {stats.total_spawns}"
+    note = f"Sessions seen: {stats.sessions_seen}. Total spawns: {stats.total_spawns}"
     if mean_spawns_per_session is not None:
-        note += f"; mean spawns/session: {mean_spawns_per_session:.2f}."
+        note += f". Average spawns per session: {mean_spawns_per_session:.2f}."
     else:
         note += "."
     return Table(
@@ -854,9 +848,9 @@ def _build_cost_per_spawn_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "Mean tool wait is the mean Turn.tool_wait_s across that agent"
-            " type's own priced turns: how long its tool calls took to"
-            " answer, not the parent's wait on the whole spawn.",
+            "Average tool wait is how long that agent type's own tool calls"
+            " took to answer, averaged over its replies. It is not the"
+            " parent's wait on the whole run.",
         ],
     )
 
@@ -876,9 +870,10 @@ def _build_chains_summary_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "No field records that a run stopped because maxTurns was reached,"
-            " so only stoppedByUser is counted here. Quality signals (Agents"
-            " tab) infers likely maxTurns endings from how a run ends.",
+            "Claude Code doesn't record when a run stopped because it reached"
+            " the agent's turn limit. So only runs stopped by you are counted"
+            " here. The quality signals on {{page:agents/quality}} infer likely"
+            " turn-limit endings from how a run ends.",
         ],
     )
 
@@ -990,7 +985,7 @@ def _build_composition_table(stats: TopologyStats) -> Table:
         Column(key="transcript_kind", label="Transcript kind", kind="str"),
         Column(key="transcripts", label="Transcripts", kind="int"),
         Column(key="mean_baseline", label="Mean baseline (write)", kind="tokens"),
-        Column(key="mean_tool_result_tokens", label="Mean tool_result tokens (approx)", kind="tokens"),
+        Column(key="mean_tool_result_tokens", label="Mean tool result tokens (approx)", kind="tokens"),
         Column(key="mean_output_tokens", label="Mean assistant output tokens", kind="tokens"),
         Column(key="mean_attachment_tokens", label="Mean attachment tokens (approx)", kind="tokens"),
         Column(key="mean_compactions", label="Mean compaction summaries", kind="float"),
@@ -1014,9 +1009,9 @@ def _build_composition_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "Tool-result and attachment token counts are approximate: chars /"
-            f" {_CHARS_PER_TOKEN_APPROX} (no tokenizer is run over transcript"
-            " content, per the privacy rule) — labelled approximate throughout.",
+            "Tool result and Claude Code note token counts are approximate:"
+            f" characters divided by {_CHARS_PER_TOKEN_APPROX}. No tokenizer"
+            " reads your transcripts, to keep them private.",
         ],
     )
 
@@ -1048,9 +1043,9 @@ def _build_redundant_work_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "Computed from the top-level transcript only: command-prefix"
-            " repetition and rediscovery reads are conversational-continuity"
-            " signals that a subagent transcript, spawned fresh, doesn't carry.",
+            "Counted in the main session only. Repeated commands and files"
+            " read again after a summary are signs of a long conversation,"
+            " which a freshly started subagent doesn't have.",
         ],
     )
 
@@ -1082,19 +1077,16 @@ def _build_redundant_reads_table(stats: TopologyStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "Computed from the top-level transcript only, via "
-            "Turn.read_target_hashes -- a salted hash of each Read "
-            "tool's target path, never the path itself. A read after an "
-            "edit to the same file is not counted. Requires the "
-            "corpus load to have wired up a salt (the CLI does this "
-            "automatically via parse.load_or_create_salt); every count is "
-            "0 when no salt was set for this parse.",
-            "The second row is the subset of the first whose repeat read "
-            f"lands within {_REDISCOVERY_WINDOW_TURNS} turns of a "
-            "compact_boundary event -- the same window "
-            "\"Redundant work\"'s rediscovery-reads metric uses, since "
-            "both describe context a compaction dropped being paid for "
-            "again.",
+            "Counted in the main session only, from a salted hash of each "
+            "file the Read tool opened, never the path itself. A read "
+            "after an edit to the same file isn't counted. Every count is "
+            "0 when no salt was set up for this run (the CLI sets one up "
+            "automatically).",
+            "The second row is the part of the first whose repeat read "
+            f"came within {_REDISCOVERY_WINDOW_TURNS} replies of a "
+            "conversation summary. The redundant work table uses the same "
+            "window for files re-read after a summary. Both show context "
+            "that a summary dropped being paid for again.",
         ],
     )
 

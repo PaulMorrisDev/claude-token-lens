@@ -114,8 +114,8 @@ port to report whether the service is already answering. `GET
 /api/health` itself exposes the same probe as `service_registered:
 true|false|null`, cached for ten minutes per running `serve` process so
 routine polling doesn't shell out on every request (see
-[`docs/api.md`](api.md)) — the dashboard's Overview tab shows a banner
-when it comes back `false`.
+[`docs/api.md`](api.md)) — the dashboard's Overview and Data quality
+pages show a warning when it comes back `false`.
 
 **Uninstalling:** `claude-token-lens uninstall-service` is the
 inverse of `install-service` — it runs the platform's own removal
@@ -358,7 +358,7 @@ Three layers, from "always runs" to "manual, occasional":
 
 For a machine where `pip install` is unavailable or unwanted (no
 internet access to PyPI, a locked-down environment, or just "copy one
-file and run it"), `claude-token-lens` has zero third-party
+file and run it"), `claude-token-lens` has zero runtime Python
 dependencies (`pyproject.toml`'s `dependencies = []`), which makes a
 single-file [zipapp](https://docs.python.org/3/library/zipapp.html)
 distribution straightforward:

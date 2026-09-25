@@ -16,10 +16,10 @@ section is the dashboard-facing summary.
 ## What gets tracked
 
 Nothing is tracked automatically. `POST /api/whatif` (the "what if?"
-tool behind Create a profile, a profile's detail, and the Profiles
-tab's editor) only logs a prediction when the caller sets `"log":
+tool behind Create a profile, a profile's detail, and Setup ›
+Profiles' editor) only logs a prediction when the caller sets `"log":
 true` — the dashboard sets it for a change you actually tick or save,
-never while you are just dragging a slider to explore. A logged row
+never while you drag a slider to explore. A logged row
 goes to this tool's own `prediction-log.jsonl`
 (`config.append_prediction_log`), is picked up by the file watcher's
 next tick (`service.watcher._scan_predictions`) into the store's
@@ -109,7 +109,7 @@ away from it — this is why the log always uses the uncalibrated figure.
 
 ## Reading it
 
-- **Dashboard:** the Profiles tab's "Did your estimates come true?"
+- **Dashboard:** Setup › Settings' "Did your estimates come true?"
   table (`GET /api/backtest`), right under "Your changes and what they
   did" — see `docs/profiles.md`.
 - **CLI:** `claude-token-lens backtest` reads the store read-only

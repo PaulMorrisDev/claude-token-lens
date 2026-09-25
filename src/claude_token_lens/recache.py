@@ -129,6 +129,10 @@ ASSUMPTIONS: tuple[str, ...] = (
     "other component of the turn fixed",
 )
 
+#: The note on every per-agent-type table (``value_labels`` shows the
+#: main session's ``"top-level"`` row key as "Main session").
+_AGENT_TYPE_NOTE = "Each subagent type as Claude Code recorded it, plus one row for the main session."
+
 
 @dataclass(slots=True)
 class RecacheThresholds:
@@ -185,15 +189,12 @@ class RecacheThresholds:
         """One sentence per threshold, for the report's thresholds block
         (and this module's table notes)."""
         return [
-            f"ctx_floor = {self.ctx_floor:,} tokens: a turn is never "
-            "flagged as a re-cache unless its context exceeds this.",
-            f"cr_ratio = {self.cr_ratio:.2f}: a turn is flagged when "
-            "cache_read_tokens falls below this fraction of ctx.",
-            f"full_expiry_cr = {self.full_expiry_cr:,} tokens: a flagged "
-            "turn is signature full-expiry when cache_read_tokens falls "
-            "below this, else prefix-invalidated.",
-            f"huge_ctx = {self.huge_ctx:,} tokens: the threshold for the "
-            "huge-context cache-read-volume table.",
+            f"A reply only counts as a cache rebuild when its context is over {self.ctx_floor:,} tokens.",
+            f"It counts when it read less than {self.cr_ratio:.0%} of that context from the cache.",
+            f"A rebuild that read under {self.full_expiry_cr:,} tokens from the cache is \"Cache expired\"; "
+            "one that read more is \"Cache broken by a change\".",
+            f"A context counts as very large at {self.huge_ctx:,} tokens when its model's own context "
+            "window isn't known.",
         ]
 
 
@@ -451,7 +452,7 @@ def build_section(stats: RecacheStats, pricing: Pricing, th: RecacheThresholds, 
     notes = [f"Thresholds: {' '.join(th.describe())}"]
     if group is not None:
         notes.append(f"Filtered to group: {group}.")
-    notes.append(f"Avoidable cost priced against {pricing.version} ({pricing.currency}, sha8={pricing.sha8}).")
+    notes.append(f"Avoidable cost uses prices from pricing.toml, version {pricing.version}.")
 
     return Section(key="recache", title="Re-cache events", tables=tables, notes=notes)
 
@@ -499,17 +500,13 @@ def _summary_table(
             ]
         ],
         notes=[
-            "A turn is a re-cache when it is not the transcript's first "
-            "priced turn, ctx > ctx_floor, and cache_read_tokens < "
-            "cr_ratio * ctx.",
-            "avoidable_cost_usd excludes limit-expiry turns (see "
-            "unavoidable_limit_expiry_cost_usd) -- a usage-cap pause isn't "
-            "a caching behaviour to fix, and its cost is already reported "
-            "by the 'limits' section's limits_summary.limit_turn_write_cost_usd "
-            "(a related but not identical figure: that one counts every "
-            "first turn after a pause, this one only the subset that also "
-            "clears recache.detect's ctx_floor/cr_ratio thresholds -- see "
-            "docs/limits.md).",
+            "A reply counts as a cache rebuild when three things hold. It isn't the first reply in its "
+            "conversation. Its context is large. And it read only a small share of that context from the "
+            "cache. The thresholds below set both.",
+            "Avoidable cost leaves out rebuilds right after a usage-limit pause, which have their own "
+            "column. Waiting for a limit to reset isn't a caching habit to fix. The usage limits "
+            "section prices every reply after a pause, not only the ones that count as rebuilds. So "
+            "its figure is related to this one but not the same.",
         ],
     )
 
@@ -536,16 +533,10 @@ def _signature_table(recache_turns: list[Turn], recache_records: list[_Record]) 
         ],
         rows=rows,
         notes=[
-            "full-expiry: cache_read_tokens < full_expiry_cr (the cache "
-            "entry had essentially nothing left to hit). "
-            "prefix-invalidated: cache_read_tokens is between "
-            "full_expiry_cr and cr_ratio * ctx (a partial hit, so the TTL "
-            "had not expired but something upstream of the cached prefix "
-            "changed anyway). limit-expiry: the gap to the previous turn "
-            "spanned a usage-cap pause (Turn.gap_cause == 'limit') -- "
-            "shown here but excluded from every other table's "
-            "cause-attribution (gap bucket, preceding tool, top command "
-            "prefixes, primary cause, event co-occurrence, by-agent-type).",
+            "Cache expired: the reply read almost nothing from the cache. Cache broken by a change: it "
+            "read part of it, so the cache hadn't expired, but something earlier in the context "
+            "changed. Expired during a usage-limit pause: the wait before the reply spanned a pause "
+            "for a usage limit. That last row is shown here but left out of every other table's causes.",
         ],
     )
 
@@ -630,14 +621,10 @@ def _gap_bucket_table(
         ],
         rows=rows,
         notes=[
-            "The 5-minute bucket boundary is inclusive on its lower side: "
-            "a gap of exactly 300s falls in 5-15m, not 1-5m. The control "
-            "columns show the same buckets over every priced turn, on "
-            "both a turn-count basis (control_share_pct_turns) and a "
-            "token-weighted basis (control_cc_share_pct) - fix item 4: "
-            "comparing a token-weighted share against a turn-counted "
-            "control (or vice versa) makes a bucket look over- or "
-            "under-represented purely from the basis mismatch.",
+            "A wait of exactly 5 minutes falls in the 5 to 15 minute row, not the 1 to 5 minute one. "
+            "The \"All replies\" and \"All cache writes\" columns show the same rows over every reply, "
+            "by count and by tokens. Compare a rebuild share with the matching all-replies share: "
+            "counts with counts, tokens with tokens.",
         ],
     )
 
@@ -672,11 +659,9 @@ def _preceding_tool_table(
         ],
         rows=rows,
         notes=[
-            "preceding_tool is Bash if the previous turn used it, else "
-            "PowerShell, else the previous turn's first tool, else "
-            "'none'/'n/a' (parse.py's priority scan). Fix item 4: both a "
-            "turn-count and a token-weighted control share are reported, "
-            "for the same reason given on recache_gap_buckets.",
+            "The tool is Bash if the previous reply used it, else PowerShell, else the previous reply's "
+            "first tool, else none. As in the wait table, compare counts with counts and tokens with "
+            "tokens.",
         ],
     )
 
@@ -769,17 +754,9 @@ def _primary_cause_table(
         ],
         rows=rows,
         notes=[
-            "preceding_primary is the single highest-precedence event "
-            "kind observed since the previous turn (plan Appendix A2). "
-            "Fix item 4: both a turn-count basis (share_pct_turns/"
-            "control_share_pct_turns/over_representation_points_turns) "
-            "and a token-weighted basis (cc_share_pct/"
-            "control_cc_share_pct/over_representation_points_tokens) are "
-            "reported side by side - a cause driving a few turns with "
-            "enormous cache-creation volume looks very different on each "
-            "basis, and mixing them (as the pre-fix table did, pairing a "
-            "count-based over-representation with a token-based cc "
-            "column) hid that.",
+            "Each rebuild is put down to the one event that ranks highest among those since the "
+            "previous reply. Shares are shown by count of replies and by tokens. A cause behind a few "
+            "very large rebuilds looks small by count and large by tokens.",
         ],
     )
 
@@ -840,13 +817,10 @@ def _primary_cause_prefix_invalidated_table(
         ],
         rows=rows,
         notes=[
-            "Restricted to prefix-invalidated re-cache turns: full-expiry "
-            "turns are excluded, since their cache had already fully "
-            "expired regardless of any cause observed alongside them "
-            "(mirrors recache_attachment_subsplit's same restriction). "
-            "The control population is still every priced turn, so this "
-            "table asks 'what precedes a prefix invalidation, compared "
-            "to an ordinary turn' rather than 'compared to any re-cache'.",
+            "Only rebuilds where the cache was broken by a change. Expired caches are left out: they "
+            "had run out whatever came before them, as in the Claude Code notes table. The comparison "
+            "is still every reply, so this asks what comes before a broken cache compared with an "
+            "ordinary reply, not compared with any rebuild.",
         ],
     )
 
@@ -886,11 +860,11 @@ def _cooccurrence_table(
         ],
         rows=rows,
         notes=[
-            "Counts every event kind observed since the previous turn "
-            "(a turn can carry several), not just its highest-precedence "
-            "preceding_primary — so a cause the precedence table hides "
-            "because a higher-ranked kind also occurred that turn is "
-            "still visible here.",
+            "Counts every kind of event since the previous reply, not only "
+            "the highest-ranked one: a reply can have several. So a cause "
+            "that \"What happened right before each cache rebuild\" hides, "
+            "because a higher-ranked event came in the same reply, still "
+            "shows here.",
         ],
     )
 
@@ -921,11 +895,9 @@ def _attachment_subsplit_table(recache_turns: list[Turn]) -> Table:
         ],
         rows=rows,
         notes=[
-            "Restricted to prefix-invalidated re-cache turns: full-expiry "
-            "turns are excluded, since their cache had already fully "
-            "expired regardless of any attachment observed alongside "
-            "them. A turn carrying several attachment types in the same "
-            "window counts once toward each.",
+            "Only rebuilds where the cache was broken by a change. Expired caches are left out: they "
+            "had run out whatever notes came before them. A reply with several kinds of note counts "
+            "once for each.",
         ],
     )
 
@@ -971,10 +943,7 @@ def _by_agent_type_table(records: list[_Record]) -> Table:
             Column(key="avoidable_cost_usd", label="Avoidable cost", kind="money"),
         ],
         rows=rows,
-        notes=[
-            "agent_type is the transcript's TranscriptMeta.agent_type, or "
-            "'top-level' for the main conversation.",
-        ],
+        notes=[_AGENT_TYPE_NOTE],
     )
 
 
@@ -998,7 +967,7 @@ def _huge_context_table(all_turns: list[Turn], th: RecacheThresholds, pricing: P
         title="Huge-context cache-read volume",
         columns=[
             Column(key="metric", label="Metric", kind="str"),
-            Column(key="huge_ctx_turns", label="Turns with ctx >= huge_ctx", kind="int"),
+            Column(key="huge_ctx_turns", label="Turns with a very large context", kind="int"),
             Column(key="total_priced_turns", label="Total priced turns", kind="int"),
             Column(key="huge_ctx_cache_read_tokens", label="Cache-read tokens from huge-ctx turns", kind="tokens"),
             Column(key="total_cache_read_tokens", label="Total cache-read tokens", kind="tokens"),
@@ -1015,14 +984,10 @@ def _huge_context_table(all_turns: list[Turn], th: RecacheThresholds, pricing: P
             ]
         ],
         notes=[
-            f"huge_ctx = {th.huge_ctx:,} tokens on a model whose context "
-            "window doesn't resolve against the rate card; a turn on a "
-            "resolved model is instead compared to that model's own "
-            "context window (1,000,000 for a natively 1M-context Claude "
-            "5 model, per the docs, 200,000 otherwise). This is a "
-            "context-hygiene metric, not a pricing surcharge: the docs "
-            "state 4.6+ models bill the full 1M-token context window at "
-            "standard rates.",
+            "A context is very large when it reaches its model's own context window. That is 1,000,000 "
+            "tokens for a Claude 5 model with a 1M-token window, and 200,000 otherwise. It is "
+            f"{th.huge_ctx:,} tokens when the model isn't in pricing.toml. This is about keeping context "
+            "small, not a price rise: models from 4.6 on bill the whole 1M-token window at standard rates.",
         ],
     )
 

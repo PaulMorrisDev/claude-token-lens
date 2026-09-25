@@ -56,6 +56,7 @@ from helpers import assert_privacy, turn_line, write_jsonl
 #: or ``profiles.toml_path``) in violation of ``docs/api.md``'s privacy
 #: section.
 _FAKE_PATH = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a\session-a.jsonl"
+_FAKE_SUB_PATH = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a\session-a-agent-1.jsonl"
 _FAKE_ROOT = r"C:\Users\definitely-not-a-real-person\.claude\projects\proj-a"
 _FAKE_PROFILE_PATH = r"C:\Users\definitely-not-a-real-person\.claude\token-lens\profiles\p1.toml"
 _LEAK_NEEDLES = (_FAKE_PATH, _FAKE_ROOT, _FAKE_PROFILE_PATH, "definitely-not-a-real-person")
@@ -168,8 +169,24 @@ def _install_fake_rebuild(monkeypatch, corpus: corpus_mod.Corpus) -> None:
 
     fake = types.ModuleType("claude_token_lens.service.rebuild")
 
-    def corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
-        return corpus
+    def corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+        # project_slugs (additive, project-filter work): the one argument
+        # this fake does *not* ignore -- api.py's own project filter
+        # (_project_query/_build_report_model) is what a test in this
+        # file exercises, and it can only see an effect if this stand-in
+        # actually narrows `corpus` the same way the real
+        # service.rebuild.corpus_from_store does.
+        if project_slugs is None:
+            return corpus
+        allowed = set(project_slugs)
+        return corpus_mod.Corpus(
+            sessions=[b for b in corpus.sessions if b.slug in allowed],
+            total_files=corpus.total_files,
+            total_bytes=corpus.total_bytes,
+            cache_hits=corpus.cache_hits,
+            cache_misses=corpus.cache_misses,
+            elapsed_s=corpus.elapsed_s,
+        )
 
     fake.corpus_from_store = corpus_from_store
     # Both forms so `from . import rebuild` resolves it regardless of
@@ -239,13 +256,16 @@ class _ServerHandle:
         self.thread.join(timeout=5)
 
 
-def _start_server(tmp_path, monkeypatch, **handler_kwargs) -> _ServerHandle:
+def _start_server(tmp_path, monkeypatch, *, corpus=None, **handler_kwargs) -> _ServerHandle:
     """Shared setup behind the ``server`` fixture below -- factored out
     so a test that needs a non-default ``make_handler`` keyword (e.g.
     v3's ``service_registered``) can build its own handle without
-    duplicating this whole sequence.
+    duplicating this whole sequence. ``corpus`` defaults to
+    ``_build_corpus`` (3 turns, below recommend()'s minimum sample) --
+    pass a bigger one (see ``test_recommend_contract.py``'s pattern) for
+    a test that needs a recommendation to actually fire.
     """
-    corpus = _build_corpus(tmp_path)
+    corpus = corpus if corpus is not None else _build_corpus(tmp_path)
     _install_fake_rebuild(monkeypatch, corpus)
 
     store = Store(tmp_path / "service.db")
@@ -493,6 +513,33 @@ def test_summary_rejects_bad_window_days(server):
     assert body["error"]["code"] == "bad_request"
 
 
+def test_summary_reports_cache_saved_and_cache_read_tokens(server):
+    """Additive fields: cache_read_tokens (the fixture's one turns_agg
+    row, 90) and cache_saved (that many tokens re-priced as input minus
+    what they actually cost at claude-sonnet-5's cache-read rate --
+    pricing.toml's 2.0/0.2 USD per million)."""
+    resp, body = server.get_json("/api/summary")
+    assert resp.status == 200
+    assert body["data"]["cache_read_tokens"] == 90
+    assert body["data"]["cache_saved"] == pytest.approx(90 * (2.0 - 0.2) / 1_000_000)
+    assert_privacy(body)
+
+
+def test_summary_accepts_since_and_until(server):
+    """/api/summary now takes the same window params the report-backed
+    routes do (docs/api.md), plus since/until -- but with no params at
+    all the behaviour is unchanged (all-time)."""
+    resp, body = server.get_json("/api/summary?since=2026-09-17T00:00:00Z&until=2026-09-18T13:30:00Z")
+    assert resp.status == 200
+    assert body["data"]["sessions"] == 1
+    resp, body = server.get_json("/api/summary?until=2026-09-18T11:00:00Z")
+    assert resp.status == 200
+    assert body["data"]["sessions"] == 0
+    resp, body = server.get_json("/api/summary?since=not-a-timestamp")
+    assert resp.status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
 def test_sessions_listing_has_no_transcripts_key(server):
     resp, body = server.get_json("/api/sessions")
     assert resp.status == 200
@@ -673,6 +720,87 @@ def test_compactions(server):
     assert resp.status == 200
     assert body["data"][0]["dropped_tokens"] == 800
     assert_privacy(body)
+
+
+def test_daily_usage_default_is_unchanged(server):
+    resp, body = server.get_json("/api/daily-usage")
+    assert resp.status == 200
+    assert len(body["data"]) == 1
+    row = body["data"][0]
+    assert row["day"] == "2026-09-18" and row["model"] == "claude-sonnet-5"
+    assert row["cache_read_tokens"] == 90
+    assert "agent" not in row
+    assert_privacy(body)
+
+
+def test_daily_usage_accepts_the_shared_window_params(server):
+    resp, body = server.get_json("/api/daily-usage?since=2099-01-01T00:00:00Z")
+    assert resp.status == 200
+    assert body["data"] == []
+    resp, body = server.get_json("/api/daily-usage?window=all")
+    assert resp.status == 200
+    assert len(body["data"]) == 1
+    resp, body = server.get_json("/api/daily-usage?days=7")
+    assert resp.status == 200
+    assert len(body["data"]) == 1  # the legacy param still works unchanged
+    resp, body = server.get_json("/api/daily-usage?since=not-a-timestamp")
+    assert resp.status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
+def test_daily_usage_rejects_bad_split(server):
+    resp, body = server.get_json("/api/daily-usage?split=nonsense")
+    assert resp.status == 400
+    assert body["error"]["code"] == "bad_request"
+
+
+def test_daily_usage_split_agent_separates_main_from_subagents(server):
+    # The fixture seeds one top-level transcript; add a subagent one so
+    # split=agent has something to actually split.
+    server.store.upsert_session(
+        session_id="sess-sub",
+        project_slug="proj-a",
+        project_root_path=_FAKE_ROOT,
+        slug="proj-a",
+        first_ts="2026-09-18T12:00:00Z",
+        last_ts="2026-09-18T13:00:00Z",
+    )
+    server.store.upsert_transcript(
+        session_id="sess-sub",
+        path=_FAKE_SUB_PATH,
+        kind="subagent",
+        agent_id="agent-1",
+        agent_type="claude-implementer",
+        mtime_ns=1,
+        size_bytes=1,
+        parser_version=3,
+        digest_json=json.dumps({"turns": 1}),
+        turns_agg=[
+            {
+                "day": "2026-09-18",
+                "model": "claude-sonnet-5",
+                "turns": 1,
+                "input_tokens": 10,
+                "cache_creation_tokens": 0,
+                "cache_read_tokens": 5,
+                "output_tokens": 2,
+                "thinking_tokens": 0,
+                "cc_5m": 0,
+                "cc_1h": 0,
+                "cost": 0.01,
+            }
+        ],
+    )
+    resp, body = server.get_json("/api/daily-usage?split=agent")
+    assert resp.status == 200
+    by_agent = {row["agent"]: row for row in body["data"]}
+    assert set(by_agent) == {"main", "subagent"}
+    assert by_agent["main"]["turns"] == 3
+    assert by_agent["subagent"]["turns"] == 1
+    assert_privacy(body)
+    resp, body = server.get_json("/api/daily-usage?split=model")
+    assert resp.status == 200
+    assert "agent" not in body["data"][0]
 
 
 def test_profiles_listing_has_no_toml_path(server):
@@ -1093,6 +1221,25 @@ def test_v4_report_backed_routes_return_ok(server, route):
     assert_privacy(body)
 
 
+def test_report_backed_routes_carry_lead_columns(server):
+    """``Table.lead_columns`` (display only) reaches the dashboard the
+    same way ``value_labels`` does: in each section route's tables and in
+    ``/api/report.json``."""
+    from claude_token_lens.helptext import TABLE_COPY
+
+    resp, body = server.get_json("/api/waste")
+    assert resp.status == 200
+    tables = {t["name"]: t for t in body["data"]["tables"]}
+    assert tables["waste_summary"]["lead_columns"] == TABLE_COPY["waste_summary"].lead_columns
+    assert tables["waste_by_cause"]["lead_columns"] == []
+
+    resp, raw = server.request("GET", "/api/report.json")
+    assert resp.status == 200
+    report = json.loads(raw)["report"]
+    tables = {t["name"]: t for s in report["sections"] for t in s["tables"]}
+    assert tables["ttl_by_agent_type"]["lead_columns"] == TABLE_COPY["ttl_by_agent_type"].lead_columns
+
+
 def test_v4_report_backed_routes_accept_since_until(server):
     for route in ("/api/carry", "/api/compaction-sim", "/api/model-swap", "/api/waste"):
         resp, body = server.get_json(f"{route}?since=2026-08-01T00:00:00%2B00:00&until=2026-08-31T00:00:00%2B00:00")
@@ -1109,6 +1256,45 @@ def test_recommendations_route(server):
     assert resp.status == 200
     assert isinstance(body["data"], list)
     assert_privacy(body)
+
+
+def test_recommendations_carry_a_key_and_saving_usd(tmp_path, monkeypatch):
+    """Additive (Task Group B): every recommendation gets a deterministic
+    key and its saving as a plain number, alongside the existing fields.
+    The default ``server`` fixture's 3-turn corpus never clears
+    recommend()'s minimum sample, so this builds its own bigger,
+    cache-read-heavy one (same shape as
+    test_recommend_contract.py's), which does."""
+    project_dir = tmp_path / "projects" / "proj-b"
+    project_dir.mkdir(parents=True)
+    write_jsonl(
+        project_dir / "session-b.jsonl",
+        [
+            turn_line(
+                timestamp=f"2026-09-{10 + (i % 15):02d}T12:00:00.000Z",
+                input_tokens=100,
+                output_tokens=50,
+                ephemeral_5m_input_tokens=1000,
+                cache_read_input_tokens=5000,
+            )
+            for i in range(220)
+        ],
+    )
+    corpus = corpus_mod.load_corpus([project_dir])
+    handle = _start_server(tmp_path, monkeypatch, corpus=corpus)
+    try:
+        resp, body = handle.get_json("/api/recommendations")
+        assert resp.status == 200
+        recs = body["data"]
+        assert recs, "expected at least one recommendation from this cache-read-heavy corpus"
+        keys = [rec["key"] for rec in recs]
+        assert all(keys)
+        assert len(keys) == len(set(keys))
+        for rec in recs:
+            assert "saving_usd" in rec
+            assert rec["key"] == rec["id"] or rec["key"].startswith(rec["id"] + ":")
+    finally:
+        handle.close()
 
 
 def test_ttl_and_recommendations_accept_since_until(server):
@@ -1275,7 +1461,7 @@ def test_report_json_forwards_since_until_to_rebuild_and_ignores_default_window(
     calls = []
     real_corpus = server.corpus
 
-    def recording_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+    def recording_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
         calls.append({"days": days, "since": since, "until": until, "window_by": window_by})
         return real_corpus
 
@@ -1306,7 +1492,7 @@ def test_report_json_since_until_is_a_separate_cache_key_from_window_days(server
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -1328,7 +1514,7 @@ def test_report_json_is_memoized_per_window(server, monkeypatch):
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -1358,7 +1544,7 @@ def test_requests_for_a_window_already_being_built_share_that_build(server, monk
     started, release = threading.Event(), threading.Event()
     real_corpus = server.corpus
 
-    def slow_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+    def slow_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
         calls["n"] += 1
         started.set()
         release.wait(10)
@@ -1398,7 +1584,7 @@ def test_report_json_cache_invalidates_when_store_change_token_changes(server, m
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -1438,7 +1624,7 @@ def _count_builds(server, monkeypatch) -> dict:
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime"):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -1568,6 +1754,18 @@ def test_static_file_is_served_from_a_real_static_dir(tmp_path, monkeypatch):
     static_dir.mkdir()
     (static_dir / "index.html").write_text("<html>hello</html>", encoding="utf-8")
     (static_dir / "app.js").write_text("console.log('hi');", encoding="utf-8")
+    (static_dir / "app.css").write_text("body {}", encoding="utf-8")
+    (static_dir / "mark.svg").write_text("<svg></svg>", encoding="utf-8")
+    (static_dir / "fonts").mkdir()
+    (static_dir / "fonts" / "face.woff2").write_bytes(b"wOF2")
+    (static_dir / "vendor").mkdir()
+    (static_dir / "vendor" / "lib.js").write_text("var lib = 1;", encoding="utf-8")
+    # A first-party file whose name merely starts like a pinned folder.
+    (static_dir / "vendor.js").write_text("var v = 1;", encoding="utf-8")
+    # A tool's own cache folder and a dot-file: never part of the UI.
+    (static_dir / ".tool-cache").mkdir()
+    (static_dir / ".tool-cache" / "state.json").write_text("{}", encoding="utf-8")
+    (static_dir / ".hidden.js").write_text("var h = 1;", encoding="utf-8")
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -1585,8 +1783,50 @@ def test_static_file_is_served_from_a_real_static_dir(tmp_path, monkeypatch):
 
         resp2, raw2 = handle.request("GET", "/static/app.js")
         assert resp2.status == 200
-        assert resp2.getheader("Content-Type") in ("text/javascript", "application/javascript")
+        # Pinned, not left to mimetypes (which reads the Windows registry):
+        # a module script with any other type fails under nosniff.
+        assert resp2.getheader("Content-Type") == "text/javascript"
         assert b"console.log" in raw2
+
+        for path, expected in (
+            ("/static/app.css", "text/css; charset=utf-8"),
+            ("/static/mark.svg", "image/svg+xml"),
+            ("/static/fonts/face.woff2", "font/woff2"),
+        ):
+            resp3, _raw3 = handle.request("GET", path)
+            assert resp3.status == 200, path
+            assert resp3.getheader("Content-Type") == expected, path
+
+        # The sha256-pinned folders (vendor/, fonts/) may be kept by the
+        # browser; everything else, first-party modules included, stays
+        # no-store (SECURITY.md, docs/api.md's Security headers).
+        for path, expected in (
+            ("/static/fonts/face.woff2", "public, max-age=31536000, immutable"),
+            ("/static/vendor/lib.js", "public, max-age=31536000, immutable"),
+            ("/static/vendor.js", "no-store"),
+            ("/static/app.js", "no-store"),
+            ("/static/app.css", "no-store"),
+            ("/", "no-store"),
+        ):
+            resp4, _raw4 = handle.request("GET", path)
+            assert resp4.status == 200, path
+            assert resp4.getheader("Cache-Control") == expected, path
+            assert len(resp4.headers.get_all("Cache-Control")) == 1, path
+
+        # HEAD answers with the same header; a miss inside a pinned
+        # folder is an ordinary 404, never kept.
+        resp5, _raw5 = handle.request("HEAD", "/static/vendor/lib.js")
+        assert resp5.status == 200
+        assert resp5.getheader("Cache-Control") == "public, max-age=31536000, immutable"
+        resp6, _raw6 = handle.request("GET", "/static/vendor/missing.js")
+        assert resp6.status == 404
+        assert resp6.getheader("Cache-Control") == "no-store"
+
+        # Dot-files and dot-folders are never served: an editor's or a
+        # tool's cache in the folder may hold local paths.
+        for path in ("/static/.tool-cache/state.json", "/static/.hidden.js", "/static/%2Etool-cache/state.json"):
+            resp7, _raw7 = handle.request("GET", path)
+            assert resp7.status == 404, path
     finally:
         handle.close()
         store.close()
@@ -1933,7 +2173,7 @@ def test_profile_goals_lists_goals_and_drafts_one(server):
     resp, payload = server.get_json("/api/profile-goals?goal=nope")
     assert resp.status == 400
     resp, payload = server.get_json("/api/profile-goals?goal=tasks&task=bugfix")
-    assert resp.status == 200 and set(payload["data"]) >= {"tasks", "task", "note"}
+    assert resp.status == 200 and set(payload["data"]) >= {"tasks", "task_labels", "task", "note"}
     resp, payload = server.get_json("/api/profile-goals?goal=tasks&task=not-a-task")
     assert resp.status == 400 and "unknown task" in payload["error"]["message"]
 
@@ -2095,10 +2335,12 @@ def test_quick_actions_list_and_detail(server):
     checks = payload["data"]["checks"]
     assert [c["id"] for c in checks][:2] == ["models", "effort"]
     assert all(c["status"] in ("act", "ok", "no_data") and c["summary"] for c in checks)
+    assert all(isinstance(c["rule_ids"], list) for c in checks)
     for check in checks:
         resp, payload = server.get_json(f"/api/quick-actions/{check['id']}")
         assert resp.status == 200
-        assert set(payload["data"]) >= {"question", "table", "fixes", "tips"}
+        assert set(payload["data"]) >= {"question", "table", "fixes", "tips", "rule_ids"}
+        assert payload["data"]["rule_ids"] == check["rule_ids"]
     resp, _payload = server.get_json("/api/quick-actions/nope")
     assert resp.status == 404
 
@@ -2433,3 +2675,287 @@ def test_capture_shows_feedback_counts_and_the_skill_install_note(server):
     resp, payload = server.get_json("/api/capture")
     rows = {row["id"]: row for section in payload["data"]["sections"] for row in section["metrics"]}
     assert payload["data"]["feedback"]["skill"] == "installed" and rows["feedback_skill"]["needs_install"] is False
+
+
+# -- project filter (Task Group C) ---------------------------------------
+
+
+def _build_two_project_corpus(tmp_path: Path) -> corpus_mod.Corpus:
+    """Two distinctly-slugged projects (``proj-alpha`` cheaper,
+    ``proj-beta`` pricier), for the project-filter tests below."""
+    projects_root = tmp_path / "projects"
+    alpha_dir = projects_root / "proj-alpha"
+    beta_dir = projects_root / "proj-beta"
+    alpha_dir.mkdir(parents=True)
+    beta_dir.mkdir(parents=True)
+    write_jsonl(
+        alpha_dir / "session-alpha.jsonl",
+        [turn_line(input_tokens=100 + i, output_tokens=20 + i, cache_read_input_tokens=30) for i in range(3)],
+    )
+    write_jsonl(
+        beta_dir / "session-beta.jsonl",
+        [turn_line(input_tokens=200 + i, output_tokens=40 + i, cache_read_input_tokens=60) for i in range(3)],
+    )
+    return corpus_mod.load_corpus([alpha_dir, beta_dir])
+
+
+def _seed_two_projects(store: Store, corpus: corpus_mod.Corpus) -> dict[str, str]:
+    """Seed both of ``corpus``'s sessions under their own slugs -- unlike
+    ``_seed_store`` above (which always hardcodes a single ``"proj-a"``
+    session regardless of the corpus passed in), this keeps each
+    bundle's own ``slug``/``session_id`` so ``resolve_project_slug``/
+    project filtering can actually tell the two projects apart.
+    ``proj-alpha`` costs 1.0, ``proj-beta`` costs 9.0 -- distinctly
+    different so a filtered total can't pass by coincidence. Returns
+    ``{slug: session_id}``.
+    """
+    session_ids: dict[str, str] = {}
+    costs = {"proj-alpha": 1.0, "proj-beta": 9.0}
+    dropped = {"proj-alpha": 800, "proj-beta": 1600}
+    for bundle in corpus.sessions:
+        slug = bundle.slug
+        cost = costs[slug]
+        fake_root = rf"C:\Users\definitely-not-a-real-person\.claude\projects\{slug}"
+        store.upsert_session(
+            session_id=bundle.session_id,
+            project_slug=slug,
+            project_root_path=fake_root,
+            slug=slug,
+            first_ts="2026-09-18T12:00:00Z",
+            last_ts="2026-09-18T13:00:00Z",
+            span_s=3600.0,
+            total_cost=cost,
+            total_tokens=450,
+        )
+        store.upsert_transcript(
+            session_id=bundle.session_id,
+            path=rf"{fake_root}\{bundle.session_id}.jsonl",
+            kind="top-level",
+            mtime_ns=123,
+            size_bytes=456,
+            parser_version=3,
+            digest_json=json.dumps({"turns": 3}),
+            turns_agg=[
+                {
+                    "day": "2026-09-18",
+                    "model": "claude-sonnet-5",
+                    "turns": 3,
+                    "input_tokens": 300,
+                    "cache_creation_tokens": 0,
+                    "cache_read_tokens": 90,
+                    "output_tokens": 63,
+                    "thinking_tokens": 0,
+                    "cc_5m": 0,
+                    "cc_1h": 0,
+                    "cost": cost,
+                }
+            ],
+            compactions=[
+                {
+                    "ts": "2026-09-18T12:30:00Z",
+                    "pre_tokens": 1000,
+                    "post_tokens": 200,
+                    "dropped_tokens": dropped[slug],
+                    "trigger": "auto",
+                    "join_delta_s": 5.0,
+                }
+            ],
+        )
+        session_ids[slug] = bundle.session_id
+    return session_ids
+
+
+def _start_server_with_two_projects(tmp_path, monkeypatch) -> tuple[_ServerHandle, dict[str, str]]:
+    """A server backed by two distinct projects (see
+    ``_build_two_project_corpus``/``_seed_two_projects``), for the
+    project-filter tests below. Bypasses ``_start_server``'s
+    ``_seed_store`` (which hardcodes a single ``"proj-a"`` session) so
+    both sessions actually land in the store under their own slugs --
+    ``resolve_project_slug`` reads ``sessions.slug`` directly, and a
+    mismatch here would make every filter assertion meaningless."""
+    corpus = _build_two_project_corpus(tmp_path)
+    _install_fake_rebuild(monkeypatch, corpus)
+
+    store = Store(tmp_path / "service.db")
+    store.open()
+    session_ids = _seed_two_projects(store, corpus)
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    options = ServeOptions(projects_root=tmp_path / "projects", config_dir=config_dir)
+
+    handler_cls = service_api.make_handler(store, options)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+
+    handle = _ServerHandle(httpd, thread, corpus=corpus, store=store, options=options)
+    return handle, session_ids
+
+
+@pytest.fixture
+def two_project_server(tmp_path, monkeypatch):
+    handle, session_ids = _start_server_with_two_projects(tmp_path, monkeypatch)
+    handle.session_ids = session_ids
+    try:
+        yield handle
+    finally:
+        handle.close()
+        handle.store.close()
+
+
+def _overview_metric(report: dict, metric: str):
+    for section in report["sections"]:
+        if section["key"] == "overview":
+            for table in section["tables"]:
+                if table["name"] == "totals":
+                    for row in table["rows"]:
+                        if row[0] == metric:
+                            return row[1]
+    raise KeyError(metric)
+
+
+def test_summary_filters_by_project(two_project_server):
+    resp, body = two_project_server.get_json("/api/summary?project=proj-alpha")
+    assert resp.status == 200
+    assert body["data"]["sessions"] == 1
+    assert body["data"]["total_cost"] == pytest.approx(1.0)
+
+    resp, body = two_project_server.get_json("/api/summary?project=proj-beta")
+    assert resp.status == 200
+    assert body["data"]["sessions"] == 1
+    assert body["data"]["total_cost"] == pytest.approx(9.0)
+
+    resp, body = two_project_server.get_json("/api/summary")
+    assert resp.status == 200
+    assert body["data"]["sessions"] == 2
+    assert_privacy(body)
+
+
+def test_sessions_filters_by_project(two_project_server):
+    resp, body = two_project_server.get_json("/api/sessions?project=proj-alpha")
+    assert resp.status == 200
+    assert [s["id"] for s in body["data"]] == [two_project_server.session_ids["proj-alpha"]]
+    assert body["data"][0]["slug"] == "proj-alpha"
+    assert_privacy(body)
+
+
+def test_daily_usage_filters_by_project(two_project_server):
+    resp, body = two_project_server.get_json("/api/daily-usage?project=proj-beta&window=all")
+    assert resp.status == 200
+    assert sum(row["cost"] for row in body["data"]) == pytest.approx(9.0)
+
+    resp, body = two_project_server.get_json("/api/daily-usage?project=proj-alpha&window=all&split=agent")
+    assert resp.status == 200
+    assert all(row["agent"] == "main" for row in body["data"])
+    assert sum(row["cost"] for row in body["data"]) == pytest.approx(1.0)
+
+
+def test_compactions_filters_by_project(two_project_server):
+    resp, body = two_project_server.get_json("/api/compactions?project=proj-alpha")
+    assert resp.status == 200
+    assert len(body["data"]) == 1
+    assert body["data"][0]["dropped_tokens"] == 800
+
+    resp, body = two_project_server.get_json("/api/compactions?project=proj-beta")
+    assert resp.status == 200
+    assert len(body["data"]) == 1
+    assert body["data"][0]["dropped_tokens"] == 1600
+
+
+@pytest.mark.parametrize("route", ["/api/summary", "/api/ttl", "/api/sessions", "/api/compactions"])
+def test_unknown_project_is_bad_request_without_echoing_it(two_project_server, route):
+    needle = "not-a-real-project-xyz"
+    resp, body = two_project_server.get_json(f"{route}?project={needle}")
+    assert resp.status == 400
+    assert body["ok"] is False
+    assert body["error"]["code"] == "bad_request"
+    assert needle not in body["error"]["message"]
+
+
+def test_report_json_scoped_by_project(two_project_server):
+    resp, body = two_project_server.get_json("/api/report.json?project=proj-alpha")
+    assert resp.status == 200
+    report = body["report"]
+    assert report["meta"]["projects"] == ["proj-alpha"]
+    assert _overview_metric(report, "sessions") == 1
+    assert_privacy(body)
+
+    resp, body = two_project_server.get_json("/api/report.json?project=proj-beta")
+    assert resp.status == 200
+    report = body["report"]
+    assert report["meta"]["projects"] == ["proj-beta"]
+    assert _overview_metric(report, "sessions") == 1
+
+
+def test_report_meta_projects_sorted_by_cost_descending_at_the_api_level(two_project_server):
+    resp, body = two_project_server.get_json("/api/report.json")
+    assert resp.status == 200
+    # proj-beta (cost 9.0) outspends proj-alpha (cost 1.0) this window --
+    # the API's own meta.projects must reflect the same (-cost, slug)
+    # order tests/test_report.py already pins at the build_report level.
+    assert body["report"]["meta"]["projects"] == ["proj-beta", "proj-alpha"]
+
+
+def test_report_cache_does_not_leak_across_project_filters(two_project_server):
+    """Two different `project` filters (and the unfiltered request) for
+    the same window must never share a cached report -- the report
+    cache key was widened to include `project` precisely so this
+    doesn't happen (see api.py's `_get_report_model`/`_slot_for`)."""
+    _resp, alpha = two_project_server.get_json("/api/report.json?project=proj-alpha")
+    _resp, beta = two_project_server.get_json("/api/report.json?project=proj-beta")
+    _resp, both = two_project_server.get_json("/api/report.json")
+
+    assert alpha["report"]["meta"]["projects"] == ["proj-alpha"]
+    assert beta["report"]["meta"]["projects"] == ["proj-beta"]
+    assert sorted(both["report"]["meta"]["projects"]) == ["proj-alpha", "proj-beta"]
+
+    # Re-requesting alpha after beta and the combined view must still
+    # return alpha's own scoped data, not something left behind by a
+    # collided cache slot.
+    _resp, alpha_again = two_project_server.get_json("/api/report.json?project=proj-alpha")
+    assert alpha_again["report"]["meta"]["projects"] == ["proj-alpha"]
+    assert _overview_metric(alpha_again["report"], "sessions") == 1
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/api/ttl",
+        "/api/carry",
+        "/api/compaction-sim",
+        "/api/model-swap",
+        "/api/waste",
+        "/api/config-diff?auto_keys=1",
+        "/api/recommendations",
+        "/api/diagnostics",
+        "/api/claude-md",
+        "/api/skills",
+        "/api/profile-goals",
+        "/api/quick-actions",
+        "/api/report.json",
+        "/api/report.md",
+        "/api/report.html",
+    ],
+)
+def test_project_filter_does_not_error_on_any_report_backed_route(server, route):
+    """A `project=<valid slug>` filter must not error on any
+    report-backed route -- `server`'s own single project is `proj-a`
+    (see `_seed_store`), so this is a smoke test that the filter is
+    wired through every one of them, not a correctness check (the
+    dedicated `two_project_server` tests above cover correctness)."""
+    sep = "&" if "?" in route else "?"
+    resp, _raw = server.request("GET", f"{route}{sep}project=proj-a")
+    assert resp.status == 200, f"{route} -> {resp.status}"
+
+
+def test_project_filter_does_not_error_on_whatif_or_quick_action(server):
+    resp, body = server.get_json("/api/quick-actions?project=proj-a")
+    assert resp.status == 200
+    checks = body["data"]["checks"]
+    if checks:
+        check_id = checks[0]["id"]
+        resp, _body = server.get_json(f"/api/quick-actions/{check_id}?project=proj-a")
+        assert resp.status == 200
+    resp, _body = server.post_json("/api/whatif?project=proj-a", {"settings": {"model": "sonnet"}, "agents": {}})
+    assert resp.status == 200

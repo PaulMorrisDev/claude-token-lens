@@ -114,7 +114,7 @@ from .. import baseline as baseline_mod
 from .. import capture_catalogue, helptext, hook_health
 from .. import snapshots as snapshots_mod
 from ..config import CAPTURE_SAMPLES, ConfigError, load_config, load_session_overrides, set_capture
-from ..pricing import PricingError, load_pricing
+from ..pricing import PricingError, cache_read_savings_usd, load_pricing
 from ..profiles import catalogue as profile_catalogue
 from ..profiles import diff as profile_diff_mod
 from ..profiles import schema as profile_schema
@@ -138,6 +138,13 @@ _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
         "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
     ),
 )
+
+#: The static folders whose files are pinned by sha256 in
+#: ``static/THIRD_PARTY.sha256`` (the vendored d3 and fonts). Their bytes
+#: only change when the pin does, so the browser may keep them; every
+#: other response stays ``no-store`` (docs/api.md's Security headers).
+_PINNED_STATIC_DIRS = frozenset({"vendor", "fonts"})
+_PINNED_CACHE_CONTROL = "public, max-age=31536000, immutable"
 
 #: Default report window (days) for the report-backed routes when
 #: ``window_days`` isn't given -- matches ``docs/api.md``'s "Accept
@@ -287,6 +294,17 @@ def _health_status(
         )
     return "ok", None
 
+#: Content types pinned for the dashboard's static files, checked before
+#: ``mimetypes`` (which reads the Windows registry, so its answer varies
+#: by machine and has no entry for ``.woff2`` on some). A module script
+#: served with the wrong type fails to load under ``nosniff``.
+_STATIC_CONTENT_TYPES = {
+    ".js": "text/javascript",
+    ".css": "text/css; charset=utf-8",
+    ".woff2": "font/woff2",
+    ".svg": "image/svg+xml",
+}
+
 _PLACEHOLDER_INDEX_HTML = (
     "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>claude-token-lens</title>"
     "</head><body>UI not built yet.</body></html>"
@@ -377,6 +395,19 @@ def _parse_iso8601(value: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _round_iso_to_minute(value: str) -> str:
+    """An ISO 8601 timestamp, rounded down to the minute -- the same
+    ``%Y-%m-%dT%H:%M:00Z`` form :func:`_named_window_since` returns for a
+    named window's own ``since``, so an explicit ``since``/``until`` bound
+    a caller passes gets the same minute-level granularity the report
+    cache key already gives a named window (see that function and the
+    report cache key built around ``_get_report_model``)."""
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:00Z")
 
 
 #: Short windows the dashboard offers by name (``?window=``), each as the
@@ -637,6 +668,27 @@ def make_handler(
                 named_window_starts[name] = window[1]
         return window, err
 
+    def _project_query(query):
+        """Parse the additive ``project`` query param (see docs/api.md's
+        "Filtering by project"): the redacted slug a caller names,
+        resolved to the raw ``sessions.slug`` value(s) it stands for.
+
+        Returns ``(project_slugs, None)`` -- a sorted tuple, for use as
+        part of a report cache key -- or ``(None, None)`` when the
+        request names no ``project`` at all (no filter); or ``(None,
+        error)``, an already-built ``400 bad_request``, when the given
+        slug matches no project this store has ever recorded a session
+        for. The message never echoes the value back, matching every
+        other malformed query param's convention above.
+        """
+        redacted = _str_query(query, "project")
+        if redacted is None:
+            return None, None
+        raw_slugs = store.resolve_project_slug(redacted)
+        if not raw_slugs:
+            return None, _bad_request("'project' does not match a known project")
+        return tuple(raw_slugs), None
+
     service_registered_lock = threading.Lock()
     service_registered_cache: dict = {"checked_at": None, "value": None}
 
@@ -715,7 +767,12 @@ def make_handler(
         an agent recorded in another project."""
         return snapshots_mod.with_every_project_agents(_snapshots_from_store())
 
-    def _build_report_model(window_days: int | None, since: str | None = None, until: str | None = None):
+    def _build_report_model(
+        window_days: int | None,
+        since: str | None = None,
+        until: str | None = None,
+        project: tuple[str, ...] | None = None,
+    ):
         # Local import: service.rebuild is a sibling work package's
         # module (S1-watcher), not yet present in every checkout this
         # module is imported from -- see this module's docstring.
@@ -723,7 +780,9 @@ def make_handler(
 
         config = load_config(options.config_dir)
         rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
-        corpus = rebuild.corpus_from_store(store, days=window_days, since=since, until=until)
+        corpus = rebuild.corpus_from_store(
+            store, days=window_days, since=since, until=until, project_slugs=list(project) if project else None
+        )
         snaps = _snapshots_from_store()
         projects = tuple(sorted({bundle.slug for bundle in corpus.sessions if bundle.slug}))
         window = _window_label(window_days, since, until)
@@ -780,11 +839,16 @@ def make_handler(
     def _slot_for(cache_key):
         """The report cache slot for a key (see ``report_cache``). Call
         with ``report_lock`` held."""
-        window_days, since, until = cache_key
+        window_days, since, until, project = cache_key
         if window_days is None and until is None and since is not None:
             for name, start in named_window_starts.items():
                 if start == since:
-                    return ("named", name)
+                    # `project` rides along in the named slot too (rather
+                    # than being dropped), so "today" unfiltered and
+                    # "today" for one project never collide into the same
+                    # cache entry even though they'd resolve to the same
+                    # `since` a minute apart.
+                    return ("named", name, project)
         return cache_key
 
     def _keep_report(cache_key, token, model, started: float, as_of: str) -> None:
@@ -837,7 +901,12 @@ def make_handler(
 
         threading.Thread(target=run, name="claude-token-lens-report", daemon=True).start()
 
-    def _get_report_model(window_days: int | None, since: str | None = None, until: str | None = None):
+    def _get_report_model(
+        window_days: int | None,
+        since: str | None = None,
+        until: str | None = None,
+        project: tuple[str, ...] | None = None,
+    ):
         """The report for a window, built at most once per store change.
 
         Stale-while-revalidate: when the store has changed since the
@@ -848,12 +917,17 @@ def make_handler(
         (or a report older than ``_STALE_REPORT_MAX_AGE_S``) is built
         while the request waits, and requests for a window already being
         built wait on that one build rather than starting their own.
+
+        ``project`` (additive, project-filter work): the resolved raw
+        project slug(s) a ``project`` query param named, or ``None`` for
+        no filter -- part of the cache key (below) so two different
+        ``project`` values for the same window never share a report.
         """
         # Cache key widened from a bare window_days to the full
-        # (window_days, since, until) triple so a since/until request
-        # never collides with (or is served from) a plain window_days
-        # entry for the same store change_token.
-        cache_key = (window_days, since, until)
+        # (window_days, since, until, project) tuple so a since/until or
+        # project-filtered request never collides with (or is served
+        # from) an unfiltered entry for the same store change_token.
+        cache_key = (window_days, since, until, project)
         token = _cache_token()
         now = time.monotonic()
         with report_lock:
@@ -1246,15 +1320,44 @@ def make_handler(
         return _ok(data)
 
     def route_summary(store, query, body):
-        if _str_query(query, "window") is not None:
-            window, err = _window_query(query)
-            if err is not None:
-                return err
-            return _ok(store.summary(since=window[1]))
-        window_days, err = _int_query(query, "window_days", None, minimum=0)
+        # v0.4 windowing (dashboard delta support): the same window
+        # params every report-backed route accepts, plus since/until --
+        # but, unlike those routes, no params at all still means "all
+        # time" (docs/api.md's original contract), matching how
+        # /api/sessions and /api/compactions already treat "nothing
+        # given" via _listing_window rather than _window_query's own
+        # 30-day default.
+        window, err = _listing_window(query)
         if err is not None:
             return err
-        return _ok(store.summary(window_days=window_days))
+        window_days, since, until = window
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        # Round explicit bounds to the minute the same way a named
+        # window's own `since` already is (_named_window_since) -- so two
+        # requests for "the same" period (e.g. the dashboard's current
+        # and previous-period calls) a few seconds apart agree exactly.
+        if since is not None:
+            since = _round_iso_to_minute(since)
+        if until is not None:
+            until = _round_iso_to_minute(until)
+        result = store.summary(window_days=window_days, since=since, until=until, project_slugs=project)
+        # Additive: what cache reads saved against sending the same
+        # tokens fresh as input, from turns_agg in the same window.
+        config = load_config(options.config_dir)
+        rates = _capture_rates(config)
+        by_model = store.cache_read_tokens_by_model(days=window_days, since=since, until=until, project_slugs=project)
+        result["cache_read_tokens"] = sum(by_model.values())
+        result["cache_saved"] = (
+            cache_read_savings_usd(
+                [{"model": model_id, "cache_read_tokens": tokens} for model_id, tokens in by_model.items()],
+                rates,
+            )
+            if rates is not None
+            else 0.0
+        )
+        return _ok(result)
 
     def _listing_window(query):
         """The window a store listing is limited to: none unless the
@@ -1275,7 +1378,14 @@ def make_handler(
         if err is not None:
             return err
         window_days, since, until = window
-        return _ok(store.sessions(limit=limit, offset=offset, window_days=window_days, since=since, until=until))
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        return _ok(
+            store.sessions(
+                limit=limit, offset=offset, window_days=window_days, since=since, until=until, project_slugs=project
+            )
+        )
 
     def route_session(store, query, body):
         session_id = query.get("id", "")
@@ -1322,17 +1432,37 @@ def make_handler(
         return _ok(store.recache())
 
     def route_daily_usage(store, query, body):
-        days, err = _int_query(query, "days", 30, minimum=1)
+        # The original `days` param stays exactly as it was for existing
+        # callers; the shared window params (window/window_days/since/
+        # until) are additive and, when any is given, take precedence --
+        # the same "new params win when present" rule route_summary uses.
+        if any(key in query for key in ("window", "window_days", "since", "until")):
+            window, err = _window_query(query)
+            if err is not None:
+                return err
+            window_days, since, until = window
+        else:
+            window_days, err = _int_query(query, "days", 30, minimum=1)
+            if err is not None:
+                return err
+            since = until = None
+        split = _str_query(query, "split")
+        if split not in (None, "agent", "model"):
+            return _bad_request("'split' must be 'agent' or 'model'")
+        project, err = _project_query(query)
         if err is not None:
             return err
-        return _ok(store.daily_usage(days=days))
+        return _ok(store.daily_usage(days=window_days, since=since, until=until, split=split, project_slugs=project))
 
     def route_compactions(store, query, body):
         window, err = _listing_window(query)
         if err is not None:
             return err
         window_days, since, until = window
-        return _ok(store.compactions(window_days=window_days, since=since, until=until))
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        return _ok(store.compactions(window_days=window_days, since=since, until=until, project_slugs=project))
 
     def _latest_baseline_row(store) -> dict | None:
         rows = store.baselines()
@@ -1782,7 +1912,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         section = _find_section(model, "ttl")
         return _ok(to_jsonable(section) if section is not None else None)
 
@@ -1790,7 +1923,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         section = _find_section(model, "carry")
         return _ok(to_jsonable(section) if section is not None else None)
 
@@ -1798,7 +1934,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         section = _find_section(model, "compaction_sim")
         return _ok(to_jsonable(section) if section is not None else None)
 
@@ -1806,7 +1945,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         section = _find_section(model, "model_swap")
         return _ok(to_jsonable(section) if section is not None else None)
 
@@ -1814,7 +1956,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         section = _find_section(model, "waste")
         return _ok(to_jsonable(section) if section is not None else None)
 
@@ -1822,11 +1967,14 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
+        project, err = _project_query(query)
+        if err is not None:
+            return err
         key = query.get("key")
         auto_keys = query.get("auto_keys") == "1"
         if not key and not auto_keys:
             return _bad_request("provide 'key' or 'auto_keys=1'")
-        model = _get_report_model(*window)
+        model = _get_report_model(*window, project)
         section = _find_section(model, "config")
         tables = section.tables if section is not None else []
         if auto_keys:
@@ -1838,7 +1986,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         hook = hook_health.check(options.config_dir)
         statusline = hook_health.statusline_check(options.config_dir, store.entrypoint_counts())
         return _ok(
@@ -1857,10 +2008,10 @@ def make_handler(
         config = load_config(options.config_dir)
         return Units(billing_mode=config.billing, currency=model.meta.pricing.currency)
 
-    def _claude_md_review(window, query):
+    def _claude_md_review(window, query, project=None):
         from .. import claude_md_review
 
-        model = _get_report_model(*window)
+        model = _get_report_model(*window, project)
         review = claude_md_review.build_review(options.config_dir, model.context_files or {})
         return claude_md_review, review, _report_units(model), _period_text(*window, name=query.get("window"))
 
@@ -1871,7 +2022,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        module, review, units, period = _claude_md_review(window, query)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        module, review, units, period = _claude_md_review(window, query, project)
         return _ok(
             {
                 "period": period,
@@ -1884,7 +2038,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        module, review, units, period = _claude_md_review(window, query)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        module, review, units, period = _claude_md_review(window, query, project)
         file_id = query.get("id", "")
         item = next((entry for entry in review.files if entry.id == file_id), None)
         if item is None:
@@ -1901,7 +2058,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         return _ok(
             skills_review.review(
                 options.config_dir,
@@ -1944,7 +2104,10 @@ def make_handler(
             return _bad_request(
                 f"unknown task {task!r}; expected one of: {', '.join(capture_catalogue.TAG_VOCAB['task'])}"
             )
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         effective, effective_agents, effort_level_env_set = _current_settings()
         return _ok(
             goals.draft(
@@ -2008,7 +2171,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         effective, _agents, _env_set = _current_settings()
         units = _report_units(model)
         period = _period_text(*window, name=query.get("window"))
@@ -2052,10 +2218,10 @@ def make_handler(
         seen = store.mark_prediction_seen(prediction_id)
         return _ok({"id": prediction_id, "seen": seen})
 
-    def _quick_context(window, query):
+    def _quick_context(window, query, project=None):
         from .. import quick_actions
 
-        model = _get_report_model(*window)
+        model = _get_report_model(*window, project)
         effective, effective_agents, _env_set = _current_settings()
         return quick_actions, quick_actions.Context(
             model=model,
@@ -2072,7 +2238,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        module, ctx = _quick_context(window, query)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        module, ctx = _quick_context(window, query, project)
         return _ok({"period": ctx.period, "checks": module.run_all(ctx)})
 
     def route_quick_action(store, query, body):
@@ -2080,7 +2249,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        module, ctx = _quick_context(window, query)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        module, ctx = _quick_context(window, query, project)
         if query.get("id") not in module.CHECK_IDS:
             return _not_found("unknown quick action")
         return _ok(module.run(query["id"], ctx))
@@ -2280,7 +2452,10 @@ def make_handler(
         window, err = _window_query(query)
         if err is not None:
             return err
-        model = _get_report_model(*window)
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
         return _ok([to_jsonable(rec) for rec in model.recommendations])
 
     def _render_report(content_type: str, render: Callable[[object], str]):
@@ -2288,7 +2463,10 @@ def make_handler(
             window, err = _window_query(query)
             if err is not None:
                 return err
-            model = _get_report_model(*window)
+            project, err = _project_query(query)
+            if err is not None:
+                return err
+            model = _get_report_model(*window, project)
             return ("raw", content_type, render(model))
 
         return _route
@@ -2367,9 +2545,13 @@ def make_handler(
 
         # -- low-level writers ------------------------------------------
 
-        def _write_headers(self, status: int, content_type: str, length: int) -> None:
+        def _write_headers(
+            self, status: int, content_type: str, length: int, *, cache_control: str | None = None
+        ) -> None:
             self.send_response(status)
             for name, value in _SECURITY_HEADERS:
+                if name == "Cache-Control" and cache_control is not None:
+                    value = cache_control
                 self.send_header(name, value)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(length))
@@ -2395,8 +2577,16 @@ def make_handler(
             if not head_only:
                 self.wfile.write(body)
 
-        def _write_bytes(self, status: int, content_type: str, data: bytes, *, head_only: bool = False) -> None:
-            self._write_headers(status, content_type, len(data))
+        def _write_bytes(
+            self,
+            status: int,
+            content_type: str,
+            data: bytes,
+            *,
+            head_only: bool = False,
+            cache_control: str | None = None,
+        ) -> None:
+            self._write_headers(status, content_type, len(data), cache_control=cache_control)
             if not head_only:
                 self.wfile.write(data)
 
@@ -2414,7 +2604,9 @@ def make_handler(
 
         def _serve_static(self, raw_name: str, *, head_only: bool = False) -> None:
             name = urllib.parse.unquote(raw_name)
-            if not name or ".." in Path(name).parts:
+            # A dot-file or dot-folder (an editor's or a tool's own cache,
+            # which may hold local paths) is never part of the UI.
+            if not name or any(part.startswith(".") for part in Path(name).parts):
                 self._write_json(*_not_found(), head_only=head_only)
                 return
             try:
@@ -2429,9 +2621,17 @@ def make_handler(
             if not candidate.is_file():
                 self._write_json(*_not_found(), head_only=head_only)
                 return
-            content_type, _encoding = mimetypes.guess_type(str(candidate))
+            content_type = _STATIC_CONTENT_TYPES.get(candidate.suffix.lower())
+            if content_type is None:
+                content_type, _encoding = mimetypes.guess_type(str(candidate))
+            parts = candidate.relative_to(base).parts
+            pinned = len(parts) > 1 and parts[0] in _PINNED_STATIC_DIRS
             self._write_bytes(
-                200, content_type or "application/octet-stream", candidate.read_bytes(), head_only=head_only
+                200,
+                content_type or "application/octet-stream",
+                candidate.read_bytes(),
+                head_only=head_only,
+                cache_control=_PINNED_CACHE_CONTROL if pinned else None,
             )
 
         # -- dispatch --------------------------------------------------------

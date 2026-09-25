@@ -577,8 +577,9 @@ def test_build_section_shape_and_notes(tmp_path, sonnet_rates):
     # this section to the shared recache.py detector once WP3 lands"),
     # stale ever since the WP10b addition described in the module
     # docstring actually landed that switch. It now describes current
-    # behaviour instead of a pending plan.
-    assert any("recache.py detector" in note for note in section.notes)
+    # behaviour instead of a pending plan: the shared recache.py detector,
+    # in plain words.
+    assert any("same check the cache rebuild section uses" in note for note in section.notes)
 
     summary_table = section.tables[0]
     summary_metrics = {row[0]: row[1] for row in summary_table.rows}
@@ -592,7 +593,7 @@ def test_build_section_shape_and_notes(tmp_path, sonnet_rates):
     assert summary_metrics[
         "Dropped tokens (share of new_tokens: input+cache_creation)"
     ] == pytest.approx(stats.dropped_share_of_new_tokens)
-    assert any("join_delta_s" in note for note in section.notes)
+    assert any("more than 15 minutes later" in note for note in section.notes)
 
     trigger_table = section.tables[1]
     trigger_rows = {row[0]: row[1] for row in trigger_table.rows}
@@ -607,7 +608,7 @@ def test_build_section_empty_stats_has_no_data_note():
     stats = compaction.CompactionStats()
     section = compaction.build_section(stats)
     assert section.tables[0].rows  # summary table still has metric rows
-    assert any("No compact_boundary events" in note for note in section.notes)
+    assert any("No conversation summaries found" in note for note in section.notes)
 
 
 def test_build_section_per_session_table_limited_to_20(tmp_path, sonnet_rates):

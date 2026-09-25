@@ -704,29 +704,28 @@ def _build_baseline_table(stats: ContextBudgetStats, latest_snapshots: dict[str,
         columns=columns,
         rows=rows,
         notes=[
-            "Human prompt, skills listing and memory files (est) approximate "
-            f"tokens as characters/bytes divided by {_CHARS_PER_TOKEN_APPROX} "
-            "-- no tokenizer runs over transcript content. Custom agents "
-            f"(est) instead counts agents x {_AGENT_LISTING_TOKENS_PER_AGENT} "
-            "tokens per agent, and MCP tools (est) is a flag, not a size "
-            "(\"present, size unknown\" -- this module cannot measure an MCP "
-            "server's own tool-schema size). Claude Code's own /context view "
-            "is the authoritative breakdown of the context window; treat "
-            "every (est) figure here as a rough proxy, never as ground truth.",
+            "Human prompt, skills listing and memory files (est) count "
+            f"characters (or bytes) divided by {_CHARS_PER_TOKEN_APPROX} as "
+            "tokens: no tokenizer reads your transcripts. Custom agents (est) "
+            f"is the number of agents times {_AGENT_LISTING_TOKENS_PER_AGENT} "
+            "tokens. MCP tools (est) says only whether MCP tools are there "
+            "(\"present, size unknown\"), not their size. This tool can't "
+            "measure an MCP server's own tool definitions. Claude Code's own "
+            "/context view is the authoritative breakdown of the context "
+            "window. Treat every (est) figure here as a rough guide, never as "
+            "exact.",
             "The \"all\" row sums every project's own sessions into one "
-            "mean/median baseline; its memory files, custom agents and MCP "
-            "tools buckets are left blank because those figures come from each "
-            "project's own config snapshot, which cannot be meaningfully "
-            "combined across different projects.",
-            "\"System prompt and tools (est)\" is the residual: mean "
-            "baseline minus every other known (est) bucket, floored at 0 -- "
-            "it also silently absorbs any bucket that could not be "
-            "estimated at all (e.g. no config snapshot for that project), "
-            "so a large residual does not necessarily mean a large system "
-            "prompt. It is reported as null rather than 0 when the (est) "
-            "buckets alone already exceed the measured baseline -- that "
-            "means the estimates over-shot, not that the system prompt is "
-            "free.",
+            "mean and median baseline. Its memory files, custom agents and "
+            "MCP tools are left blank. Those figures come from each project's "
+            "own config snapshot, which can't be combined across projects.",
+            "\"System prompt and tools (est)\" is what is left over: the "
+            "mean baseline minus every other known (est) part, and never "
+            "below 0. It also takes in any part that couldn't be estimated "
+            "at all (for example, no config snapshot for that project). So a "
+            "large figure here does not always mean a large system prompt. "
+            "It is left empty rather than 0 when the (est) parts alone "
+            "already exceed the measured baseline. That means the estimates "
+            "overshot, not that the system prompt is free.",
         ],
     )
 
@@ -739,7 +738,7 @@ def _build_autocompact_table(
 ) -> Table:
     columns = [
         Column(key="project", label="Project", kind="str"),
-        Column(key="configured_window", label="Configured autoCompactWindow", kind="tokens"),
+        Column(key="configured_window", label="Configured auto-compact window", kind="tokens"),
         Column(key="context_window_size", label="Model context window", kind="tokens"),
         Column(key="context_window_source", label="Context window source", kind="str"),
         Column(key="observed_threshold", label="Observed effective threshold", kind="tokens"),
@@ -835,21 +834,18 @@ def _build_autocompact_table(
         columns=columns,
         rows=rows,
         notes=[
-            "Observed effective threshold is the median "
-            "compactMetadata.preTokens over this project's own compactions "
-            "whose trigger is \"auto\" (compaction.effective_autocompact_threshold); "
-            "null when no auto-triggered compaction carried a preTokens value. "
-            "\"Auto compactions\" counts that same sample (trigger=\"auto\" "
-            "with a usable preTokens), not every trigger=\"auto\" boundary, "
-            "so it is never non-zero next to a null threshold.",
-            "Model context window is read from a statusline usage-log row's "
-            "own context_window fields when one is available for a session "
-            "in this project (context_window_source = \"statusline\"); "
-            "otherwise it is assumed as 1,000,000 for a \"[1m]\" model alias "
-            "or 200,000 otherwise (context_window_source = \"assumed\").",
-            "Drift is true when the observed effective threshold differs "
-            "from the configured autoCompactWindow by more than 10%; null "
-            "when either figure is unavailable.",
+            "\"Summarised at\" is the typical context size at this "
+            "project's own automatic summaries; empty when none recorded "
+            "a size. \"Automatic summaries\" counts that same sample, not "
+            "every automatic summary, so it is never above zero next to an "
+            "empty \"Summarised at\".",
+            "\"Context window\" comes from the status line's log when it "
+            "has one for a session in this project. Otherwise it is taken "
+            "as 1,000,000 tokens for a \"[1m]\" model alias, or 200,000. "
+            "\"Window from\" says which.",
+            "\"Differs from setting\" is yes when \"Summarised at\" is more "
+            "than 10% away from your auto-compact window setting. It is "
+            "empty when either figure is missing.",
         ],
     )
 
@@ -887,10 +883,10 @@ def _build_statusline_table(usage_log_rows: list[dict] | None) -> Table:
     notes: list[str] = []
     if not rows:
         notes.append(
-            "No usage-log row carries context_window fields yet -- install "
-            "the statusline logger (claude-token-lens statusline "
-            "--print-install-fragment) to populate this table with ground "
-            "truth from Claude Code's own payload."
+            "The status line log has no context sizes yet. Install the "
+            "status line logger (claude-token-lens statusline "
+            "--print-install-fragment) to fill this table with the sizes "
+            "Claude Code itself reports."
         )
     return Table(
         name="context_budget_statusline",
@@ -943,7 +939,7 @@ def build_section(
             title="Context budget",
             tables=[],
             notes=[
-                "No top-level transcripts in this corpus; a context budget "
+                "No main sessions in this report, so a context budget "
                 "cannot be estimated."
             ],
         )
@@ -1023,9 +1019,9 @@ def _build_startup_table(stats: ContextBudgetStats) -> Table:
             "system-prompt snapshot for the spawn; otherwise they sit in \"Not recorded\".",
             "Forks inherit the parent's conversation and prompt cache, so they are counted but kept "
             "out of the averages.",
-            "\"CLAUDE.md and memory\" includes Managed policy CLAUDE.md (broken out in the last "
-            "column): omitClaudeMd skips only the project's own CLAUDE.md files, never a policy one, "
-            "which still loads regardless.",
+            "\"CLAUDE.md and memory\" includes a managed policy CLAUDE.md (also shown on its own in "
+            "the last column). An agent's setting that skips CLAUDE.md files skips only the project's "
+            "own ones: a policy CLAUDE.md still loads.",
         ],
     )
 
@@ -1138,7 +1134,7 @@ def _build_shared_table(stats: ContextBudgetStats) -> Table:
         rows=rows,
         notes=[
             "A part is listed when at least half of the agent types receive it at about the same "
-            f"size (within {int(_SHARED_TOLERANCE * 100)}%), which usually means one shared source. "
+            f"size (within {int(_SHARED_TOLERANCE * 100)}%). That usually means one shared source. "
             "Trimming that source shrinks every one of those spawns.",
         ],
     )

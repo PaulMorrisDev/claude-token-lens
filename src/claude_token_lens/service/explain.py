@@ -30,7 +30,7 @@ _LEAD_ADVICE = {
     ),
     "cache_write": (
         "Writing to the cache happens when a conversation starts, grows, or has to be rebuilt after a pause "
-        "or a change. See the rebuilds below and the Cache tab."
+        "or a change. See the rebuilds below and {{page:cache/rebuilds}}."
     ),
     "output": "Output is the costliest token type. A lower effort level cuts thinking, which is billed as output.",
     "input": "Uncached input is usually small. A large share means the cache was often not used.",

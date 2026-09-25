@@ -272,8 +272,8 @@ def test_misses_you_reported_name_the_kind_of_work_and_what_slowed_it():
     # cost figure to floor at all.
     assert item.sources == ("your feedback",) and item.saving == pytest.approx(3.0) and item.n == 2
     assert item.evidence == (
-        "2 pieces of work missed their goal or were stopped, costing 3.0x one that met it; mostly refactor work; "
-        "slowed most by: wrong approach or rework."
+        "2 pieces of work missed their goal or were stopped, costing 3.0x one that met it; mostly refactor work. "
+        "Slowed most by: wrong approach or rework."
     )
 
 
@@ -304,7 +304,7 @@ def test_every_table_is_there_even_with_nothing_to_show():
 
 def test_untagged_unrated_work_says_how_to_get_more():
     notes = habits.section_from(Habits(cycles=[_cycle()])).notes
-    assert any("turn on metrics capture" in n for n in notes)
+    assert any("turn on metrics capture" in n.lower() for n in notes)
     assert any("run /tl-feedback" in n for n in notes)
 
 
@@ -403,6 +403,7 @@ def test_apply_covered_by_drops_the_saving_and_names_the_rule_when_it_fired():
     key_idx = [c.key for c in table.columns].index("habit")
     saving_idx = [c.key for c in table.columns].index("saving")
     covered_idx = [c.key for c in table.columns].index("covered_by")
+    covered_rule_idx = [c.key for c in table.columns].index("covered_by_rule")
     row = list(table.rows[0])
     row[key_idx] = "effort_fit"
     row[saving_idx] = 3.5
@@ -417,10 +418,14 @@ def test_apply_covered_by_drops_the_saving_and_names_the_rule_when_it_fired():
     covered_row = next(r for r in table.rows if r[key_idx] == "effort_fit")
     assert covered_row[saving_idx] is None
     assert covered_row[covered_idx] == "High effort is being spent on easy work"
+    # Additive: the rule id itself, alongside its title, so a caller can
+    # link straight to the recommendation.
+    assert covered_row[covered_rule_idx] == "effort-mismatch"
     # A row for an item not in COVERED_BY, or whose rule didn't fire, is
     # untouched.
     uncovered_row = next(r for r in table.rows if r[key_idx] == "tool_loops")
     assert uncovered_row[covered_idx] == ""
+    assert uncovered_row[covered_rule_idx] == ""
 
 
 def test_apply_covered_by_leaves_the_saving_alone_when_the_rule_did_not_fire():
@@ -434,6 +439,7 @@ def test_apply_covered_by_leaves_the_saving_alone_when_the_rule_did_not_fire():
     key_idx = [c.key for c in table.columns].index("habit")
     saving_idx = [c.key for c in table.columns].index("saving")
     covered_idx = [c.key for c in table.columns].index("covered_by")
+    covered_rule_idx = [c.key for c in table.columns].index("covered_by_rule")
     row = list(table.rows[0])
     row[key_idx] = "effort_fit"
     row[saving_idx] = 3.5
@@ -447,6 +453,7 @@ def test_apply_covered_by_leaves_the_saving_alone_when_the_rule_did_not_fire():
     covered_row = next(r for r in table.rows if r[key_idx] == "effort_fit")
     assert covered_row[saving_idx] == 3.5
     assert covered_row[covered_idx] == ""
+    assert covered_row[covered_rule_idx] == ""
 
 
 def test_allow_routine_states_its_security_trade_off_and_a_permissions_undo():
@@ -480,7 +487,11 @@ def test_brief_templates_start_from_the_checklist_and_put_what_you_leave_out_fir
     tag = CaptureTag(task="bugfix", missing=("constraints",))
     keys, why = habits.template_lines("bugfix", [_cycle(tag=tag) for _ in range(3)])
     assert keys == ["constraints", "repro", "files", "done"]
-    assert why == "Constraints was missing in 3 of 3 bugfix asks."
+    assert why == "Constraints was missing in 3 of 3 bug fix asks."
+    # Phase 10 review: the kind of task reads by its plain name, as the
+    # card's title does ("Debugging", not "debug").
+    cycles = [_cycle(tag=CaptureTag(task="debug", missing=("repro",))), _cycle(tag=CaptureTag(task="debug"))]
+    assert habits.template_lines("debug", cycles)[1] == "Reproduce was missing in 1 of 2 debugging asks."
     # With no tagged work, the common kinds of task get a template each.
     rows = _rows(_table(habits.section_from(Habits()), "habits_brief_templates"))
     assert [r["task"] for r in rows] == ["bugfix", "feature", "refactor", "research"]
@@ -796,7 +807,8 @@ def test_the_capture_section_surfaces_a_step_down_suggestion_when_ready_and_stab
     assert any("claude-token-lens capture level deep" in n for n in table.notes)
     # What changes, where, the trade-off and the undo (no apply button).
     note = next(n for n in table.notes if "--dry-run" in n)
-    assert all(i in note for i in dropped)
+    # The dropped metrics by their Capture page names, never their ids.
+    assert habits.metric_list(dropped) in note
     assert "stops collecting them" in note and "writes nothing" in note
     assert "config.toml" in note and "settings.json" in note
     assert "per session start" in note and "per subagent start" in note

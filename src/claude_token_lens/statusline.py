@@ -1449,16 +1449,15 @@ def build_cache_ground_truth_table(usage_log_rows: list[dict] | None) -> Table:
         ],
         rows=rows_out,
         notes=[
-            "Built from the statusline's prompt_cache ground-truth trailing "
-            "columns in the usage-log CSV (see statusline.py's module "
-            "docstring); sessions with no logged cache data are absent "
+            "Built from the cache columns the status line logger writes to "
+            "the usage log; sessions with no logged cache data are absent "
             "from this table.",
             "Warm share is the percentage of *logged rows* (statusline "
             "refreshes) that were warm, not a share of wall-clock session "
             "time -- refreshes are not evenly spaced, so a session with "
             "many quick warm refreshes and one long cold stretch can show "
             "a high warm share despite spending most of its wall-clock "
-            "time cold, and vice versa (nit 20).",
+            "time cold, and vice versa.",
         ],
     )
 

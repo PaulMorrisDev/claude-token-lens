@@ -242,7 +242,7 @@ def _build_summary_table(stats: PhaseStats) -> Table:
         columns=[
             Column(key="phase", label="Phase", kind="str"),
             Column(key="turns", label="Turns", kind="int"),
-            Column(key="new_tokens", label="New tokens (input+cache_creation)", kind="tokens"),
+            Column(key="new_tokens", label="New tokens (input and cache writes)", kind="tokens"),
             Column(key="cache_read_tokens", label="Cache read tokens", kind="tokens"),
             Column(key="output_tokens", label="Output tokens", kind="tokens"),
             Column(key="cost", label="Cost", kind="money"),
@@ -268,7 +268,7 @@ def _build_dimension_table(name: str, title: str, dim_label: str, cells: dict[tu
             Column(key="dimension", label=dim_label, kind="str"),
             Column(key="phase", label="Phase", kind="str"),
             Column(key="turns", label="Turns", kind="int"),
-            Column(key="new_tokens", label="New tokens (input+cache_creation)", kind="tokens"),
+            Column(key="new_tokens", label="New tokens (input and cache writes)", kind="tokens"),
             Column(key="cache_read_tokens", label="Cache read tokens", kind="tokens"),
             Column(key="output_tokens", label="Output tokens", kind="tokens"),
             Column(key="cost", label="Cost", kind="money"),

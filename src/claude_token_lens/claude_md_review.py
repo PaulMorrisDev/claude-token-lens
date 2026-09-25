@@ -47,6 +47,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import pages
 from . import parse as parse_mod
 from .fixes import PROMPT_RESTART
 from .footprint import home_label
@@ -1014,13 +1015,13 @@ def render_markdown(review: Review, units: Units, period: str) -> str:
             + (f" Estimated cost: {summary['cost_text']}." if summary["cost_text"] else "")
         )
         for note in summary["findings"]:
-            lines.append(f"- {note}")
+            lines.append(f"- {pages.plain(note)}")
         lines.append("")
         for fix in build_fixes(file_review, units, period):
             lines.append(f"### {fix['title']}")
             lines.append("")
             for heading, text in fix["explainer"]:
-                lines.append(f"- **{heading}:** {text}")
+                lines.append(f"- **{heading}:** {pages.plain(text)}")
             lines.append("")
             lines.append("Ask Claude:")
             lines.append("")

@@ -26,6 +26,7 @@ from __future__ import annotations
 import dataclasses
 import html as _html
 
+from .. import pages
 from ..fixes import RESTART_NOTE
 from ..model import Diagnostics, ReportModel, Table
 from .tables import SCOPE_LABELS, SEVERITY_LABELS, display_cell, fix_subject, evidence_source, format_evidence_value, help_parts
@@ -245,7 +246,7 @@ def _help_html(pairs: list[tuple[str, str]], summary: str = "How to read this") 
     """A collapsed ``<details>`` block, or "" when there is no help."""
     if not pairs:
         return ""
-    items = "".join(f"<dt>{_esc(heading)}</dt><dd>{_esc(text)}</dd>" for heading, text in pairs)
+    items = "".join(f"<dt>{_esc(heading)}</dt><dd>{_esc(pages.plain(text))}</dd>" for heading, text in pairs)
     return f'<details class="help"><summary>{_esc(summary)}</summary><dl>{items}</dl></details>'
 
 
@@ -285,7 +286,7 @@ def _table_html(table: Table, currency: str, table_id: str, units=None) -> str:
     if table.notes:
         notes_html = (
             '<ul class="notes">'
-            + "".join(f"<li>{_esc(note)}</li>" for note in table.notes)
+            + "".join(f"<li>{_esc(pages.plain(note))}</li>" for note in table.notes)
             + "</ul>"
         )
 
@@ -308,7 +309,7 @@ def _sections_html(model: ReportModel) -> str:
     for section_index, section in enumerate(model.sections):
         parts.append(f"<section><h2>{_esc(section.title)}</h2>")
         if section.intro:
-            parts.append(f'<p class="intro">{_esc(section.intro)}</p>')
+            parts.append(f'<p class="intro">{_esc(pages.plain(section.intro))}</p>')
         parts.append(_help_html(help_parts(section.help)))
         for table_index, table in enumerate(section.tables):
             table_id = f"table-{section_index}-{table_index}"
@@ -316,7 +317,7 @@ def _sections_html(model: ReportModel) -> str:
         if section.notes:
             parts.append(
                 '<ul class="notes">'
-                + "".join(f"<li>{_esc(note)}</li>" for note in section.notes)
+                + "".join(f"<li>{_esc(pages.plain(note))}</li>" for note in section.notes)
                 + "</ul>"
             )
         parts.append("</section>")
@@ -332,7 +333,7 @@ def _fix_html(fix: dict) -> str:
     if fix.get("explainer"):
         parts.append("<dl>")
         for heading, text in fix["explainer"]:
-            parts.append(f"<dt>{_esc(heading)}</dt><dd>{_esc(text)}</dd>")
+            parts.append(f"<dt>{_esc(heading)}</dt><dd>{_esc(pages.plain(text))}</dd>")
         parts.append("</dl>")
     # UX-8: a purely informational workflow card (fixes.build_fixes) has
     # an explainer but no prompt -- nothing to ask Claude to do.
@@ -359,10 +360,10 @@ def _recommendations_html(model: ReportModel) -> str:
         parts.append('<article class="rec">')
         parts.append(f"<h3>{_esc(SEVERITY_LABELS.get(rec.severity, rec.severity))}: {_esc(rec.title)}</h3>")
         if rec.why:
-            parts.append(f"<p>{_esc(rec.why)}</p>")
-        parts.append(f"<p>What to do: {_esc(rec.action)}</p>")
+            parts.append(f"<p>{_esc(pages.plain(rec.why))}</p>")
+        parts.append(f"<p>What to do: {_esc(pages.plain(rec.action))}</p>")
         if rec.estimated_saving:
-            parts.append(f"<p><strong>Estimated saving:</strong> {_esc(rec.estimated_saving)}</p>")
+            parts.append(f"<p><strong>Estimated saving:</strong> {_esc(pages.plain(rec.estimated_saving))}</p>")
         if rec.lever and not rec.fixes:
             scope = SCOPE_LABELS.get(rec.scope, rec.scope)
             parts.append(f"<p>Setting to change: {_esc(rec.lever)} ({_esc(scope)})</p>")

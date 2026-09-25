@@ -164,8 +164,9 @@ def format_evidence_value(
     return format_cell(value, kind, currency, units)
 
 
-#: ``Recommendation.severity`` and ``.scope`` in plain words; app.js keeps
-#: the same wording (``SEVERITY_LABELS``/``SCOPE_LABELS``).
+#: ``Recommendation.severity`` and ``.scope`` in plain words; the dashboard
+#: keeps the same wording (page-actions.js's ``SEVERITY_LABELS``, ui.js's
+#: ``SCOPE_LABELS``).
 SEVERITY_LABELS = {"action": "Do this", "advice": "Worth considering", "info": "For your information"}
 SCOPE_LABELS = {
     "user": "your user settings, every project",
@@ -177,7 +178,7 @@ SCOPE_LABELS = {
 def fix_subject(fix: dict) -> str:
     """``": model for reviewer"``: what one ``fixes.build_fix`` entry
     changes, for its heading. The main session's ``model`` says so, since
-    a bare "model" reads as every agent's. app.js has the same rule."""
+    a bare "model" reads as every agent's. ui.js's ``fixTitle`` has the same rule."""
     key = fix.get("key")
     if not key:
         return ""

@@ -90,10 +90,10 @@ offers these, and asks before each:
 
 Go to **http://127.0.0.1:8765** in your browser. On the first start a
 banner shows its progress while it reads your history (seconds to a few
-minutes), and figures fill in as it goes. Start with **Start here** on the
-Overview tab, then **Quick actions**, which answers one question per way
-of saving, such as "Is each agent on the cheapest model that does the
-job?". The footer shows the version that is running.
+minutes), and figures fill in as it goes. Start with **Next best actions**
+on the Overview page, then **Actions › Checks**, which answers one question per
+way of saving, such as "Is each agent on the cheapest model that does the
+job?". The bottom of the sidebar shows the version that is running.
 
 It only runs on your machine; nobody else can open it.
 
@@ -131,7 +131,7 @@ python -m pip install --force-reinstall git+https://github.com/PaulMorrisDev/cla
 python -m claude_token_lens install-service
 ```
 
-Check the dashboard's footer shows the new version. After an update it
+Check the foot of the dashboard's sidebar shows the new version. After an update it
 may re-read your history once, so the first page load can be slow.
 [`CHANGELOG.md`](CHANGELOG.md) lists what changed.
 
@@ -142,8 +142,8 @@ are kept inside Linux, in `\\wsl.localhost\<distro>\home\<you>\.claude\projects`
 Install claude-token-lens on **Windows** as above, not inside WSL, and
 run `python -m claude_token_lens init`: it finds those folders itself
 and asks whether to include them. Say yes, and the dashboard shows your
-Windows and WSL sessions together, with a **Where** column on the
-Sessions tab saying which is which ("This computer" or "WSL: Ubuntu").
+Windows and WSL sessions together, with a **Where** column on
+**Spend › Sessions** saying which is which ("This computer" or "WSL: Ubuntu").
 
 - It only reads those folders, the same as your Windows one. It changes
   nothing inside WSL.
@@ -170,12 +170,12 @@ Sessions tab saying which is which ("This computer" or "WSL: Ubuntu").
 | What you see | What to do |
 |---|---|
 | `claude-token-lens` "is not recognized as a name of a cmdlet" or "command not found" | pip's Scripts folder isn't on your `PATH`. Use `python -m claude_token_lens` instead; everything else stays the same |
-| The dashboard still looks old after updating (its footer shows an old version, or has no version at all) | Something else is still serving port 8765, such as an older copy started by hand, from another Python install, or from Docker. See [An old dashboard won't go away](#an-old-dashboard-wont-go-away) |
+| The dashboard still looks old after updating (the foot of its sidebar shows an old version, or none at all) | Something else is still serving port 8765, such as an older copy started by hand, from another Python install, or from Docker. See [An old dashboard won't go away](#an-old-dashboard-wont-go-away) |
 | http://127.0.0.1:8765 doesn't open | Run `python -m claude_token_lens serve` in a PowerShell window and leave it open; any error prints there. "Already in use by another serve" names the process that has the dashboard's database open: stop that one first |
 | A banner says the dashboard is **not updating** or its **last scan failed** | The background scan has stopped or keeps failing, so figures are frozen at the time shown. Restart the dashboard: `python -m claude_token_lens install-service` (or stop and start `serve`) |
 | Sessions you ran in WSL are missing | Run `python -m claude_token_lens init` again and say yes when it offers the WSL folder. It only finds a distro that is installed for your Windows user; `wsl -l -v` lists them. See [Using Claude Code in WSL too](#using-claude-code-in-wsl-too) |
 | Amounts are in dollars but you're on a plan | Run `python -m claude_token_lens init` again and answer `subscription` to "How do you pay for Claude Code?" |
-| `capture status` or the Capture tab says your organisation allows only the hooks it deploys, or that hooks are turned off | A managed policy (`allowManagedHooksOnly` or `disableAllHooks`), or `disableAllHooks` in your own settings.json, stops Claude Code running any hook you add yourself, so capture, the config-snapshot hook and the status line can't run. Reports and the dashboard still work from your transcripts. Only your administrator can lift a managed policy |
+| `capture status` or **Setup › Capture** says your organisation allows only the hooks it deploys, or that hooks are turned off | A managed policy (`allowManagedHooksOnly` or `disableAllHooks`), or `disableAllHooks` in your own settings.json, stops Claude Code running any hook you add yourself, so capture, the config-snapshot hook and the status line can't run. Reports and the dashboard still work from your transcripts. Only your administrator can lift a managed policy |
 
 [`docs/first-run.md`](docs/first-run.md#troubleshooting) has more.
 
@@ -202,7 +202,8 @@ Get-NetTCPConnection -LocalPort 8765 -State Listen | ForEach-Object { Get-Proces
   container in Docker Desktop), then run
   `python -m claude_token_lens install-service`.
 
-Then reload http://127.0.0.1:8765 and check the version in the footer.
+Then reload http://127.0.0.1:8765 and check the version at the foot of
+the sidebar.
 
 ### Uninstalling
 
@@ -238,38 +239,60 @@ python -m pip uninstall claude-token-lens
   session you start, not the one you have open.
 - **Cheaper isn't free.** A cheaper model, lower effort or an earlier
   summary can make Claude less thorough. Each change says what it trades
-  away. Try one change at a time and check **Profiles > Your changes and
-  what they did** after a few sessions.
+  away. Try one change at a time and check **Your changes and what they
+  did** on **Setup › Settings** after a few sessions.
 
 To see everything it installed, run `claude-token-lens changes` or open
-the Data quality tab; both say how to undo each item. To remove it
+the Data quality page; both say how to undo each item. To remove it
 completely, see [Uninstalling](#uninstalling).
 
-## What each tab answers
+## What each page answers
 
-| Tab | The question it answers |
+The sidebar lists seven pages, with Data quality and the Glossary at its
+foot. A page with more than one part shows its segments beside its
+title. Every view has its own address, such as `#/spend/usage?w=30`, so
+Back, Forward, bookmarks and shared links work, and the window and
+project travel with it. **Search** (Ctrl+K) finds pages, tables,
+recommendations, checks, glossary terms, recent sessions and projects.
+It also runs commands, such as setting the window or copying a prompt.
+Press `?` for the keyboard shortcuts.
+
+| Page | The question it answers |
 |---|---|
-| Overview | How much did I use, and what should I look at first? |
-| Quick actions | For each way of saving (models, effort, summaries, cache, tools, skills, CLAUDE.md, tool output, habits), and whether any agent is struggling: is there anything to do, and what exactly? |
-| Sessions | Which sessions cost the most? Pick one to see why it was expensive. |
-| Cache | When did Claude Code rebuild the prompt cache, and what caused it? |
-| Cache lifetime (TTL) | Would a 1-hour cache lifetime have paid for itself? |
-| Savings | What would shorter tool output, earlier summaries, cheaper models or fewer wasted replies save? |
-| Agents | What do my subagents cost, what are they given when they start, what do they send back, and is their work going well (failed tool calls, runs that don't finish, runs a larger model had to redo, per model and effort)? |
-| Context files | What does each CLAUDE.md file and skill cost, who is it sent to, and what can be trimmed, moved or hidden? |
-| Config | What are my settings, and did changing them change my costs? |
-| Profiles | Make a profile from a goal with an estimate of what it saves, compare it with my settings, and see what each change I made did. |
-| Recommendations | What exactly should I change, where, and what is the trade-off? |
-| Usage | How is my usage spread over days, projects and five-hour blocks? |
+| Overview | What should I change next, and where did my tokens go? |
+| Actions › Recommendations | What exactly should I change, where, and what is the trade-off? |
+| Actions › Checks | For each way of saving (models, effort, summaries, cache, tools, skills, CLAUDE.md, tool output, habits), and whether any agent is struggling: is there anything to do, and what exactly? |
+| Spend › Usage | How is my usage spread over days, models, projects and five-hour blocks? |
+| Spend › Savings | What would shorter tool output, earlier summaries, cheaper models or fewer wasted replies save? |
+| Spend › Sessions | Which sessions cost the most? Pick one to see why it was expensive. |
+| Cache › Rebuilds | When did Claude Code rebuild the prompt cache, and what caused it? |
+| Cache › Lifetime (TTL) | Would a 1-hour cache lifetime have paid for itself? |
+| Agents & context › Subagents | What do my subagents cost, what are they given when they start, and what do they send back? |
+| Agents & context › Quality | Is my subagents' work going well (failed tool calls, runs that don't finish, runs a larger model had to redo, per model and effort), and how do I split the work? |
+| Agents & context › Context | What does each CLAUDE.md file and skill cost, who is it sent to, and what can be trimmed, moved or hidden? |
 | Work habits | What habits are costing tokens, where did the evidence come from, and what would `/tl-feedback` and brief templates add? |
-| Capture | What does metrics capture cost so far, what would each level or metric add, and is it set up? |
+| Setup › Settings | What are my settings, and did changing them change my costs? |
+| Setup › Profiles | Make a profile from a goal with an estimate of what it saves, compare it with my settings, and see what each change I made did. |
+| Setup › Capture | What does metrics capture cost so far, what would each level or metric add, and is it set up? |
 | Data quality | What did this tool install, what should I expect, and could every transcript be read and priced? |
-| Glossary | What does a term on the dashboard mean? |
+| Glossary › Terms | What does a term on the dashboard mean? |
+| Glossary › How costs work | How is each kind of token priced, and how does each change save me money? |
 
-The window picker at the top sets the time every tab covers: the last
-hour, today or the last 24 hours to see the effect of a change straight
-away, 7 to 90 days or all time for the long view, or **since my last
-change**.
+The window picker at the top right sets the time every page covers: the
+last hour, today or the last 24 hours to see the effect of a change
+straight away, 7 to 90 days or all time for the long view, or **since my
+last change**. **Setup › Capture** doesn't depend on it, so there the
+picker gives way to a note saying so, as it does on **Glossary › Terms**.
+The project picker beside it narrows every page that follows the window
+to one project; the address keeps it (`?project=`), so a bookmark or a
+shared link opens the same view. The theme button beside them switches
+between your system's theme, light and dark.
+
+Every figure a recommendation rests on links to the exact table row it
+came from, and a table that feeds a recommendation says so ("Feeds 2
+actions"). Charts answer one question each, and **Show as table** on any
+chart gives the same figures as a grid. Motion is kept short and stops
+when your system asks for reduced motion.
 
 Amounts follow your billing mode. On a Pro or Max plan, savings are a
 share of your usage limits once your statusline has logged enough
@@ -309,7 +332,7 @@ starts, so a session that is already open keeps the old ones
 `apply` and `apply --revert` say so after the change, and each prompt
 asks Claude to remind you once it has saved.
 
-Profiles on the Profiles tab work the same way, for several settings at
+Profiles on **Setup › Profiles** work the same way, for several settings at
 once: a prompt, `claude-token-lens apply <profile> --dry-run`, or a
 one-session trial (`apply <profile> --launch`) that leaves your settings
 files alone. Switching profile needs the same restart. See [section 11](#11-applying-a-profile)
@@ -333,7 +356,7 @@ and [`docs/profiles.md`](docs/profiles.md).
 - **Conversation summary**: When the context gets too large, Claude Code replaces the conversation so far with a summary. Also called compaction.
 - **List price**: Anthropic's published price per token. On a Pro or Max plan you don't pay this; it is shown to compare costs.
 - **Usage limits**: On a Pro or Max plan, the share of your five-hour and weekly allowance you have used.
-- **Billing mode**: Whether amounts are shown for a Pro or Max plan (a share of your usage limits when there are enough readings, otherwise a list-price equivalent) or as money for pay-per-token billing.
+- **Billing mode**: How amounts are shown. On a Pro or Max plan, as a share of your usage limits when there are enough readings, otherwise as a list-price equivalent. On pay-per-token billing, as money.
 - **Effort level**: How hard Claude thinks before replying. Thinking is billed as output, the most expensive token type.
 - **Scorecard**: Five areas rated 1 (very poor) to 5 (excellent), each from one number in your data.
 - **Recommendation**: A change worth making, with what it changes, the trade-off, a prompt you can give Claude and a command you can run.
@@ -341,22 +364,22 @@ and [`docs/profiles.md`](docs/profiles.md).
 - **Scope**: Where a change is written: your user settings (every project), this project on your machine only, or this project for everyone.
 - **Managed setting**: A setting your organisation's policy controls. Only your administrator can change it.
 - **Snapshot**: A record of your Claude Code settings at one moment, taken so changes can be compared over time.
-- **Window**: The stretch of time the numbers cover, picked at the top of the dashboard: the last hour, today, the last 24 hours, 7, 30 or 90 days, all time, or since your last change. A session counts, in full, when it was last active in the window.
+- **Window**: The stretch of time the numbers cover, picked at the top of the dashboard. It can be the last hour, today, the last 24 hours, 7, 30 or 90 days, all time, or since your last change. A session counts, in full, when it was last active in the window.
 - **Change point**: A moment your settings changed: an apply, its undo, or a change the settings snapshot saw. The dashboard compares the sessions before it with those after it.
-- **Quick action**: One question about a way to spend less, such as whether a cheaper model would do for an agent, answered from your own sessions with the evidence and a fix you can copy.
+- **Quick action**: One question about a way to spend less, answered from your own sessions with the evidence and a fix you can copy. The dashboard lists them on the Actions page, under Checks.
 - **What-if estimate**: What a change would have saved over the window, worked out from your own sessions. It is an estimate: cheaper settings can change how Claude works, which the estimate can't see.
 - **CLAUDE.md**: Instruction files Claude reads at the start of every session, and of most subagents: yours, each project's, and rule files. Every line is paid for on every reply that re-reads it.
 - **Skill**: A packaged set of instructions Claude can load when a task needs it. Its name and description are listed to Claude at the start of every session, used or not.
-- **Quality signal**: A sign of whether the work went well, not just what it cost: tool calls that failed, agent runs that didn't finish, your corrections. Compared across models and efforts, and before and after each change you make.
-- **Metrics capture**: An opt-in feature, off by default, that has Claude tell you in a one-line tag what a piece of work was about and how it went. It costs tokens while it's on; `init`'s last questions and `claude-token-lens capture` turn it on, change what it asks for, or turn it off.
+- **Quality signal**: A sign of whether the work went well, not only what it cost: tool calls that failed, agent runs that didn't finish, your corrections. Compared across models and efforts, and before and after each change you make.
+- **Metrics capture**: An opt-in feature, off by default: Claude adds a one-line tag saying what a piece of work was and how it went. It costs tokens while it's on. `init`'s last questions and `claude-token-lens capture` turn it on, change what it asks for, or turn it off.
 - **Capture level**: How much metrics capture asks for: `off`, `free`, `essentials`, `standard` or `deep`, each adding more of it. Set at `init` or with `claude-token-lens capture level`.
 - **Tag**: The one-line, closed-vocabulary note metrics capture has Claude add to a reply, such as `[tl: task=bugfix brief=clear]` or `[result: done fit=right]`. Only words from a fixed list are kept; nothing Claude writes in its own words is.
-- **Prompt cycle**: One message of yours and everything Claude did to answer it, subagents at any depth included. The unit metrics capture and the Work habits tab measure by.
-- **Work habits**: The tab (and report section) that turns prompt cycles into habits worth trying, each showing where its evidence came from — reported by Claude, inferred from the transcript, or your own feedback — and a rough saving.
-- **Feedback skill**: `/tl-feedback`, a skill you can add that you run after a piece of work to rate whether it delivered, what slowed it, whether it was worth the tokens, and what would have helped. Works at any capture level, even off; picking `deep` turns it on, with its reminders.
-- **Brief templates**: Checklists per kind of task on the Work habits tab, built from what your own requests tend to lack. Turned on, it also adds a `/tl-brief` skill that checks a request against its checklist and asks once for anything missing before Claude starts.
+- **Prompt cycle**: One message of yours and everything Claude did to answer it, subagents at any depth included. The unit metrics capture and the Work habits page measure by.
+- **Work habits**: The page (and report section) that turns prompt cycles into habits worth trying, with a rough saving for each. Each shows where its evidence came from: reported by Claude, inferred from the transcript, or your own feedback.
+- **Feedback skill**: `/tl-feedback`, a skill you can add and run after a piece of work. It asks whether the work delivered, what slowed it, whether it was worth the tokens, and what would have helped. Works at any capture level, even off; picking `deep` turns it on, with its reminders.
+- **Brief templates**: Checklists per kind of task on the Work habits page, built from what your own requests tend to lack. Turned on, it also adds a `/tl-brief` skill that checks a request against its checklist and asks once for anything missing before Claude starts.
 - **Sampling**: Running metrics capture in only a share of sessions (100, 50, 25 or 10 percent, `[capture] sample`) to spend fewer tokens on it. Picked at random, per session.
-- **Time-box**: The date metrics capture switches itself back off. 14 days by default from when you turn a level on — at `init`, `capture on`/`level`, or the Capture page — so turning it on doesn't mean it runs unattended forever; `--for`/`--capture-for` sets another length, `--no-limit`/`--capture-no-limit` turns the limit off entirely, or you can say so when asked.
+- **Time-box**: The date metrics capture switches itself back off. By default it's 14 days after you turn a level on, whether at `init`, with `capture on` or `level`, or on the Capture page. So turning it on never means it runs unattended forever. `--for` or `--capture-for` sets another length, and `--no-limit` or `--capture-no-limit` turns the limit off. You can also say so when asked.
 
 ## Reference
 
@@ -443,8 +466,9 @@ Every route in short:
 | From a local copy | `python -m pip install <folder>` (or `pipx install <folder>` to keep it apart from other Python tools) | pip |
 | Single file | download `claude-token-lens.pyz` from the [latest release](https://github.com/PaulMorrisDev/claude-token-lens/releases/latest), then `python claude-token-lens.pyz <command>` | Python only |
 
-The package has no third-party dependencies; `rich` is an optional
-extra for nicer terminal output. Building the `.pyz` yourself is
+The package has no runtime Python dependencies; `rich` is an optional
+extra for nicer terminal output. The dashboard's d3 and fonts ship
+inside the package, pinned by sha256. Building the `.pyz` yourself is
 covered in [`docs/deploy.md`](docs/deploy.md#distribution-without-pip-the-pyz-build).
 
 ### What `init` does
@@ -538,8 +562,8 @@ this table only lists what's specific to each one.
 | `changes` | List everything this tool has installed or changed on this machine, what each costs in tokens, what to expect, and the command that undoes each | `--claude-root PATH` (as for `init`) |
 | `capture` | Metrics capture: have Claude tag its replies with a few closed-vocabulary words (task kind, how clear the request was, whether an agent finished) so suggestions fit how you work. It uses tokens while on — see [`docs/capture.md`](docs/capture.md). `status` (the default) shows the level, the metrics on, their rough size, what capture has cost since it was turned on (or, while off, what each level would have cost over your last 14 days) and whether `settings.json` runs the hooks it needs; `on`, `off`, `level LEVEL`, `enable`/`disable METRIC...` change `[capture]` in `config.toml`, after the cost warning and a yes for anything that uses more tokens; `connect` adds the hook entries the chosen metrics need, and `remove` switches it off and takes them out (both show the diff and ask first); `feedback on`/`off` adds or removes the `/tl-feedback` skill and its status-line reminder, and `brief on`/`off` the `/tl-brief` skill that asks for what a request is missing before Claude starts (each shows the file and asks first); `prune` deletes signal files and `capture-log.jsonl` records older than `retention_days` (or a 180-day default) — the same housekeeping `serve`'s watcher already does on every tick, for anyone not running it | `--level LEVEL` (for `on`), `--for DURATION` or `--until DATE` (switch it off by itself), `--sample N` (capture 100, 50, 25 or 10% of sessions), `--yes`, `--dry-run`, `--claude-root PATH` (as for `init`) |
 | `uninstall` | Take it back out: remove the SessionStart hook, any metrics-capture hook entries and the statusline from `settings.json` (diff shown, file backed up first), offer to remove the `/tl-feedback`/`/tl-brief` skill files, and remove the logon service | `--claude-root PATH` (as for `init`), `--revert-changes` (also undo every `apply` still in place, newest first), `--delete-data` (also delete the data folder), `--dry-run` (show every step without changing anything), `--yes` (make the changes without asking; they are still printed) |
-| `check` | Quick actions: answer one token question (or all of them) from your own sessions, with the evidence, fixes and tips — the Quick actions tab in the terminal | `ID` (optional: `models`, `effort`, `compaction`, `cache`, `tools`, `skills`, `claude-md`, `tool-output`, `habits` or `quality`), plus the global `--days`/`--since`/`--until` |
-| `review` | Review your CLAUDE.md files or skills: size, how often each is sent, cost, and fixes — the Context files tab in the terminal | `claude-md` or `skills`, plus the global window flags |
+| `check` | Quick actions: answer one token question (or all of them) from your own sessions, with the evidence, fixes and tips — Actions › Checks in the terminal | `ID` (optional: `models`, `effort`, `compaction`, `cache`, `tools`, `skills`, `claude-md`, `tool-output`, `habits` or `quality`), plus the global `--days`/`--since`/`--until` |
+| `review` | Review your CLAUDE.md files or skills: size, how often each is sent, cost, and fixes — Agents & context › Context in the terminal | `claude-md` or `skills`, plus the global window flags |
 | `update` | Install the newest version with pip, then, when the dashboard starts at logon, run the new copy's `install-service` to restart it on that version and check which version answers on the port | `--from SOURCE` (what pip installs from; default the GitHub repository, a local folder also works), `--no-service` (install but leave the dashboard alone), `--port`, `--bind`, `--dry-run` (print both commands without running either) |
 | `uninstall-service` | Remove whatever `install-service` (or `init`) registered — stops the dashboard it is running (`Stop-ScheduledTask` on Windows; `systemctl --user disable --now` and `launchctl bootout` stop it on Linux and macOS), then deletes the task/unit/agent definition it wrote, and says which steps it did | `--dry-run` (print what would be removed, without removing anything) |
 | `compare` | A/B compare two arms of sessions (`window:`/`key:`/`profile:`/`project:` specs), stratified by purpose/mode (and the kind of task metrics capture reported, once half the sessions have one) with a minimum-sample gate — see [`docs/compare.md`](docs/compare.md) | `--a SPEC` / `--b SPEC` (required), `--stratify purpose,mode,task` (default `purpose,mode`, plus `task` when covered), `--min-sessions N` (default: `config.toml`'s `min_sessions`), plus the same `--json`/`--html PATH`/`--csv-dir DIR` output flags as `report` |
@@ -802,7 +826,7 @@ On Windows the command names the Python and the script by full path.
 Claude Code may run hooks through Git Bash, which doesn't expand
 `%USERPROFILE%`, and the `py` launcher isn't always on the `PATH`; either
 one stops the hook running without any visible error. The Data quality
-tab flags both, and `claude-token-lens init --repair-hook` fixes them:
+page flags both, and `claude-token-lens init --repair-hook` fixes them:
 it writes the folder out in full and keeps your own Python when it's
 found. The hook needs only the standard library, so a new install names
 your main Python rather than a virtual environment's, which could later
@@ -868,12 +892,12 @@ POSIX (Linux/macOS):
 
 The statusline runs only in Claude Code in a terminal. Sessions in the
 desktop app or an IDE never run it, so usage-limit readings come only
-from terminal sessions (the Data quality tab says when none are
+from terminal sessions (the Data quality page says when none are
 arriving). Like the hook, it adds no tokens to the conversation.
 
 With metrics capture's status-line items switched on (`[capture]`
 `feedback = ["feedback_note"]` or `coaching = ["coaching_line"]`, from
-the Capture tab or `claude-token-lens capture enable`), it prints a
+**Setup › Capture** or `claude-token-lens capture enable`), it prints a
 second line: a live hint when one applies (a large context at the end
 of a turn, a large last tool output, many reads in one message, or a
 warm cache about to go cold), else the reminder to run `/tl-feedback`.
@@ -1165,7 +1189,8 @@ see the Status note above):
 ## 10. Running the service
 
 `claude-token-lens serve` runs a local watcher thread, a SQLite store,
-a read-only JSON API and a dependency-free static web UI, so you can
+a read-only JSON API and a web dashboard with no build step (its only
+third-party files, d3 and two fonts, ship in the package), so you can
 keep a live dashboard open instead of re-running `report` by hand. It
 never opens an outbound connection and binds to `127.0.0.1` unless you
 explicitly pass `--allow-remote` (see [SECURITY.md](SECURITY.md)).
@@ -1205,7 +1230,7 @@ verify no egress, is in [docs/deploy.md](docs/deploy.md):
 
 `claude-token-lens serve`'s own `GET /api/health` reports whether the
 service is currently registered (`service_registered: true|false|null`
-— see [`docs/api.md`](docs/api.md)), and the dashboard's Overview tab
+— see [`docs/api.md`](docs/api.md)), and the dashboard's Overview page
 shows a banner if it isn't.
 
 The store is always a derived cache, never source of truth: delete and

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 
+from .. import pages
 from ..fixes import RESTART_NOTE
 from ..model import Diagnostics, ReportModel, Table
 from .tables import SCOPE_LABELS, SEVERITY_LABELS, display_cell, display_row, fix_subject, escape_md, evidence_source, format_evidence_value, help_parts
@@ -82,7 +83,7 @@ def _render_assumptions(model: ReportModel) -> list[str]:
 
 
 def _help_lines(help_) -> list[str]:
-    lines = [f"**{heading}.** {text}" for heading, text in help_parts(help_)]
+    lines = [f"**{heading}.** {pages.plain(text)}" for heading, text in help_parts(help_)]
     return [line for pair in zip(lines, [""] * len(lines)) for line in pair]
 
 
@@ -105,11 +106,11 @@ def _render_table(table: Table, currency: str, explain: bool = False, units=None
         lines.append("| " + " | ".join(cells) + " |")
     if table.notes:
         lines.append("")
-        lines.extend(f"- {note}" for note in table.notes)
+        lines.extend(f"- {pages.plain(note)}" for note in table.notes)
     if explain and any(column.help for column in table.columns):
         lines.append("")
         lines.append("Columns:")
-        lines.extend(f"- {column.label}: {column.help}" for column in table.columns if column.help)
+        lines.extend(f"- {column.label}: {pages.plain(column.help)}" for column in table.columns if column.help)
     return lines
 
 
@@ -122,13 +123,13 @@ def _render_sections(model: ReportModel, explain: bool = False) -> list[str]:
         lines.append("")
         if explain:
             if section.intro:
-                lines.extend([section.intro, ""])
+                lines.extend([pages.plain(section.intro), ""])
             lines.extend(_help_lines(section.help))
         for table in section.tables:
             lines.extend(_render_table(table, currency, explain, units))
             lines.append("")
         if section.notes:
-            lines.extend(f"- {note}" for note in section.notes)
+            lines.extend(f"- {pages.plain(note)}" for note in section.notes)
             lines.append("")
     return lines
 
@@ -141,7 +142,7 @@ def _render_fix(fix: dict) -> list[str]:
     if fix.get("explainer"):
         subject = fix_subject(fix)
         lines += ["", f"What you're changing{subject}:", ""]
-        lines += [f"- **{heading}.** {text}" for heading, text in fix["explainer"]]
+        lines += [f"- **{heading}.** {pages.plain(text)}" for heading, text in fix["explainer"]]
     # UX-8: a purely informational workflow card (fixes.build_fixes) has
     # an explainer but no prompt -- nothing to ask Claude to do.
     if fix.get("prompt"):
@@ -171,12 +172,12 @@ def _render_recommendations(model: ReportModel) -> list[str]:
         lines.append(f"### {SEVERITY_LABELS.get(rec.severity, rec.severity)}: {rec.title}")
         lines.append("")
         if rec.why:
-            lines.append(rec.why)
+            lines.append(pages.plain(rec.why))
             lines.append("")
-        lines.append(f"What to do: {rec.action}")
+        lines.append(f"What to do: {pages.plain(rec.action)}")
         if rec.estimated_saving:
             lines.append("")
-            lines.append(f"Estimated saving: {rec.estimated_saving}")
+            lines.append(f"Estimated saving: {pages.plain(rec.estimated_saving)}")
         if rec.lever and not rec.fixes:
             lines.append("")
             lines.append(f"Setting to change: {rec.lever} ({SCOPE_LABELS.get(rec.scope, rec.scope)})")

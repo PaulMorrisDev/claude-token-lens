@@ -35,6 +35,7 @@ from typing import Callable
 from . import model_gate, whatif
 from .fixes import already_set
 from .model import Recommendation, ReportModel, SettingChange
+from .pricing import model_names_in
 from .snapshots import Snapshot, effective_config
 from .units import NO_LIMIT_SHARE_HINT, Units
 
@@ -147,6 +148,54 @@ def _percent(_saving, rec: Recommendation) -> str:
     return f"up to {pct:.0f}% less" if isinstance(pct, (int, float)) else "less"
 
 
+def _model_prose(observed: str) -> str:
+    """A model-swap ``observed_model`` cell (``claude-opus-5 (+1 more)``)
+    as prose: ``Opus 5 and 1 other model``."""
+    text = model_names_in(observed)
+    more = re.search(r" \(\+(\d+) more\)$", text)
+    if more:
+        count = int(more.group(1))
+        text = text[: more.start()] + f" and {count} other model{'s' if count != 1 else ''}"
+    return text
+
+
+#: The groups the model-tier card's "left out" note lists, in order:
+#: key and the words that introduce the group.
+_LEFT_OUT_GROUPS = (
+    ("worse", "Did worse on a cheaper model"),
+    ("retried", "Edits often redone on a larger model"),
+    ("larger", "Claude said a larger model was needed"),
+    ("hard", "Much of the work reported hard"),
+    ("retried-model", "Run again because the model wasn't enough"),
+)
+
+#: At most this many agents are named per group; the rest are counted.
+_LEFT_OUT_NAMED = 3
+
+
+def _left_out_note(left_out: list[tuple[str, str]]) -> str:
+    """The model-tier card's note on who was left out and why: one short
+    sentence, then one per reason with a few named agents each, so the
+    note stays short however many agents it covers. ``left_out`` holds
+    ``(group key, "agent (detail)")`` pairs."""
+    if not left_out:
+        return ""
+    parts = [" Some agents were left out because a cheaper model may not be enough."]
+    for key, words in _LEFT_OUT_GROUPS:
+        names = [who for group, who in left_out if group == key]
+        if not names:
+            continue
+        shown = names[:_LEFT_OUT_NAMED]
+        if len(names) > len(shown):
+            listed = ", ".join(shown) + f" and {len(names) - len(shown)} more"
+        elif len(shown) > 1:
+            listed = ", ".join(shown[:-1]) + " and " + shown[-1]
+        else:
+            listed = shown[0]
+        parts.append(f" {words}: {listed}.")
+    return "".join(parts)
+
+
 # -- consolidation -------------------------------------------------------------
 
 
@@ -159,8 +208,9 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
     # Metrics capture: agents whose runs said a larger model would suit,
     # whose work was mostly reported hard, or that were retried for the
     # model. A veto only: a "smaller would do" never adds a suggestion.
-    worse, retried, unfit = model_gate.raw(tables)
-    left_out: list[str] = []
+    worse, retried, _unfit = model_gate.raw(tables)
+    unfit = model_gate.unfit_kinds(tables)
+    left_out: list[tuple[str, str]] = []
     rows = []
     for rec in tier:
         agent = rec.agent_type or "top-level"
@@ -175,16 +225,23 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
         if already_set("model", _family_alias(alt), now):
             # Already on the cheaper model; the saving is from before the change.
             continue
+        family = _family_alias(alt)
         if agent in unfit:
-            left_out.append(f"{_who(agent)} ({unfit[agent]})")
+            kind, figure = unfit[agent]
+            detail = f"{figure:.0f}%" if kind == "hard" else f"{figure} run{'s' if figure != 1 else ''}"
+            left_out.append((kind, f"{_who(agent)} ({detail})"))
             continue
-        if (agent, _family_alias(alt)) in worse:
+        if (agent, family) in worse:
             # The quality section found this agent did worse on that model.
-            left_out.append(f"{_who(agent)} (did worse on {_family_alias(alt)})")
+            left_out.append(("worse", f"{_who(agent)} ({family.capitalize()})"))
             continue
-        if (agent, _family_alias(alt)) in retried:
+        if (agent, family) in retried:
             # Its runs on that model were often retried on a larger one.
-            left_out.append(f"{_who(agent)} ({retried[(agent, _family_alias(alt))]['reason']})")
+            row = retried[(agent, family)]
+            left_out.append(
+                ("retried", f"{_who(agent)} ({row.get('retried') or 0} of {row.get('runs') or 0} "
+                 f"{family.capitalize()} runs)")
+            )
             continue
         rows.append((rec, agent, alt, saving if isinstance(saving, (int, float)) else 0.0, observed))
     if not rows:
@@ -231,7 +288,7 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
                 # then on: labelled as such, and given the plain saving
                 # figure rather than the "At most" session ceiling used
                 # for a change that might only be tried for a session.
-                note="Persistent: affects every task this agent runs, not just one session.",
+                note="Persistent: affects every task this agent runs, not only one session.",
                 saving=ctx.money(saving),
             )
         )
@@ -243,17 +300,14 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
         category="settings",
         title="A cheaper model could do some of this work",
         why=(
-            f"{_who(top[1]).capitalize()} ran on {top[4] or 'a larger model'}, and the same work "
-            f"priced at {_family_alias(top[2])} would cost {_percent(top[3], top[0])}."
+            f"{_who(top[1]).capitalize()} ran on {_model_prose(top[4]) if top[4] else 'a larger model'}, "
+            f"and the same work priced at {_family_alias(top[2]).capitalize()} would cost "
+            f"{_percent(top[3], top[0])}."
             if len(rows) == 1
             else f"{len(rows)} of your agent types ran on a larger model than their work may need. "
             f"The biggest saving is {_who(top[1])}."
         )
-        + (
-            f" Left out: {', '.join(left_out)}."
-            if left_out
-            else ""
-        ),
+        + _left_out_note(left_out),
         action=(
             "Try the cheaper model on a few tasks and compare the results before keeping it."
             if len(rows) == 1
@@ -350,8 +404,8 @@ def _explain_compaction_window(rec: Recommendation, ctx: _Context) -> None:
         f"reply. A summary at {label} tokens resets that."
     )
     rec.action = (
-        f"Set autoCompactWindow to {label}. Claude Code then summarises the main session a little before its "
-        "context reaches that size."
+        f"Set your auto-compact window to {label} tokens. Claude Code then summarises the main session a "
+        "little before its context reaches that size."
     )
     rec.changes = [
         SettingChange(
@@ -366,8 +420,9 @@ def _explain_compaction_window(rec: Recommendation, ctx: _Context) -> None:
     rec.estimated_saving = ctx.money(saving, prefix="About ")
     rec.saving_usd = saving if isinstance(saving, (int, float)) else None
     rec.saving_basis = ctx.basis(
-        "Modelled by replaying your main sessions with summaries at this size, shaped like your past ones: "
-        "the summary itself, re-caching the reply after it, and an allowance for re-reading files. Not measured."
+        "Modelled by replaying your main sessions with summaries at this size, shaped like your past ones. "
+        "It counts the summary itself, the cache rebuild on the reply after it, and an allowance for "
+        "re-reading files. Not measured."
     )
 
 
@@ -377,7 +432,9 @@ def _explain_compaction_churn(rec: Recommendation, ctx: _Context) -> None:
     rec.why = (
         f"Main sessions were summarised {mean:.1f} times each on average. " if isinstance(mean, (int, float)) else ""
     ) + "Each summary rewrites the cache and can drop detail Claude then has to find again."
-    rec.action = "Raise autoCompactWindow so summaries happen less often, or start a fresh session between tasks."
+    rec.action = (
+        "Raise your auto-compact window so summaries happen less often, or start a fresh session between tasks."
+    )
     rec.changes = [
         SettingChange(
             target="settings",
@@ -408,7 +465,7 @@ def _explain_long_context_share(rec: Recommendation, ctx: _Context) -> None:
         rec.changes = []
         return
     rec.action = (
-        "Summarise the main session sooner (a smaller autoCompactWindow), and send exploration to subagents."
+        "Summarise the main session sooner (a smaller auto-compact window), and send exploration to subagents."
     )
     rec.changes = [
         SettingChange(
@@ -560,7 +617,7 @@ def _explain_limit_pressure(rec: Recommendation, ctx: _Context) -> None:
         parts.append(f"{killed:,.0f} subagents were cut off by it")
     rec.why = (" and ".join(parts) + ".") if parts else "Sessions keep stopping at a usage limit."
     rec.action = (
-        "Run fewer agents at once when a limit is close, and check the Usage limits tab for when yours resets."
+        "Run fewer agents at once when a limit is close, and check {{page:spend/usage}} for when yours resets."
     )
 
 
@@ -578,7 +635,7 @@ def _explain_cache_read_dominance(rec: Recommendation, ctx: _Context) -> None:
 def _explain_data_quality(rec: Recommendation, ctx: _Context) -> None:
     rec.title = "A few numbers may be slightly off"
     rec.why = rec.action.split(":", 1)[-1].strip() if ":" in rec.action else rec.action
-    rec.action = "See the Data quality tab for what could not be read."
+    rec.action = "See {{page:data}} for what could not be read."
 
 
 def _explain_pricing_coverage(rec: Recommendation, ctx: _Context) -> None:
@@ -603,14 +660,14 @@ def _explain_pricing_coverage(rec: Recommendation, ctx: _Context) -> None:
         rec.title = "Some usage has no price, some is only an estimate"
         rec.why = (
             "Replies from models missing from pricing.toml are left out of every cost, so "
-            "totals are too low; others were priced at a different model's rate, so their "
+            "totals are too low. Others were priced at a different model's rate, so their "
             "cost may be off."
         )
     elif has_closest_match:
         rec.title = "Some usage is priced by closest match, not its own rate"
         rec.why = (
-            "These replies' model has no pricing.toml row of its own, so their cost is "
-            "estimated from the closest registered model's rate instead, and may be off."
+            "These replies' model has no row of its own in pricing.toml. Their cost is "
+            "estimated from the closest registered model's rate instead, so it may be off."
         )
     else:
         rec.title = "Some usage has no price"
@@ -624,8 +681,8 @@ def _explain_discovery_share(rec: Recommendation, ctx: _Context) -> None:
         f"Searching and reading the code took {share:.0f}% of the cost." if isinstance(share, (int, float)) else ""
     )
     rec.action = (
-        "Write down what gets rediscovered each time (where things live, how to run things) in CLAUDE.md or a "
-        "short reference file, so sessions start from it."
+        "Write down what gets rediscovered each time, such as where things live and how to run things. Put it "
+        "in CLAUDE.md or a short reference file, so sessions start from it."
     )
 
 

@@ -44,7 +44,7 @@ and [docs/deploy.md](docs/deploy.md).
   `.claude/commands/`, skills, `.mcp.json`, output styles, auto-memory,
   and installed plugins.
 
-- **On request only**, when you open the Context files tab or run
+- **On request only**, when you open Agents & context › Context or run
   `claude-token-lens review claude-md|skills` or `check claude-md|skills`:
   the text of your CLAUDE.md-family files (user, project, local, rule
   files, nested CLAUDE.md files, auto memory `MEMORY.md` and one level of
@@ -57,7 +57,7 @@ and [docs/deploy.md](docs/deploy.md).
 
 - `settings.json` in the folder above `<config-dir>` (normally
   `~/.claude/settings.json`), read directly by `init`, `changes`,
-  `uninstall` and the dashboard's Data quality tab, to see whether the
+  `uninstall` and the dashboard's Data quality page, to see whether the
   SessionStart hook and statusline are set up. Only the hook command and
   whether `statusLine` runs this tool are used; nothing from it is
   stored.
@@ -416,10 +416,12 @@ Outside `src/claude_token_lens/service/` and `update`'s `pip`
 subprocess above, no module imports `socket`, `urllib`, `http.client`,
 `requests` or equivalent — `cli.py`'s two `urllib.request.urlopen`
 calls (`_http_health_ok`, `_http_health_version`) are the only ones,
-both loopback-only as just described. The package has zero third-party
-dependencies (`pyproject.toml`'s `dependencies = []`); `rich` is an
-optional, opt-in extra for nicer terminal output, not a networking
-dependency. Pricing comes from a user-edited local `pricing.toml`,
+both loopback-only as just described. The package has zero runtime
+Python dependencies (`pyproject.toml`'s `dependencies = []`). The
+dashboard vendors d3 and two fonts, pinned by sha256 in
+`service/static/THIRD_PARTY.sha256`, and makes no remote requests.
+`rich` is an optional, opt-in extra for nicer terminal output, not a
+networking dependency. Pricing comes from a user-edited local `pricing.toml`,
 never a live lookup — there is no code path that could fetch it.
 
 For the CLI's analytics/report subcommands this is a structural
@@ -485,7 +487,11 @@ it through your browser:
 - **Response headers.** Every response carries
   `Content-Security-Policy: default-src 'self'` (scripts only from the
   service itself), `X-Content-Type-Options: nosniff` and
-  `Cache-Control: no-store`.
+  `Cache-Control: no-store`. The vendored d3 and fonts under
+  `/static/vendor/` and `/static/fonts/` are the one exception to
+  `no-store`. They are pinned by sha256 and carry no data about you.
+  Each name carries its release, so new bytes always arrive under a new
+  URL, and they are sent as `public, max-age=31536000, immutable`.
 - **Static files.** `/static/*` serves only files inside the packaged
   UI folder; a path that escapes it gets `404`.
 - **No request log.** Request paths are never written to stdout or a
@@ -514,9 +520,9 @@ writes refuse to overwrite an existing profile unless asked to with
 profile. `POST /api/whatif` only works out an estimate and writes
 nothing. `POST /api/predictions/seen` (EST-P5) only flips a `seen` flag,
 by its own row id, on one of this tool's own logged "what if?"
-predictions already in the store, so the Profiles tab's "Did your
-estimates come true?" table can tell a prediction you've looked at from
-one still waiting on you — it names no session, setting or transcript
+predictions already in the store, so the "Did your estimates come
+true?" table on Setup › Settings can tell a prediction you've looked at
+from one still waiting on you — it names no session, setting or transcript
 content.
 
 The service's on-disk SQLite store (`<config-dir>/service.db`) is

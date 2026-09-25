@@ -265,13 +265,11 @@ class WasteThresholds:
 
     def describe(self) -> list[str]:
         return [
-            f"share_pct = {self.share_pct:.1f}%: wasted-turns fires when "
-            "wasted cost exceeds this share of the corpus's total priced "
-            "cost.",
-            f"min_sessions = {self.min_sessions}, min_turns = "
-            f"{self.min_turns}: the corpus must clear one of these before "
-            "wasted-turns fires (same minimum-sample gate "
-            "recommend.py's own rules use).",
+            f"The wasted-replies advice fires when wasted cost is more than "
+            f"{self.share_pct:.1f}% of all cost.",
+            f"It needs at least {self.min_sessions} sessions or "
+            f"{self.min_turns} replies first, the same minimum the other "
+            "advice uses.",
         ]
 
 
@@ -320,8 +318,6 @@ class WasteStats:
         #: reported failure -- work, not waste (see the module docstring).
         self.failed_command_turns = 0
         self.pricing_version: str | None = None
-        self.pricing_currency: str | None = None
-        self.pricing_sha8: str | None = None
         self._by_cause: dict[str, _CauseAcc] = {cause: _CauseAcc() for cause in CAUSES}
         self._by_agent_type: dict[str, _AgentTypeAcc] = {}
         self._by_session: dict[str, _SessionAcc] = {}
@@ -331,8 +327,6 @@ class WasteStats:
         accumulator."""
         if self.pricing_version is None:
             self.pricing_version = rates.version
-            self.pricing_currency = rates.currency
-            self.pricing_sha8 = rates.sha8
 
         agent_type = agent_type_label(result)
         session_id = result.meta.session_id
@@ -452,18 +446,16 @@ def build_section(stats: WasteStats, thresholds: WasteThresholds | None = None) 
 
     notes = [f"Thresholds: {' '.join(th.describe())}"]
     if stats.pricing_version:
-        notes.append(
-            f"Priced against {stats.pricing_version} ({stats.pricing_currency}, sha8={stats.pricing_sha8})."
-        )
+        notes.append(f"Costs use prices from pricing.toml, version {stats.pricing_version}.")
     notes.append(
-        f"{stats.limit_pause_excluded_turns} turn(s) following a usage-cap pause "
-        "(Turn.gap_cause == \"limit\") were excluded from this section entirely -- "
-        "see the limits section for their own pause/cost accounting."
+        f"{stats.limit_pause_excluded_turns} turn(s) right after a usage-limit pause "
+        "are left out of this section entirely: the usage limits section counts "
+        "their pauses and cost."
     )
     notes.append(
-        f"{stats.failed_command_turns} turn(s) whose only failed tool calls were commands that "
-        "ran and reported failure (a failing test or build, a timeout) are not counted as wasted: "
-        "Claude used that output."
+        f"{stats.failed_command_turns} turn(s) had failed tool calls that were all commands that "
+        "ran and reported a failure, such as a failing test, build or timeout. Claude used that "
+        "output, so they are not counted as wasted."
     )
 
     return Section(key="waste", title="Wasted-turn spend", tables=tables, notes=notes)
@@ -505,13 +497,13 @@ def _summary_table(stats: WasteStats) -> Table:
             ]
         ],
         notes=[
-            "wasted_cost_usd is the recoverable spend ceiling: the full "
-            "priced cost (input, cache write, cache read, output) of every "
-            "turn whose output the user never benefited from -- see "
-            "waste_by_cause for the per-cause breakdown and lever.",
-            "api_error_retry_turns is a frequency count only -- it is not "
-            "priced and is not included in wasted_cost_usd (the harness "
-            "already retried these automatically).",
+            "Wasted cost is the most you could get back: the full cost "
+            "(input, cache write, cache read, output) of every reply whose "
+            "output you never used. The by-cause table splits it by cause, "
+            "with what to change.",
+            "\"After an API error\" is a count only: it is not priced and "
+            "not part of the wasted cost (Claude Code already retried these "
+            "for you).",
         ],
     )
 
@@ -556,14 +548,12 @@ def _by_cause_table(stats: WasteStats) -> Table:
         ],
         rows=rows,
         notes=[
-            "share_of_turns_pct/share_of_cost_pct are both against the "
-            "whole corpus's priced turns/cost, not just the wasted subset "
-            "(see the module docstring) -- so they sum, across the four "
-            "costed causes, to waste_summary's own wasted_turns_share_pct/"
-            "wasted_cost_share_pct.",
-            f"{API_ERROR_RETRY_CAUSE} is shown for its frequency only -- "
-            "its cost/tokens are always 0 and it is never part of the "
-            "recoverable ceiling.",
+            "Both shares are of all replies and all cost, not only the "
+            "wasted ones. So across the costed causes, they add up to the "
+            "summary's share of replies and share of cost.",
+            "\"API error, retried automatically\" is shown for how often "
+            "it happens only: its cost and tokens are always 0, and it is "
+            "never part of the wasted cost.",
         ],
     )
 
@@ -595,8 +585,8 @@ def _by_agent_type_table(stats: WasteStats) -> Table:
         ],
         rows=rows,
         notes=[
-            "agent_type is the transcript's TranscriptMeta.agent_type, or "
-            "'top-level' for the main conversation.",
+            "Each subagent type as Claude Code recorded it, plus one row "
+            "for the main session.",
         ],
     )
 
@@ -628,12 +618,10 @@ def _top_sessions_table(stats: WasteStats) -> Table:
         ],
         rows=rows,
         notes=[
-            "session_hash is a salted HMAC-SHA256 of the session id "
-            "(12 hex chars, own \"session:\" domain tag) -- never the raw "
-            "session id, matching every other per-session table in this "
-            "codebase's privacy convention.",
-            "cause_mix lists this session's own wasted-turn causes as "
-            "cause:count pairs, most frequent first.",
+            "Session is a salted hash of the session id (12 characters), "
+            "never the id itself, like every other per-session table.",
+            "Causes lists this session's own causes of wasted replies with "
+            "how many of each, most frequent first.",
         ],
     )
 

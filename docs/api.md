@@ -47,15 +47,23 @@ static-file response, not just a successful `{"ok": true, ...}` one):
 
 - `Cache-Control: no-store` — nothing served here (including a session's
   cost/usage figures) should ever be cached by an intermediary or the
-  browser's own disk cache.
+  browser's own disk cache. The one exception is a file under
+  `/static/vendor/` or `/static/fonts/` (the vendored d3 and fonts):
+  those are pinned by sha256 in `static/THIRD_PARTY.sha256`, and each
+  name carries its release (`d3-7.9.0.min.js`). New bytes therefore
+  always arrive under a new URL, so they are sent with
+  `Cache-Control: public, max-age=31536000, immutable` instead. Every
+  other static file, the first-party modules included, stays
+  `no-store`.
 - `X-Content-Type-Options: nosniff` — stops a browser from
   MIME-sniffing a JSON or static-asset response into something else.
 - `Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'`
-  — matches the UI's own "no CDN, no external reference" constraint
+  — matches the UI's own "No external reference" constraint
   (`docs/ui.md`): nothing may load from another origin, inline `<img>`
   data URIs are allowed (the inline-SVG charts), and inline `<style>`
   is allowed (the UI's static `app.css` plus small inline style
-  attributes) but inline `<script>` is not.
+  attributes) but inline `<script>` is not. Fonts fall back to
+  `default-src 'self'`, so only the vendored ones load.
 
 Every request method is routed through this same path: `GET`/`HEAD`
 succeed or fail through the normal envelope, and `PUT`/`DELETE`/
@@ -177,9 +185,10 @@ A request carrying neither `Origin` nor `Sec-Fetch-Site` (e.g. a
 same-machine CLI tool such as `curl`) is allowed — this API has no
 authentication of its own (see "Local only" above), so that posture is
 unchanged; the guard targets a *browser* silently issuing the request on
-a victim's behalf, not a deliberate local caller. `service/static/app.js`
-sends `Content-Type: application/json` on every one of its own `POST`
-calls, so the UI itself is unaffected. A `POST` whose `Host` is not on
+a victim's behalf, not a deliberate local caller. The dashboard sends
+`Content-Type: application/json` on every one of its own `POST` calls
+(through `fetchJson` in `service/static/api.js`, directly or via
+`postJson`), so the UI itself is unaffected. A `POST` whose `Host` is not on
 the allowlist above is also `403 forbidden`.
 
 ## Body size limit (G5)
@@ -234,7 +243,7 @@ in parallel; only on a scan with many changed files) and `"storing"`
 (sessions folded into the store). `phase` is `null` between scans.
 
 `version` is the running code's version (`claude-token-lens
---version`), also shown in the dashboard's footer: after an update, a
+--version`), also shown on the dashboard's status line: after an update, a
 dashboard still showing the old one hasn't been restarted, or runs from
 another Python install.
 
@@ -292,12 +301,29 @@ changes. `capture` is `null` when `config.toml` can't be read.
 Corpus-wide totals — `Store.summary`.
 
 Query: `window_days` (int, optional; no default, so all time when
-omitted) or `window` (a named window, as for the report-backed routes
+omitted), `window` (a named window, as for the report-backed routes
 below; it takes precedence, and `window_days` is then `null` in the
-response).
+response), or, additively, explicit `since`/`until` (ISO 8601) — the same
+four params `/api/sessions`/`/api/compactions` accept, and, like those two
+(unlike the report-backed routes below), *no* params at all still means
+all time rather than a 30-day default. An explicit `since`/`until` is
+rounded down to the minute the same way a named window's own resolved
+`since` already is, so two requests for "the same" bound issued a few
+seconds apart — the dashboard's own current-period and previous-period
+calls, for instance — agree on exactly the same window.
 
-`data`: `{"window_days": int|null, "sessions": int, "transcripts": int, "total_cost": float, "total_tokens": int}`.
-`total_cost` is at list price, whatever the billing mode.
+`data`: `{"window_days": int|null, "sessions": int, "transcripts": int, "total_cost": float, "total_tokens": int, "cache_read_tokens": int, "cache_saved": float}`.
+`total_cost` is at list price, whatever the billing mode. Additive:
+`cache_read_tokens` is `turns_agg.cache_read_tokens` summed across every
+model over the sessions the window counts, whole (the same rule as
+`sessions` and `total_cost` below, so a bound inside a day never pulls
+in another session's reads); `cache_saved` is what those cache reads actually saved against
+sending the same tokens fresh as input instead — per model,
+`cache_read_tokens × (input_price − cache_read_price)`, summed, in USD at
+list price (a model the rate card doesn't price is left out, the same
+"priced models only" rule every other per-model pricing loop in this
+project follows). `cache_saved` is `0.0`, never an error, when the rate
+card itself can't be loaded.
 
 With a window given, a session qualifies when its last reply (from its
 main transcript or any subagent's) falls in the window — the same
@@ -338,7 +364,7 @@ if `<id>` is unknown.
 `data`: the session-summary fields above, plus `transcripts` (list of
 `{"id", "kind", "agent_id", "agent_type", "spawn_depth", "parent_agent_id"}`
 — no `path`), `tags` (`{key: value}`) and `feedback`: your rating
-from the Sessions tab (`{"outcome", "slow", "worth", "helped",
+from Spend › Sessions (`{"outcome", "slow", "worth", "helped",
 "set_at"}`, words only; `null` when unrated). While the dashboard
 rating is switched on (`[capture] feedback` holds `dashboard_rating`),
 `data` also carries `feedback_questions`: the `/tl-feedback` questions
@@ -404,19 +430,34 @@ Corpus-wide RE-CACHE breakdown — `Store.recache`.
 
 `data`: `{"by_signature": {"full-expiry": {"turns", "cache_creation_tokens"}, "prefix-invalidated": {...}, "limit-expiry": {...}}}`.
 A signature with no rebuilds is absent, not zero. Always all history:
-this route takes no window.
+this route takes no window. The dashboard doesn't fetch it: Cache ›
+Rebuilds draws the window's breakdown from `report.json`'s
+`recache_signature_split`.
 
-### Daily usage: `GET /api/daily-usage`
+### `GET /api/daily-usage`
 
 Per-day, per-model token and cost totals — `Store.daily_usage`. The
-dashboard does not call this route (so its heading is not in the
-`GET /api/...` form `tests/test_service_static.py` checks against
-`app.js`); it is here for other clients.
+dashboard's Overview draws its daily spend chart from it, with the
+window and `split=agent`.
 
-Query: `days` (int, default 30, at least 1). Days are UTC calendar days.
+Query: `days` (int, default 30, at least 1; unchanged for existing
+callers). Days are UTC calendar days. Additive: the same `window`/
+`window_days`/`since`/`until` params the report-backed routes below
+accept (see "Report-backed routes: windowing query params") take
+precedence over `days` when any of the four is given, so `?window=all`
+or an explicit `since`/`until` isn't also clamped to a trailing `days`
+window; with none of them, `days` (default 30) applies exactly as
+before. Additive: `split` — `agent` breaks each day/model row into the
+main session and every subagent (`transcripts.kind` joined in from
+`turns_agg.transcript_id`: `"top-level"` is `"main"`, `"subagent"`/
+`"workflow-agent"` are `"subagent"`), adding an `"agent"` key; `model`,
+or omitting `split`, keeps the original, unsplit shape. Any other
+`split` value is `400`.
 
-`data`: `[{"day", "model", "turns", "input_tokens", "cache_creation_tokens", "cache_read_tokens", "output_tokens", "thinking_tokens", "cc_5m", "cc_1h", "cost"}, ...]`,
-ordered by day, then model. `cost` is at list price.
+`data`: `[{"day", "model", "turns", "input_tokens", "cache_creation_tokens", "cache_read_tokens", "output_tokens", "thinking_tokens", "cc_5m", "cc_1h", "cost"}, ...]`
+(with `split=agent`, each row additionally carries `"agent"`:
+`"main"`|`"subagent"`), ordered by day, then (with `split=agent`) agent,
+then model. `cost` is at list price.
 
 ### Report-backed routes: windowing query params
 
@@ -428,7 +469,8 @@ ordered by day, then model. `cost` is at list price.
 `/api/report.md`/`.html`/`.json` (below) all accept the same windowing
 query params, mirroring the CLI `report` subcommand's own
 `--days`/`--since`/`--until` (`discovery._resolve_window`'s exact
-resolution). `/api/summary` accepts `window` and `window_days` only.
+resolution). `/api/summary` takes the same four params, but with no
+params it means all time rather than a 30-day default.
 `/api/sessions` and `/api/compactions` accept them all but, unlike the
 report routes, list everything when none is given. Every other route
 (`/api/health`, `/api/session/<id>`, `/api/recache`, `/api/baseline`,
@@ -440,7 +482,7 @@ modification time: a new billing mode or capture setting changes the
 figures) and keeps the last eight. When the store
 has changed since a window's report was built (a live session writes
 every few seconds), a request is answered from the kept report at once
-and a rebuild starts in the background (one at a time), so a tab never
+and a rebuild starts in the background (one at a time), so a page never
 waits on a whole report build just because a transcript grew. A named
 `window` keeps its report across the minute-by-minute moves of its
 start the same way. A request waits for a build only when nothing is
@@ -452,8 +494,8 @@ requests for a window already being built wait on that one build.
 Every response built from a kept report carries **`X-Figures-As-Of`**
 (ISO 8601, UTC): when that report's figures were read from the store.
 While a newer one is being built it also carries
-**`X-Figures-Refreshing: 1`**. The dashboard shows the time in its
-footer.
+**`X-Figures-Refreshing: 1`**. The dashboard shows the time on its
+status line, at the foot of the sidebar.
 
 - **`window`** (optional) — a named window, used by the dashboard's
   header picker: `1h` (the last hour), `today` (since midnight in
@@ -555,7 +597,7 @@ config section; `400` when neither is given), plus `window`/`window_days`/`since
 Mirrors the CLI's `config-diff` subcommand.
 
 `data`: with `auto_keys=1`, a list of every `config` section table (the
-dashboard's Config tab uses this); with `key`, that key's
+dashboard's Setup › Settings uses this); with `key`, that key's
 `config-diff-<key>` `Table`, or `[]` when it didn't change in the
 window.
 
@@ -576,17 +618,25 @@ window rather than a fresh corpus scan.
 Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
 routes: windowing query params" above).
 
-`data`: `[{"id", "severity", "category", "title", "action", "lever", "scope", "evidence": [[label, value, source_table, row_key], ...], "agent_type", "why", "estimated_saving", "saving_basis", "changes": [{"target", "key", "agent", "value", "suggested", "note", "unconfirmed", "current", "new_agent_file"}, ...], "fixes": [{"key", "agent", "explainer": [[heading, text], ...], "command", "command_warning", "prompt"}, ...]}, ...]` —
+`data`: `[{"id", "severity", "category", "title", "action", "lever", "scope", "evidence": [[label, value, source_table, row_key], ...], "agent_type", "why", "estimated_saving", "saving_basis", "saving_usd", "changes": [{"target", "key", "agent", "value", "suggested", "note", "unconfirmed", "current", "new_agent_file"}, ...], "fixes": [{"key", "agent", "explainer": [[heading, text], ...], "command", "command_warning", "prompt"}, ...], "key"}, ...]` —
 exactly `render/json_out.py`'s existing `Recommendation` encoding.
 `fixes` (from `fixes.py`) holds, per change, the six-part explainer, an
 `apply --set ... --dry-run` command (`null` when the value needs
-judgement) and a prompt for Claude.
+judgement) and a prompt for Claude. `saving_usd` is `estimated_saving`
+as a plain number (USD at list price, `null` when not estimated) —
+used to order recommendations of the same severity, and safe for a
+client to format or sort by directly. `key` (additive) is a
+deterministic, URL-safe id for this recommendation: `id` alone repeats
+across agent types (the same rule can fire once per subagent type), so
+`key` adds a slug of `agent_type` when one is set, and stays the same
+across two runs of the same corpus. A dashboard link can use it as
+`#/actions/recommendations?id=<key>`.
 
 ### `GET /api/diagnostics`
 
 The report's parse-quality counters (`ReportModel.diagnostics`) as one
-plain-English `Table` — `helptext.diagnostics_table`. Used by the Data
-quality tab.
+plain-English `Table` — `helptext.diagnostics_table`. Used by the
+dashboard's Data quality page.
 
 Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
 routes: windowing query params" above).
@@ -729,10 +779,11 @@ do".
 
 Query: the windowing params above.
 
-`data`: `{"period", "checks": [{"id", "question", "why", "status", "summary", "fix_count", "tip_count"}, ...]}`.
+`data`: `{"period", "checks": [{"id", "question", "why", "status", "summary", "rule_ids", "fix_count", "tip_count"}, ...]}`.
 `period` is the window as a phrase ("over the last 30 days", "in the
 last hour"). `status` is `act` (worth a look), `ok` (nothing to do) or
-`no_data`.
+`no_data`. `rule_ids` (additive) lists the `/api/recommendations` rule
+ids this check draws on -- `[]` for a check with no rule behind it.
 
 ### `GET /api/quick-actions/<id>`
 
@@ -740,12 +791,14 @@ One check in full. `404` for an unknown id.
 
 Query: the windowing params above.
 
-`data`: `{"id", "question", "why", "period", "status", "summary", "table": {"columns": [{"key", "label"}, ...], "rows": [[cell, ...], ...]}|null, "fixes": [Fix, ...], "tips": [{"title", "text"}, ...]}`,
+`data`: `{"id", "question", "why", "period", "rule_ids", "status", "summary", "table": {"columns": [{"key", "label"}, ...], "rows": [[cell, ...], ...]}|null, "fixes": [Fix, ...], "tips": [{"title", "text"}, ...]}`,
 where each row is a list of display values in column order, `table` is
 `null` when there is nothing to show, and a `Fix` is the `fixes.py`
 shape `/api/recommendations` uses, plus an optional `title`. Environment-variable fixes (`BASH_MAX_OUTPUT_LENGTH`,
 `MAX_MCP_OUTPUT_TOKENS`) carry a prompt and no command: this tool never
-writes the `env` block.
+writes the `env` block. `rule_ids` (additive, same list as
+`/api/quick-actions`'s own) names the recommendation rule ids this
+check relates to; `[]` when none does.
 
 ### `GET /api/claude-md`
 
@@ -808,11 +861,13 @@ Query: `goal`, `task` (for `tasks`: a kind of task from the capture
 vocabulary, `feature` ... `chat`; any other value is `400`), plus the
 windowing params above (used only with `goal`).
 
-`data` (with `goal`): `{"goal": {"id", "title", "what"}, "period", "from_current", "tasks", "task", "note", "candidates": [{"key", "agent", "label", "now", "value", "ticked", "evidence", "what", "tradeoff", "note", "estimate"}, ...], "profile": {"settings", "agents"}, "whatif"}`.
+`data` (with `goal`): `{"goal": {"id", "title", "what"}, "period", "from_current", "tasks", "task_labels", "task", "note", "candidates": [{"key", "agent", "label", "now", "value", "ticked", "evidence", "what", "tradeoff", "note", "estimate"}, ...], "profile": {"settings", "agents"}, "whatif"}`.
 For `tasks`: `tasks` lists the kinds of task in the Work habits
-section's `habits_setups` table, `task` is the one drafted (the one
-asked for when it's there, else the first with a cheaper setup) and
-`note` says what was found; other goals return `[]`, `null` and `null`.
+section's `habits_setups` table, `task_labels` maps each to its plain
+name (`"bugfix"` to `"Bug fix"`, from `capture_catalogue.TASK_LABELS`),
+`task` is the one drafted (the one asked for when it's there, else the
+first with a cheaper setup) and `note` says what was found; other goals
+return `[]`, `{}`, `null` and `null`.
 A candidate is ticked only when the data supports it; the main model is
 never pre-ticked. `tasks` also drafts a cheaper-model candidate (`key`
 `"model"`, `agent` the subagent type) for each agent type that most
@@ -856,7 +911,7 @@ the main session, for any other setting): one entry per group, with a
 one-line `verdict` and every quality signal
 ([concepts](concepts.md#7-quality-signals)). `judged` is false when
 every signal had too little data (fewer than `min_runs` runs on a
-side); the Profiles tab folds those groups into one line. `kind` is
+side); Setup › Settings folds those groups into one line. `kind` is
 `pct` for a share or `per_run` for a mean per run. `label_key` is `worse`,
 `better`, `possibly_worse`, `possibly_better`, `higher`, `lower`,
 `possibly_higher`, `possibly_lower` (the last four for neutral measures
@@ -889,13 +944,13 @@ out in the background, as with `/api/impact`).
 
 What this tool installed and changed on this machine, what each piece
 costs in tokens and how to undo it, plus what to expect
-(`footprint.py`). Used by the Data quality tab.
+(`footprint.py`). Used by the dashboard's Data quality page.
 
 `data`: `{"items": [{"key", "title", "status", "where", "what_it_does", "token_cost", "undo"}, ...], "expectations": [{"title", "text"}, ...], "uninstall_command"}`.
 
 ### `GET /api/capture`
 
-Metrics capture for the Capture tab and the banner on every tab
+Metrics capture for Setup › Capture and the banner on every page
 (`capture_view.view`): the setting, each level and metric with what it
 captures, why and what it costs on your own usage, and what capture
 has cost since it was turned on. Built from `[capture]` in
@@ -995,7 +1050,7 @@ since=...&until=...` byte-equivalent to `report --since ... --until
 `report.json`'s `meta` carries `billing_mode`/`amounts_basis` (the
 report's own headline billing-mode facts) and, alongside them,
 `meta.units`: `{mode, share_per_usd, period_label, basis}` (UX-1) --
-the same facts in the shape `Units.money`'s JS mirror (`app.js`'s
+the same facts in the shape `Units.money`'s JS mirror (`format.js`'s
 `money()`) needs to phrase an arbitrary amount client-side without a
 round trip through a table cell. `mode` is `billing_mode`;
 `share_per_usd` is the percentage points of the weekly usage limit one
@@ -1003,6 +1058,60 @@ list-price dollar is worth, or `null` without an accepted elasticity
 fit yet; `period_label` is what that share is "of" (`"weekly usage
 limit"`); `basis` repeats `amounts_basis` so a consumer of `meta.units`
 alone still has the caveat text.
+
+`meta.rates` (additive): every priced model's own rates and a few
+derived ratios, keyed by canonical model id -- the dashboard's own
+rate card, without a second round trip to read `pricing.toml` itself.
+Only models `pricing.toml` prices are keys here. Each entry carries
+`input`, `output`, `cache_write_5m`, `cache_write_1h`, `cache_read`
+(USD per million tokens, `pricing.toml`'s own field names);
+`cache_read_ratio`, `cache_write_5m_ratio`, `cache_write_1h_ratio`
+(each of those rates divided by that model's own `input` rate, or
+`null` if `input` is zero); and `input_ratio_to`, a `{model_id:
+ratio}` map of that model's `input` rate as a multiple of every other
+priced model's `input` rate.
+
+`meta.projects`: every project slug with a session in this window
+(already redacted -- see "Privacy" above), sorted by this window's cost
+descending, ties broken alphabetically (the same `(-cost, slug)` order
+`usage.by_project`'s rows already sort by). This is the list a `project`
+filter (below) accepts and the dashboard's project picker can render
+without a second request.
+
+### Filtering by project
+
+Every report-backed route (`/api/report.json`/`.md`/`.html` and every
+per-section route: `/api/ttl`, `/api/carry`, `/api/recommendations`,
+`/api/quick-actions[/<id>]`, `/api/compaction-sim`, `/api/model-swap`,
+`/api/waste`, `/api/config-diff`, `/api/diagnostics`,
+`/api/claude-md[/<id>]`, `/api/skills`, `/api/profile-goals`, `/api/whatif`),
+plus `/api/summary`, `/api/sessions`, `/api/daily-usage` and
+`/api/compactions`, additionally accept a `project=<slug>` query param
+(additive). `<slug>` is one of `meta.projects`'/`/api/sessions`'
+already-redacted slugs -- never the raw, unredacted slug a filesystem
+path could embed a username in, since the API never hands one out
+(see "Privacy" above). The route narrows to that project's sessions
+only: fewer sessions, fewer transcripts, and (for report-backed routes)
+a report built from just that subset -- the same shape as an unfiltered
+response, just scoped.
+
+An unrecognized or malformed `project` (a slug redacting to no known
+project in the current store) is a `400 bad_request`, same envelope as
+every other malformed query param above -- the message never echoes the
+given value back, only that `project` was the problem. The report cache
+(below) keys on `project` alongside the window, so two different
+`project` values for the same window never share a cache entry.
+
+The dashboard's project picker lists every project's
+`report.json` `meta.projects` for the window, then sends the picked
+slug as `project=` with every window-aware request, the Overview's
+previous-window `/api/summary?since=&until=` included. Routes that
+don't take the filter (`/api/impact`, `/api/backtest`,
+`/api/baseline`, `/api/recache`) keep covering every project,
+and the dashboard's "All time" chip beside what the first three draw reads
+"All time, all projects" while a project is picked. It checks an unknown slug once with
+`/api/sessions?limit=1&project=` and, on the `400`, falls back to every
+project.
 
 ## Mutating routes
 
@@ -1030,8 +1139,9 @@ tag set after the write).
 
 Your rating of a session: the `/tl-feedback` questions as checkboxes,
 kept in this tool's own store (the `session_feedback` table), so it
-costs no tokens. The Sessions tab shows the form while the dashboard
-rating is switched on; the route itself works either way.
+costs no tokens. The session drawer on Spend › Sessions shows the form
+while the dashboard rating is switched on; the route itself works either
+way.
 
 Body: `{"outcome": word|null, "slow": [word], "worth": word|null,
 "helped": [word]}`, any key left out counting as nothing ticked. The
@@ -1111,7 +1221,7 @@ file (never a catalogue one).
 ### `POST /api/profiles/from-current`
 
 Saves your current settings as a user profile ("Save my current
-settings as a profile" on the Profiles tab). It reads the latest config
+settings as a profile" on Setup › Profiles). It reads the latest config
 snapshot's `effective` settings and `effective_agents`, keeps only the
 keys a profile may set (each checked on its own with
 `profiles.schema.validate`, so one out-of-range value drops only
@@ -1260,7 +1370,7 @@ exists only for callers (tests, `baseline.py`, `team.py`) that never
 had a `config_dir` of their own to give it.
 
 **Memoization key: `Store.change_token()`.** Rebuilding a full report on
-every request would make every tab switch in the UI (`docs/ui.md`)
+every request would make every page switch in the UI (`docs/ui.md`)
 re-parse the whole corpus. The implementation caches the assembled
 `ReportModel` in-process, keyed by `(window_days, since, until,
 change_token)` (a named `window` is first turned into its `since`,
@@ -1280,6 +1390,38 @@ document's own "the raw rendered document" language for `.md`/`.html`.
 A request error on one of these three routes (a bad `window_days`,
 `since` or `until`, or an unexpected exception) still falls back to the
 normal JSON error envelope; only the success path is raw.
+
+**`{{page:<page>}}`/`{{page:<page>/<segment>}}` tokens (`pages.py`) survive
+into every JSON response**, `/api/report.json` included: help text, table
+notes, recommendation `action`/`estimated_saving` and similar fields can
+carry one, and the dashboard's own `links.js` turns it into a link. They
+never appear in a recommendation's `why`/`title` or in `fixes[].prompt`/
+`fixes[].command` (those feed a prompt or a standalone command, never
+dashboard markup). `render_json`/`to_jsonable` never call `pages.plain()`.
+`render_markdown`/`render_html` do, on every field that can carry a
+token, so `/api/report.md` and `/api/report.html` -- unwrapped native
+output from the very same renderers `report --format md`/`--format
+html` calls -- show the plain label ("Spend › Usage"), not the token;
+this keeps the byte-equivalence above, since both callers still run the
+identical renderer. `report --json`/`/api/report.json` are the one pair
+that stay byte-equivalent *with* the token still in place, for the same
+reason: both call the same `render_json`.
+
+**Tables carry display-only fields.** Every `Table` in a report-backed
+response (`/api/report.json`, each section route, `/api/config-diff`,
+`/api/diagnostics`) carries, beside `name`, `title`, `columns`, `rows`
+and `notes`, the fields `helptext.annotate` fills in for the dashboard:
+`help` (`{shows, read, act}`), `value_labels` (raw cell value -> display
+label), `row_groups` and `row_kinds` (for a long "metric / value"
+table), `dashboard` (`keep`, `advanced` or `report`) and, additive,
+`lead_columns`. `lead_columns` lists column keys in the order the
+dashboard shows them first: on a wide table at most 7, the row key
+first, with the rest behind the grid's column chooser; on a one-row
+summary table (such as `waste_summary`) at most 4 headline values, shown
+as tiles. An empty list means the grid's own default, the first 7
+columns. None of these fields changes `rows`: recommendation evidence
+and the CSV export keep the raw values, and the Markdown and HTML
+renderers ignore `lead_columns`.
 
 **`GET /api/session/<id>` returns a superset of the listed fields.**
 `Store.session()`'s dict includes `mode_source`/`purpose_source`
@@ -1316,8 +1458,9 @@ to avoid, for one purely cosmetic field. Left as-is rather than
 special-cased.
 
 **Static file serving.** `/` and `/static/*` serve
-`service/static/index.html`/assets (the UI package's build output,
-per `docs/ui.md`) when present, guarded against path traversal
+`service/static/index.html`/assets (the dashboard's own files, served
+as they are with no build step, per `docs/ui.md`) when present, guarded
+against path traversal
 (`Path.resolve()` plus a parent-containment check — a `..` segment or
 an escaping resolved path is `404`, not an error). When
 `service/static/index.html` is missing or unreadable, `/` falls back to

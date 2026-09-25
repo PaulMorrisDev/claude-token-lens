@@ -974,8 +974,9 @@ class Table:
     formatted — ``render.tables.format_cell`` does that per-column at
     render time).
 
-    Readability additions (all defaulted): ``help``, ``value_labels`` and
-    ``dashboard``. ``value_labels`` maps a raw string cell value (a row
+    Readability additions (all defaulted): ``help``, ``value_labels``,
+    ``row_groups``, ``row_kinds``, ``lead_columns`` and ``dashboard``.
+    ``value_labels`` maps a raw string cell value (a row
     key such as ``"full-expiry"``) to its display label; it is display
     only -- ``rows`` keep their raw values, which ``recommend.py``'s
     evidence lookups and ``tests/test_recommend_contract.py`` rely on.
@@ -996,6 +997,12 @@ class Table:
     #: that row's "str"-kind cells with (a "metric / value" table whose one
     #: value column holds counts, tokens, money and percentages).
     row_kinds: dict[str, str] = field(default_factory=dict)
+    #: Display only: column keys, in the order the dashboard shows them
+    #: first. A wide table lists at most 7 (the row key first; the rest
+    #: stay behind the grid's column chooser); a one-row summary table
+    #: lists at most 4 headline values, shown as tiles. Empty means the
+    #: grid's own default. The CLI's Markdown and HTML renderers ignore it.
+    lead_columns: list[str] = field(default_factory=list)
     #: One of :data:`DASHBOARD_PLACEMENTS`.
     dashboard: str = "keep"
 
@@ -1103,6 +1110,14 @@ class Recommendation:
     #: dicts with ``explainer`` (list of (heading, text)), ``command`` and
     #: ``prompt``.
     fixes: list = field(default_factory=list)
+    #: Additive: a deterministic, URL-safe (``[a-z0-9._:-]``) identity for
+    #: this recommendation -- ``id`` alone repeats across agent types (the
+    #: same rule fires once per subagent type), so ``recommend.recommend``
+    #: fills this in as its very last step from ``id`` plus a slug of
+    #: ``agent_type`` when one is set. Stable across two runs of the same
+    #: corpus; a dashboard link uses it as
+    #: ``#/actions/recommendations?id=<key>``.
+    key: str = ""
 
 
 @dataclass(slots=True)
@@ -1140,7 +1155,7 @@ class ReportMeta:
     amounts_basis: str = ""
     #: UX-1: ``{mode, share_per_usd, period_label, basis}`` -- the same
     #: billing-mode facts as ``billing_mode``/``amounts_basis`` above, in
-    #: the shape ``units.Units.money``'s JS mirror (app.js's own
+    #: the shape ``units.Units.money``'s JS mirror (format.js's
     #: ``money()``) needs to phrase an arbitrary amount client-side
     #: without a round trip through a table cell: ``mode`` is
     #: ``billing_mode``; ``share_per_usd`` is the percentage points of
@@ -1154,6 +1169,10 @@ class ReportMeta:
     #: TTL/RE-CACHE/etc. assumption text, rendered as the report's
     #: "## Assumptions" block. See the module docstring's deviation note.
     assumptions: list[str] = field(default_factory=list)
+    #: Additive: every priced model's own rates and derived ratios
+    #: (``pricing.Pricing.rates_meta``) -- the dashboard's own rate card,
+    #: keyed by canonical model id, only models ``pricing.toml`` prices.
+    rates: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)

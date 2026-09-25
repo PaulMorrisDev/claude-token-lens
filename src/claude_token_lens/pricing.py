@@ -322,6 +322,46 @@ class Pricing:
             rows=rows,
         )
 
+    def rates_meta(self) -> dict:
+        """Every priced model's own rates plus derived ratios, for
+        ``report.json``'s additive ``meta.rates`` -- the dashboard's own
+        rate card, without a second round trip to read ``pricing.toml``
+        itself. Keyed by canonical model id; only models this rate card
+        prices (an observed-but-unregistered model, per
+        :meth:`resolve_model`'s "unknown model" case, is never a key
+        here).
+
+        Each entry carries the five per-million-token rates
+        ``pricing.toml`` itself names (``input``, ``output``,
+        ``cache_write_5m``, ``cache_write_1h``, ``cache_read``), three
+        ratios against that model's own ``input`` rate
+        (``cache_read_ratio``, ``cache_write_5m_ratio``,
+        ``cache_write_1h_ratio`` -- ``None`` for the pathological case of
+        a model priced at zero input), and ``input_ratio_to``: this
+        model's ``input`` rate as a ratio of every other priced model's
+        (cheap at the model counts a rate card actually has, so always
+        included rather than gated behind a size check).
+        """
+        out: dict[str, dict] = {}
+        for model_id, rates in self.models.items():
+            entry = {
+                "input": rates.input,
+                "output": rates.output,
+                "cache_write_5m": rates.cache_write_5m,
+                "cache_write_1h": rates.cache_write_1h,
+                "cache_read": rates.cache_read,
+                "cache_read_ratio": (rates.cache_read / rates.input) if rates.input else None,
+                "cache_write_5m_ratio": (rates.cache_write_5m / rates.input) if rates.input else None,
+                "cache_write_1h_ratio": (rates.cache_write_1h / rates.input) if rates.input else None,
+                "input_ratio_to": {
+                    other_id: rates.input / other_rates.input
+                    for other_id, other_rates in self.models.items()
+                    if other_id != model_id and other_rates.input
+                },
+            }
+            out[model_id] = entry
+        return out
+
 
 #: Characters allowed to immediately follow a matched registered-id
 #: prefix for the match to count (see ``_prefix_boundary_match``).
@@ -799,6 +839,28 @@ def effective_rates(
     return EffectiveRates(*values)
 
 
+def cache_read_savings_usd(rows: list[dict], pricing: Pricing) -> float:
+    """What cache reads saved against sending the same tokens fresh as
+    input: for each row (one per model -- e.g. ``Store.
+    cache_read_tokens_by_model``'s own ``{"model", "cache_read_tokens"}``
+    shape), ``cache_read_tokens * (input - cache_read)`` per token,
+    summed, in USD at list price -- ``/api/summary``'s additive
+    ``cache_saved`` figure. A model this rate card doesn't resolve is
+    left out entirely, the same "priced models only" rule every other
+    per-model pricing loop in this project follows (see
+    :func:`price_turn`'s own unresolved-model handling and
+    ``explain.cost_split``)."""
+    total = 0.0
+    for row in rows:
+        resolved = pricing.resolve_model(row.get("model"))
+        if resolved is None:
+            continue
+        rates = resolved.rates
+        cache_read_tokens = row.get("cache_read_tokens") or 0
+        total += cache_read_tokens * (rates.input - rates.cache_read) / 1_000_000
+    return total
+
+
 @dataclass(slots=True)
 class PricingCoverage:
     """Accumulates how much of a corpus was actually priced, for the
@@ -1032,6 +1094,40 @@ class PricingCoverage:
         )
 
 
+#: A raw Claude model id inside prose, e.g. ``claude-haiku-4-5-20251001``
+#: or ``claude-3-5-haiku-20241022``, with an optional ``[1m]`` suffix.
+_MODEL_ID_RE = re.compile(r"\bclaude-(?:\d+-)*(?:opus|sonnet|haiku|fable)(?:-\d+)*(?:\[[0-9a-z]+\])?")
+
+
+def model_name(model_id: str) -> str:
+    """A model id as people say it: ``claude-opus-5-5`` -> ``Opus 5.5``,
+    ``claude-haiku-4-5-20251001`` -> ``Haiku 4.5``, ``claude-3-5-haiku-20241022``
+    -> ``Haiku 3.5``. A ``[1m]`` suffix is kept (``Opus 5 [1m]``); an id of
+    another shape comes back as it is. The Python twin of the dashboard's
+    ``format.js`` ``modelName``, for prose only: table cells and JSON keep
+    the raw id."""
+    text = str(model_id or "")
+    suffix = ""
+    bracket = re.search(r"\[[^\]]*\]$", text)
+    if bracket:
+        suffix = " " + bracket.group(0)
+        text = text[: bracket.start()]
+    core = re.sub(r"-\d{8}$", "", re.sub(r"^claude-", "", text))
+    family = re.search(r"[a-z]+", core)
+    if not family or not text.startswith("claude-"):
+        return str(model_id or "")
+    numbers = re.findall(r"\d+", core)
+    name = family.group(0).capitalize() + (" " + ".".join(numbers) if numbers else "")
+    return name + suffix
+
+
+def model_names_in(text: str) -> str:
+    """``text`` with every raw Claude model id in it read as a model name
+    (:func:`model_name`), for a sentence built from a table cell such as
+    ``claude-sonnet-5 (+2 more)``."""
+    return _MODEL_ID_RE.sub(lambda m: model_name(m.group(0)), str(text))
+
+
 __all__ = [
     "PricingError",
     "LongContextRule",
@@ -1044,5 +1140,7 @@ __all__ = [
     "load_pricing",
     "price_turn",
     "effective_rates",
+    "model_name",
+    "model_names_in",
     "TOKEN_LENS_DIRNAME",
 ]

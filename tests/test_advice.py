@@ -78,7 +78,7 @@ def test_model_tier_cards_merge_into_one_with_a_change_per_agent_type():
     # settings change, which --launch can scope to one session), so it's
     # labelled persistent and given the plain saving figure -- no "At
     # most" session-ceiling framing, unlike the top-level change.
-    assert reviewer.note == "Persistent: affects every task this agent runs, not just one session."
+    assert reviewer.note == "Persistent: affects every task this agent runs, not only one session."
     assert reviewer.saving and not reviewer.saving.startswith("At most")
     assert main.note == "This changes the model for your main session in every project."
     assert main.saving.startswith("At most")
@@ -137,7 +137,8 @@ def test_model_tier_leaves_out_an_agent_that_did_worse_on_the_cheaper_model():
     recs = [_tier("reviewer"), _tier("implementer")]
     (tier,) = [r for r in advice.finish(recs, report, snap, Units()) if r.id == "model-tier"]
     assert [c.agent for c in tier.changes] == ["implementer"]
-    assert "Left out: reviewer (did worse on haiku)." in tier.why
+    assert "Some agents were left out because a cheaper model may not be enough." in tier.why
+    assert "Did worse on a cheaper model: reviewer (Haiku)." in tier.why
 
 
 def test_model_tier_is_dropped_when_every_agent_is_already_moved():
@@ -362,7 +363,28 @@ def test_model_tier_leaves_out_an_agent_whose_runs_said_they_needed_a_larger_mod
     (tier,) = [r for r in advice.finish([_tier("reviewer"), _tier("implementer")], report, snap, Units())
                if r.id == "model-tier"]
     assert [c.agent for c in tier.changes] == ["implementer"]
-    assert "Left out: reviewer (Claude said 3 of its runs needed a larger model)." in tier.why
+    assert "Claude said a larger model was needed: reviewer (3 runs)." in tier.why
+
+
+def test_model_tier_left_out_note_groups_agents_by_reason_and_names_only_a_few():
+    """However many agents are left out, the note stays a few short
+    sentences: one per reason, naming at most three agents each."""
+    note = advice._left_out_note(
+        [("hard", f"agent-{i} (90%)") for i in range(5)] + [("retried", "implementer (4 of 31 Haiku runs)")]
+    )
+    assert note == (
+        " Some agents were left out because a cheaper model may not be enough."
+        " Edits often redone on a larger model: implementer (4 of 31 Haiku runs)."
+        " Much of the work reported hard: agent-0 (90%), agent-1 (90%), agent-2 (90%) and 2 more."
+    )
+    assert all(len(sentence.split()) <= 25 for sentence in note.split(". "))
+    assert advice._left_out_note([]) == ""
+
+
+def test_model_tier_why_names_models_as_people_say_them():
+    assert advice._model_prose("claude-opus-5 (+1 more)") == "Opus 5 and 1 other model"
+    assert advice._model_prose("claude-haiku-4-5-20251001 (+2 more)") == "Haiku 4.5 and 2 other models"
+    assert advice._model_prose("claude-sonnet-5") == "Sonnet 5"
 
 
 def test_effort_mismatch_from_reported_work_is_explained_as_measured():

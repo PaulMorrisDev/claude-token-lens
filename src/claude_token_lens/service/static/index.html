@@ -4,61 +4,51 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>claude-token-lens</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/static/fonts/InterVariable-4.1.woff2" as="font" type="font/woff2" crossorigin>
+<script src="/static/theme-boot.js"></script>
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<div class="app-shell">
-  <header class="app-header">
-    <h1>claude-token-lens</h1>
-    <p class="app-subtitle">Where your Claude Code tokens go, and what to change. Everything stays on this machine.</p>
-    <div class="window-picker" id="window-picker"></div>
-  </header>
-
-  <div class="health-banner" id="health-banner" role="status" aria-live="polite" hidden></div>
-  <div class="capture-banner" id="capture-banner" role="status" aria-live="polite" hidden></div>
-
-  <nav class="tabs" role="tablist" aria-label="Report sections" id="tabs">
-    <button type="button" class="tab" role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true" tabindex="0" data-tab="overview">Overview</button>
-    <button type="button" class="tab" role="tab" id="tab-quick" aria-controls="panel-quick" aria-selected="false" tabindex="-1" data-tab="quick">Quick actions</button>
-    <button type="button" class="tab" role="tab" id="tab-sessions" aria-controls="panel-sessions" aria-selected="false" tabindex="-1" data-tab="sessions">Sessions</button>
-    <button type="button" class="tab" role="tab" id="tab-cache" aria-controls="panel-cache" aria-selected="false" tabindex="-1" data-tab="cache">Cache</button>
-    <button type="button" class="tab" role="tab" id="tab-ttl" aria-controls="panel-ttl" aria-selected="false" tabindex="-1" data-tab="ttl">Cache lifetime (TTL)</button>
-    <button type="button" class="tab" role="tab" id="tab-savings" aria-controls="panel-savings" aria-selected="false" tabindex="-1" data-tab="savings">Savings</button>
-    <button type="button" class="tab" role="tab" id="tab-agents" aria-controls="panel-agents" aria-selected="false" tabindex="-1" data-tab="agents">Agents</button>
-    <button type="button" class="tab" role="tab" id="tab-context" aria-controls="panel-context" aria-selected="false" tabindex="-1" data-tab="context">Context files</button>
-    <button type="button" class="tab" role="tab" id="tab-config" aria-controls="panel-config" aria-selected="false" tabindex="-1" data-tab="config">Config</button>
-    <button type="button" class="tab" role="tab" id="tab-profiles" aria-controls="panel-profiles" aria-selected="false" tabindex="-1" data-tab="profiles">Profiles</button>
-    <button type="button" class="tab" role="tab" id="tab-recommendations" aria-controls="panel-recommendations" aria-selected="false" tabindex="-1" data-tab="recommendations">Recommendations</button>
-    <button type="button" class="tab" role="tab" id="tab-usage" aria-controls="panel-usage" aria-selected="false" tabindex="-1" data-tab="usage">Usage</button>
-    <button type="button" class="tab" role="tab" id="tab-habits" aria-controls="panel-habits" aria-selected="false" tabindex="-1" data-tab="habits">Work habits</button>
-    <button type="button" class="tab" role="tab" id="tab-capture" aria-controls="panel-capture" aria-selected="false" tabindex="-1" data-tab="capture">Capture</button>
-    <button type="button" class="tab" role="tab" id="tab-diagnostics" aria-controls="panel-diagnostics" aria-selected="false" tabindex="-1" data-tab="diagnostics">Data quality</button>
-    <button type="button" class="tab" role="tab" id="tab-glossary" aria-controls="panel-glossary" aria-selected="false" tabindex="-1" data-tab="glossary">Glossary</button>
+<button type="button" class="skip-link" id="skip-link">Skip to the page</button>
+<div class="app" id="app" data-sidebar="full">
+  <nav class="sidebar" id="sidebar" aria-label="Pages">
+    <div class="sidebar-head">
+      <a class="brand" href="#/overview" id="brand">
+        <img class="brand-mark" src="/static/favicon.svg" alt="" width="20" height="20">
+        <span class="brand-name">Token Lens</span>
+      </a>
+      <button type="button" class="icon-button" id="sidebar-toggle" aria-controls="sidebar" aria-expanded="true"></button>
+    </div>
+    <ul class="nav-list" id="nav-main"></ul>
+    <div class="sidebar-foot">
+      <ul class="nav-list" id="nav-foot"></ul>
+      <div class="status-line" id="status-line" role="group" aria-label="Service status"></div>
+    </div>
   </nav>
 
-  <main class="tabpanels" id="tabpanels">
-    <section class="panel" role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" tabindex="0"></section>
-    <section class="panel" role="tabpanel" id="panel-quick" aria-labelledby="tab-quick" tabindex="0" hidden></section>
-    <section class="panel" role="tabpanel" id="panel-sessions" aria-labelledby="tab-sessions" tabindex="0" hidden></section>
-    <section class="panel" role="tabpanel" id="panel-cache" aria-labelledby="tab-cache" tabindex="0" hidden></section>
-    <section class="panel" role="tabpanel" id="panel-ttl" aria-labelledby="tab-ttl" tabindex="0" hidden></section>
-    <section class="panel" role="tabpanel" id="panel-savings" aria-labelledby="tab-savings" tabindex="0" hidden></section>
-    <section class="panel" role="tabpanel" id="panel-agents" aria-labelledby="tab-agents" tabindex="0" hidden></section>
-    <section class="panel" role="tabpanel" id="panel-context" aria-labelledby="tab-context" tabindex="0" hidden></section>
-    <section class="panel" role="tabpanel" id="panel-config" aria-labelledby="tab-config" tabindex="0" hidden></section>
-    <section class="panel" role="tabpanel" id="panel-profiles" aria-labelledby="tab-profiles" tabindex="0" hidden></section>
-    <section class="panel" role="tabpanel" id="panel-recommendations" aria-labelledby="tab-recommendations" tabindex="0" hidden></section>
-    <section class="panel" role="tabpanel" id="panel-usage" aria-labelledby="tab-usage" tabindex="0" hidden></section>
-    <section class="panel" role="tabpanel" id="panel-habits" aria-labelledby="tab-habits" tabindex="0" hidden></section>
-    <section class="panel" role="tabpanel" id="panel-capture" aria-labelledby="tab-capture" tabindex="0" hidden></section>
-    <section class="panel" role="tabpanel" id="panel-diagnostics" aria-labelledby="tab-diagnostics" tabindex="0" hidden></section>
-    <section class="panel" role="tabpanel" id="panel-glossary" aria-labelledby="tab-glossary" tabindex="0" hidden></section>
-  </main>
+  <main class="main-col" id="main">
+    <div class="header-sentinel" id="header-sentinel" aria-hidden="true"></div>
+    <header class="page-header" id="page-header">
+      <div class="page-heading">
+        <h1 id="page-title" tabindex="-1">Overview</h1>
+        <nav class="segments" id="segments" hidden></nav>
+      </div>
+      <div class="page-controls">
+        <div class="project-picker" id="project-picker"></div>
+        <div class="window-picker" id="window-picker"></div>
+        <button type="button" class="icon-button" id="theme-toggle"></button>
+      </div>
+    </header>
 
-  <footer class="app-footer">
-    <span id="footer-health">Checking service health&hellip;</span>
-  </footer>
+    <div class="banners">
+      <div class="health-banner" id="health-banner" role="status" aria-live="polite" hidden></div>
+      <div class="capture-banner" id="capture-banner" role="status" aria-live="polite" hidden></div>
+    </div>
+
+    <div class="views" id="views"></div>
+  </main>
 </div>
-<script src="/static/app.js"></script>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>

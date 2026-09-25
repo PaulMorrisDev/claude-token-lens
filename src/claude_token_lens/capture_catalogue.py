@@ -71,6 +71,32 @@ TAG_VOCAB: dict[str, tuple[str, ...]] = {
     "useful": ("yes", "part", "no"),
 }
 
+#: Plain names for the ``task`` words, so "bugfix" reads "Bug fix"
+#: wherever a kind of task is shown: every table with a task column
+#: (``helptext.TASK_TABLES``), the brief templates' "why" line, and the
+#: dashboard's "Kind of task" picker (``/api/profile-goals``). Lowercase
+#: one in running text ("bug fix work").
+TASK_LABELS: dict[str, str] = {
+    "feature": "Feature",
+    "bugfix": "Bug fix",
+    "refactor": "Refactor",
+    "debug": "Debugging",
+    "docs": "Docs",
+    "review": "Review",
+    "test": "Tests",
+    "research": "Research",
+    "plan": "Planning",
+    "ops": "Ops",
+    "chat": "Chat",
+}
+
+
+def task_words(task: str) -> str:
+    """``task``'s plain name for running text ("bug fix" for ``bugfix``);
+    a word outside the vocabulary as it is."""
+    return TASK_LABELS.get(task, task).lower()
+
+
 #: Keys whose value is a comma-separated list of words.
 LIST_KEYS = frozenset({"missing"})
 
@@ -501,8 +527,7 @@ METRICS: tuple[Metric, ...] = (
         section="subagents",
         title="Agent used your rules",
         what="Whether each subagent used the CLAUDE.md and memory instructions it was given.",
-        why="Which agents could start without your CLAUDE.md files (omitClaudeMd), saving their start-up "
-        "tokens.",
+        why="Which agents could start without your CLAUDE.md files, saving their start-up tokens.",
         powers=("delegation",),
         tag="rules=used|unused",
         hooks=("SubagentStart",),
@@ -561,8 +586,7 @@ METRICS: tuple[Metric, ...] = (
         title="Large tool outputs",
         what=f"After a tool result of about {BIG_OUTPUT_TOKENS:,} tokens or more, how much of it Claude "
         "needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or "
-        "MCP result; 'capture status' shows how long that has actually added, measured from your own "
-        "sessions.",
+        "MCP result. 'capture status' shows how long that has added, measured from your own sessions.",
         why="Quieter commands, offset reads and output caps where big outputs weren't needed.",
         powers=("tool_output",),
         tag="out=needed|part|unneeded",
@@ -609,8 +633,8 @@ METRICS: tuple[Metric, ...] = (
         group="free",
         section="signals",
         title="How turns end",
-        what="Whether each turn ended normally or Claude Code re-asked the Stop hook, and the kind of API "
-        "error on a failed turn (rate limit, overloaded and so on) -- never the error's own text.",
+        what="Whether each turn ended normally or Claude Code asked the Stop hook again. On a failed turn, "
+        "the kind of API error, such as a rate limit or overload, never the error's own text.",
         why="An independent, hook-level check next to what the transcript already shows about limit hits "
         "and API errors.",
         powers=("waiting", "outcome"),
@@ -662,7 +686,7 @@ METRICS: tuple[Metric, ...] = (
         section="derived",
         title="What your messages contain",
         what="Whether each message names a file, has a code block, an error or stack trace, a URL, "
-        "done-criteria wording or numbered steps, and whether it's short. Only yes/no is kept.",
+        "done-criteria wording or numbered steps. Also whether it's short. Only yes/no is kept.",
         why="How you give Claude information, measured without asking Claude: cost per task with and "
         "without file paths or errors.",
         powers=("information",),
@@ -728,8 +752,8 @@ METRICS: tuple[Metric, ...] = (
         group="coaching",
         section="coaching",
         title="Coaching line",
-        what="A second status line with a live hint from your session, such as a large context before a "
-        "new task, a large last output, or many reads so far.",
+        what="A second status line with a live hint from your session. For example, a large context before "
+        "a new task, a large last output, or many reads so far.",
         why="Advice where you work, at the moment it applies. The status line is never sent to Claude.",
         powers=("context", "tool_output", "research"),
     ),
@@ -738,8 +762,8 @@ METRICS: tuple[Metric, ...] = (
         group="coaching",
         section="coaching",
         title="Brief templates",
-        what="Checklists per kind of task, built from what your own requests tend to lack, on the Work "
-        "habits tab to copy. Turned on, it also adds a /tl-brief skill you run with a request: Claude "
+        what="Checklists per kind of task, built from what your own requests tend to lack, on "
+        "Work habits to copy. Turned on, it also adds a /tl-brief skill you run with a request: Claude "
         "checks it against its checklist and asks once for anything missing.",
         why="Better first messages, so Claude spends less finding things out.",
         powers=("information",),
@@ -750,7 +774,7 @@ METRICS: tuple[Metric, ...] = (
         group="feedback",
         section="feedback",
         title="Feedback skill",
-        what="A /tl-feedback skill you run after a piece of work: four checkbox questions about the "
+        what="A /tl-feedback skill you run after a piece of work. It asks four checkbox questions: the "
         "outcome, what slowed it, whether it was worth the tokens, and what would have helped.",
         why="Cost per piece of work that met its goal, which outranks what Claude reports about itself.",
         powers=("outcome",),
@@ -785,7 +809,7 @@ METRICS: tuple[Metric, ...] = (
         group="feedback",
         section="feedback",
         title="Rate sessions on the dashboard",
-        what="The same checkboxes on the dashboard's Sessions tab, kept in Token Lens's own store.",
+        what="The same checkboxes on Spend › Sessions, kept in Token Lens's own store.",
         why="Feedback without spending tokens.",
         powers=("outcome",),
     ),
@@ -976,7 +1000,7 @@ BRIEF_LINES: dict[str, tuple[str, str]] = {
     "report": ("Report", "Report: <how long, and in what form>"),
 }
 
-#: The checklist each kind of task starts from. The Work habits tab puts
+#: The checklist each kind of task starts from. The Work habits page puts
 #: the lines your own requests most often lack first; the skill uses these
 #: as they are, so what it holds doesn't change with your data.
 BRIEF_CHECKLISTS: dict[str, tuple[str, ...]] = {
@@ -1364,8 +1388,8 @@ def render_markdown() -> str:
     p(
         "It costs tokens. The note is written to the prompt cache once, then read from it on every later "
         "reply of that session; the tag itself is a handful of output tokens on every reply and every "
-        "subagent report. [Levels](#levels) below gives rough sizes; once capture is on, the dashboard's "
-        "Capture tab measures the real cost from your own transcripts, and a banner on every tab shows the "
+        "subagent report. [Levels](#levels) below gives rough sizes; once capture is on, Setup › Capture "
+        "measures the real cost from your own transcripts, and a banner on every page shows the "
         "running total."
     )
     p("")
@@ -1401,7 +1425,7 @@ def render_markdown() -> str:
     p(
         "These are rough sizes — the note's characters divided by four, plus Claude Code's own hook-wrapper "
         "overhead (the system-reminder tags around it) — and don't include the tag Claude writes back (each "
-        "metric below says roughly how many output tokens its own words cost). The Capture tab replays your "
+        "metric below says roughly how many output tokens its own words cost). Setup › Capture replays your "
         "last 14 days of transcripts against each level before you turn it on, and once it's on, measures the "
         "real note and tag cost from what Claude Code actually recorded — read that number, not this one, "
         "when it matters."
@@ -1412,8 +1436,8 @@ def render_markdown() -> str:
     p("## What each metric is worth")
     p("")
     p(
-        "Gap 4: every metric here has to earn its keep — something has to actually read it and turn it into "
-        "a decision, not just log it. This table is that trace: each metric's rough cost against what it "
+        "Every metric here has to earn its keep. Something has to read it and turn it into a decision, not "
+        "only log it. This table is that trace: each metric's rough cost against what it "
         "feeds. The Capture page shows the same thing measured from your own transcripts, in tokens a week "
         "instead of per occurrence."
     )

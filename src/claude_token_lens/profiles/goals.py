@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .. import habits, model_gate, whatif
+from ..capture_catalogue import TASK_LABELS, task_words
 from ..compaction_sim import CompactionSimThresholds
 from ..fixes import LEVER_LABELS, SETTING_TEXT, already_set
 from ..recommend import _NOT_OVERRIDABLE, _SKIPS_CLAUDE_MD
@@ -377,8 +378,8 @@ def _tasks(draft: _Draft, tables, task: str | None) -> tuple[list[str], str | No
     tasks = list(by_task)
     if not tasks:
         return [], None, (
-            "No kind of task has been reported yet. Turn on metrics capture at Essentials or above on the "
-            "Capture tab, then come back after a week or so of work."
+            "No kind of task has been reported yet. Turn on metrics capture at Essentials or above on "
+            "{{page:setup/capture}}, then come back after a week or so of work."
         )
     if task not in by_task:
         task = next((t for t in tasks if any(r.get("verdict") == "cheaper" for r in by_task[t])), tasks[0])
@@ -387,14 +388,14 @@ def _tasks(draft: _Draft, tables, task: str | None) -> tuple[list[str], str | No
     cheaper = next((r for r in rows if r.get("verdict") == "cheaper"), None)
     if cheaper is None:
         note = (
-            f"Your usual setup for {task} work is {_setup_text(usual)}. No cheaper setup went as well over at "
-            f"least {habits.MIN_GROUP} messages yet."
+            f"Your usual setup for {task_words(task)} work is {_setup_text(usual)}. No cheaper setup went as well "
+            f"over at least {habits.MIN_GROUP} messages yet."
         )
     else:
         evidence = (
-            f"For {task} work, {_setup_text(cheaper)} cost {whatif._num(cheaper.get('saving_pct')) or 0:.0f}% less "
-            f"a message than your usual {_setup_text(usual)}, and went well "
-            f"{whatif._num(cheaper.get('ok_pct')) or 0:.0f}% of the time against "
+            f"For {task_words(task)} work, {_setup_text(cheaper)} cost "
+            f"{whatif._num(cheaper.get('saving_pct')) or 0:.0f}% less a message than your usual {_setup_text(usual)}, "
+            f"and went well {whatif._num(cheaper.get('ok_pct')) or 0:.0f}% of the time against "
             f"{whatif._num(usual.get('ok_pct')) or 0:.0f}% ({int(whatif._num(cheaper.get('cycles')) or 0)} and "
             f"{int(whatif._num(usual.get('cycles')) or 0)} messages), compared level for level. They still ran on "
             "different work, so it's a lead, not proof."
@@ -413,7 +414,7 @@ def _tasks(draft: _Draft, tables, task: str | None) -> tuple[list[str], str | No
                 "effortLevel", None, cheaper["effort"], ticked=tick,
                 evidence=evidence + _effort_override_note(draft, cheaper.get("model")),
             )
-        note = f"Save it, then launch Claude with it when you start {task} work."
+        note = f"Save it, then launch Claude with it when you start {task_words(task)} work."
     profile_id = catalogue.task_profile(task)
     if profile_id is not None and not _catalogue_conflicts(draft, profile_id):
         note += f" The catalogue profile {profile_id} is also a starting point for this kind of task."
@@ -468,7 +469,7 @@ def _task_compaction(draft: _Draft, tables, task: str) -> None:
         int(window),
         ticked=sessions >= habits.TICK_MIN_GROUP,
         evidence=(
-            f"Your {sessions} {task} sessions replayed with summaries at {row.get('best_window')} tokens cost "
+            f"Your {sessions} {task_words(task)} sessions replayed with summaries at {row.get('best_window')} tokens cost "
             f"{saving_pct:.0f}% less."
         ),
     )
@@ -508,7 +509,7 @@ def _task_agents(draft: _Draft, tables, task: str) -> None:
             ticked=pct >= 20.0,
             evidence=(
                 f"{agent} runs {pct:.0f}% cheaper on {best} across every task it did; "
-                f"{task} was {runs} of its runs in this window."
+                f"{task_words(task)} work was {runs} of its runs in this window."
             ),
         )
 
@@ -677,6 +678,8 @@ def draft(
         "period": period,
         "from_current": goal.id == "current",
         "tasks": tasks,
+        # Each task word's plain name, for the "Kind of task" picker.
+        "task_labels": {t: TASK_LABELS.get(t, t) for t in tasks},
         "task": task,
         "note": note,
         "candidates": d.candidates,

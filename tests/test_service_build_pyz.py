@@ -54,6 +54,14 @@ def test_built_pyz_includes_the_static_ui_directory(built_pyz: Path) -> None:
         "claude_token_lens/service/static/index.html",
         "claude_token_lens/service/static/app.js",
         "claude_token_lens/service/static/app.css",
+        "claude_token_lens/service/static/core.js",
+        "claude_token_lens/service/static/grid.js",
+        "claude_token_lens/service/static/page-overview.js",
+        "claude_token_lens/service/static/page-setup.js",
+        "claude_token_lens/service/static/icons.js",
+        "claude_token_lens/service/static/THIRD_PARTY.sha256",
+        "claude_token_lens/service/static/vendor/d3-7.9.0.min.js",
+        "claude_token_lens/service/static/fonts/InterVariable-4.1.woff2",
     ):
         assert expected in names, f"{expected!r} missing from pyz contents: {sorted(names)[:20]}..."
 
@@ -63,6 +71,27 @@ def test_built_pyz_excludes_pycache_and_tests(built_pyz: Path) -> None:
         names = zf.namelist()
     assert not any("__pycache__" in name for name in names)
     assert not any(name.startswith("tests/") for name in names)
+
+
+def test_build_skips_dot_files_and_dot_folders(tmp_path: Path) -> None:
+    """A tool's cache inside the package (an editor's, a design linter's
+    under static/) may hold local paths and must never ship."""
+    build_pyz = _load_build_module()
+    source = tmp_path / "pkg"
+    (source / "static" / ".tool-cache").mkdir(parents=True)
+    (source / "static" / ".tool-cache" / "state.json").write_text("{}", encoding="utf-8")
+    (source / "static" / ".hidden.js").write_text("", encoding="utf-8")
+    (source / "static" / "app.js").write_text("", encoding="utf-8")
+    (source / "__init__.py").write_text("", encoding="utf-8")
+    original = build_pyz.PACKAGE_DIR
+    build_pyz.PACKAGE_DIR = source
+    try:
+        build_pyz._copy_source_tree(tmp_path / "out")
+    finally:
+        build_pyz.PACKAGE_DIR = original
+    copied = sorted(p.relative_to(tmp_path / "out").as_posix() for p in (tmp_path / "out").rglob("*"))
+    assert "claude_token_lens/static/app.js" in copied
+    assert not any("/." in name for name in copied), copied
 
 
 def test_built_pyz_carries_pyc_files_next_to_their_source(built_pyz: Path) -> None:

@@ -96,7 +96,7 @@ def test_build_section_skips_cleanly_with_no_sessions():
     assert section.key == "context_budget"
     assert section.tables == []
     assert len(section.notes) == 1
-    assert "No top-level transcripts" in section.notes[0]
+    assert "No main sessions" in section.notes[0]
 
 
 # -- baseline table -----------------------------------------------------
@@ -167,7 +167,7 @@ def test_baseline_table_residual_is_none_when_est_exceeds_baseline(tmp_path):
     col = {c.key: i for i, c in enumerate(table.columns)}
     proj_row = next(row for row in table.rows if row[col["project"]] == "proj-a")
     assert proj_row[col["system_prompt_and_tools_est"]] is None
-    assert any("over-shot" in n for n in table.notes)
+    assert any("estimates overshot" in n for n in table.notes)
 
 
 def test_baseline_table_residual_is_the_gap_when_baseline_exceeds_est(tmp_path):

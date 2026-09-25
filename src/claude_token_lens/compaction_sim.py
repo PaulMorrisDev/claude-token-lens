@@ -154,32 +154,34 @@ if TYPE_CHECKING:
 #: Assumptions this module's simulation makes, printed verbatim in the
 #: report section's notes (same convention as ``ttl.ASSUMPTIONS``).
 ASSUMPTIONS: list[str] = [
-    "a simulated compaction resets context to the session's own starting "
-    "context (its first reply's context: system prompt, tools, CLAUDE.md) "
-    "plus a summary of this corpus's own median post_tokens across real "
-    "compact_boundary events (20,000 tokens when this corpus has none); a "
-    "compaction that would not shrink the context is skipped",
-    "a candidate window summarises at the window less this corpus's own "
-    "median trigger reserve (window minus pre_tokens across real auto "
-    "compactions in sessions whose configured window is known; 0 when "
-    "none)",
-    "a simulated compaction charges the summary request (the context read "
-    "again, the summary as output, the triggering reply's own cache "
-    "split) and the reply after it re-caching its whole context: this "
-    "corpus's own median share of the starting context still cached after "
-    "a real compaction is read, the rest written at the reply's own "
-    "cache lifetime (all written when this corpus has none)",
-    "files re-read after a summary are not charged by the sweep -- the "
-    "compaction-window rule corrects for them before recommending a window",
-    "every later turn's context and cache reads shrink by the tokens the "
-    "simulated summary dropped (cache writes once reads are used up), "
-    "until the next compaction, real or simulated; growth after the "
-    "summary is kept whole",
-    "a real, observed compaction already in a transcript is kept as-is "
-    "under every candidate window -- never re-simulated, never removed",
-    "delta_usd = candidate_cost - observed_cost throughout this module: "
-    "negative means the candidate is cheaper (a saving) -- the opposite "
-    "sign convention to ttl.py's own tables, see this module's docstring",
+    "a simulated summary resets the context to the session's own starting "
+    "context (its first reply's system prompt, tools and CLAUDE.md). It "
+    "adds a summary the size of your median real summary, or 20,000 "
+    "tokens when there is none. A summary that would not shrink the "
+    "context is skipped",
+    "a candidate window summarises at the window minus your median "
+    "trigger reserve. The trigger reserve is the gap between the window "
+    "and the context at each real automatic summary. It comes from "
+    "sessions whose window setting is known, and is 0 when there are none",
+    "a simulated summary charges for the summary request: the context "
+    "read again and the summary as output, at the triggering reply's own "
+    "cache split. It also charges the cache rebuild on the reply after it. "
+    "Your median share of the starting context still cached after a real "
+    "summary is priced as a cache read. The rest is written at the "
+    "reply's own cache lifetime (all of it, when there is no real summary "
+    "to measure)",
+    "files re-read after a summary are not charged by the sweep. The "
+    "auto-compact window advice corrects for them before it suggests a "
+    "window",
+    "every later reply's context and cache reads shrink by the tokens the "
+    "simulated summary dropped (cache writes once reads are used up). "
+    "This lasts until the next summary, real or simulated. Growth after "
+    "the summary is kept whole",
+    "a real summary already in a session is kept as it is under every "
+    "candidate window: never simulated again, never removed",
+    "a change in cost is the candidate window's cost minus the observed "
+    "cost. Negative means the candidate is cheaper (a saving): the "
+    "opposite sign to the cache lifetime tables",
 ]
 
 #: Candidate ``autoCompactWindow`` values swept per transcript, plus
@@ -334,28 +336,23 @@ class CompactionSimThresholds:
         same convention as ``RecacheThresholds.describe``/
         ``TtlThresholds.describe``."""
         return [
-            f"default_summary_tokens = {self.default_summary_tokens:,}: used when this "
-            "corpus has no real compact_boundary event to measure a summary size from.",
-            f"default_trigger_reserve_tokens = {self.default_trigger_reserve_tokens:,}: used "
-            "when this corpus has no real auto compaction under a known window to measure "
-            "the reserve from.",
-            f"default_cached_prefix_share = {self.default_cached_prefix_share:.2f}: used when "
-            "this corpus has no real compaction to measure how much of the starting context "
-            "stays cached after one.",
-            f"default_rediscovery_allowance_usd = {self.default_rediscovery_allowance_usd:.2f} USD: "
-            "used when this corpus has no real post-compaction re-cache turn to measure "
-            "a rediscovery allowance from.",
-            f"max_compactions_per_session = {self.max_compactions_per_session:g}: no window "
-            "that summarises more often than this per session is suggested.",
-            f"switch_pct = {self.switch_pct:.2f} and switch_usd = {self.switch_usd:.2f} USD: a "
-            "window switch is recommended only when the best candidate window's cost is "
-            "below switch_pct of the observed cost AND saves more than switch_usd -- both "
-            "conditions, independently blocking.",
-            f"fidelity_warn_pct = {self.fidelity_warn_pct:.1f}%: a top-level session's "
-            "fidelity self-check is flagged in the section notes once it exceeds this.",
-            f"max_join_delta_s = {self.max_join_delta_s:.0f}s: a real compact_boundary "
-            "event is only correlated to a following priced turn when that turn's own "
-            "timestamp lands within this many seconds of the event.",
+            f"With no real conversation summary to measure, a summary is taken as "
+            f"{self.default_summary_tokens:,} tokens.",
+            f"With no real automatic summary under a known window, the trigger reserve is "
+            f"taken as {self.default_trigger_reserve_tokens:,} tokens.",
+            f"With no real summary to measure, {self.default_cached_prefix_share:.0%} of the "
+            "starting context is taken to stay cached after one.",
+            f"With no real cache rebuild after a summary, the allowance for re-reading files is "
+            f"taken as ${self.default_rediscovery_allowance_usd:.2f} at list price.",
+            f"No window is suggested that summarises more than "
+            f"{self.max_compactions_per_session:g} times per session.",
+            f"A window switch is suggested only when the best window costs under "
+            f"{self.switch_pct:.0%} of what was paid and saves over ${self.switch_usd:.2f} "
+            "at list price. Both must hold.",
+            f"A main session is flagged when replaying it at its own configured window misses "
+            f"its real cost by more than {self.fidelity_warn_pct:.1f}%.",
+            f"A real summary is matched to the next reply only when that reply came within "
+            f"{self.max_join_delta_s:.0f} seconds of it.",
         ]
 
 
@@ -759,7 +756,7 @@ class CompactionSimTypeStats:
             return "no material difference"
         if pct_ok and usd_ok:
             saving_text = units.money_text(self.saving_usd) if units is not None else f"${self.saving_usd:.2f}"
-            return f"switch to autoCompactWindow={self.best_window:,} (saves {saving_text})"
+            return f"Set the auto-compact window to {self.best_window:,} tokens (saves {saving_text})"
         return "no material difference"
 
 
@@ -1017,11 +1014,11 @@ def build_section(
     th = thresholds or _DEFAULT_THRESHOLDS
 
     by_window_columns = [
-        Column(key="window", label="Candidate autoCompactWindow", kind="str"),
+        Column(key="window", label="Candidate auto-compact window", kind="str"),
         Column(key="compactions_per_session", label="Simulated compactions / session", kind="float"),
         Column(key="mean_ctx", label="Mean ctx", kind="tokens"),
         Column(key="cost", label="Total cost", kind="money"),
-        Column(key="delta_usd", label="Delta vs observed (USD, negative = cheaper)", kind="money"),
+        Column(key="delta_usd", label="Change in cost", kind="money"),
         Column(key="delta_pct", label="Delta vs observed (%, negative = cheaper)", kind="pct"),
     ]
     window_rows = stats.by_window("top-level")
@@ -1041,7 +1038,7 @@ def build_section(
             for r in window_rows
         ],
         notes=(
-            ["No top-level transcripts with priced turns in this corpus."]
+            ["No main sessions with priced replies in this report."]
             if not window_rows
             else []
         ),
@@ -1053,7 +1050,7 @@ def build_section(
         Column(key="observed_cost", label="Observed cost", kind="money"),
         Column(key="best_window", label="Best window", kind="str"),
         Column(key="best_cost", label="Best cost", kind="money"),
-        Column(key="saving_usd", label="Saving if switched (USD, 0 floor)", kind="money"),
+        Column(key="saving_usd", label="Simulated saving", kind="money"),
         Column(key="delta_pct", label="Delta at best window (%, negative = cheaper)", kind="pct"),
         Column(key="recommendation", label="Recommendation", kind="str"),
     ]
@@ -1075,7 +1072,7 @@ def build_section(
             ]
             for key, row in sorted(by_key.items())
         ],
-        notes=(["No transcripts with priced turns in this corpus."] if not by_key else []),
+        notes=(["No sessions with priced replies in this report."] if not by_key else []),
     )
 
     by_task_columns = [
@@ -1084,7 +1081,7 @@ def build_section(
         Column(key="observed_cost", label="Observed cost", kind="money"),
         Column(key="best_window", label="Best window", kind="str"),
         Column(key="best_cost", label="Best cost", kind="money"),
-        Column(key="saving_usd", label="Saving if switched (USD, 0 floor)", kind="money"),
+        Column(key="saving_usd", label="Simulated saving", kind="money"),
         Column(key="delta_pct", label="Delta at best window (%, negative = cheaper)", kind="pct"),
         Column(key="recommendation", label="Recommendation", kind="str"),
     ]
@@ -1107,7 +1104,7 @@ def build_section(
             for task, row in sorted(by_task.items())
         ],
         notes=(
-            [f"No kind of task reported by at least {MIN_TASK_SESSIONS} main sessions in this corpus."]
+            [f"No kind of task was reported by at least {MIN_TASK_SESSIONS} main sessions in this report."]
             if not by_task
             else []
         ),
@@ -1115,7 +1112,7 @@ def build_section(
 
     fidelity_columns = [
         Column(key="session", label="Session", kind="str"),
-        Column(key="configured_window", label="Configured autoCompactWindow", kind="tokens"),
+        Column(key="configured_window", label="Configured auto-compact window", kind="tokens"),
         Column(key="simulated_cost", label="Simulated cost", kind="money"),
         Column(key="observed_cost", label="Observed cost", kind="money"),
         Column(key="fidelity_pct", label="Fidelity", kind="pct"),
@@ -1130,7 +1127,7 @@ def build_section(
             for row in fidelity_rows
         ],
         notes=(
-            ["No top-level session with a known configured autoCompactWindow in this corpus."]
+            ["No main session in this report has a known auto-compact window setting."]
             if not fidelity_rows
             else []
         ),
@@ -1141,25 +1138,25 @@ def build_section(
     notes.append(
         f"Summary size used: {shape.summary_tokens:,.0f} tokens"
         + (
-            " (default -- no real compact_boundary event found)."
+            " (default, as no real conversation summary was found)."
             if "summary_tokens" in stats.defaults
-            else " (this corpus's own median post_tokens across real compact_boundary events)."
+            else " (the median size of the real summaries in these sessions)."
         )
     )
     notes.append(
         f"Trigger reserve used: {shape.trigger_reserve:,.0f} tokens below the window"
         + (
-            " (default -- no real auto compaction under a known window found)."
+            " (default, as no real automatic summary under a known window was found)."
             if "trigger_reserve" in stats.defaults
-            else " (this corpus's own median window minus pre_tokens across real auto compactions)."
+            else " (the median gap between the window and the context at each real automatic summary)."
         )
     )
     notes.append(
         f"Starting context still cached after a summary: {100.0 * shape.cached_prefix_share:.0f}%"
         + (
-            " (default -- no real compaction joined to a reply found)."
+            " (default, as no real summary was matched to a reply)."
             if "cached_prefix_share" in stats.defaults
-            else " (this corpus's own median across real compactions)."
+            else " (the median across the real summaries in these sessions)."
         )
     )
     # UX-2 note: this is a per-read calibration constant (this corpus's
@@ -1169,26 +1166,30 @@ def build_section(
     # to 2 decimals (losing this sub-cent figure entirely) and, for a
     # subscription, would phrase a per-unit constant as a usage-limit
     # share, which reads as a saving rather than an input. It still
-    # never prints a bare "$" (hard constraint UX-2): a trailing currency
-    # code stands in for the symbol.
+    # never prints a bare "$" (hard constraint UX-2): the amount always
+    # says "at list price" (a currency other than USD keeps its code).
     _allowance_currency = units.currency if units is not None else "USD"
-    allowance_note = (
-        f"Rediscovery allowance used: {stats.rediscovery_allowance_usd:.4f} {_allowance_currency}"
-    )
+    _allowance = f"{stats.rediscovery_allowance_usd:.4f}"
+    allowance_note = "Allowance for re-reading files: " + (
+        f"${_allowance}" if _allowance_currency == "USD" else f"{_allowance} {_allowance_currency}"
+    ) + " at list price"
     if stats.rediscovery_allowance_is_default:
-        allowance_note += " (default -- no real post-compaction re-cache turn found)."
+        allowance_note += " (default, as no real cache rebuild after a summary was found)."
     else:
-        allowance_note += " (this corpus's own median post-compaction re-cache write cost)."
-    allowance_note += " Used by the compaction-window rule's correction, not charged by the sweep."
+        allowance_note += " (the median cache rebuild after a real summary in these sessions)."
+    allowance_note += (
+        " The auto-compact window advice adds it for files re-read after each summary."
+        " The sweep's own costs leave it out."
+    )
     notes.append(allowance_note)
     notes.extend(th.describe())
 
     flagged = [row for row in fidelity_rows if (row.fidelity_pct or 0.0) > th.fidelity_warn_pct]
     for row in sorted(flagged, key=lambda r: r.session_id):
         notes.append(
-            f"Fidelity warning: session {row.session_id} simulated at its own configured "
-            f"autoCompactWindow={row.window:,} differs from its observed cost by "
-            f"{row.fidelity_pct:.1f}% (> {th.fidelity_warn_pct:.1f}%)."
+            f"Fidelity warning: replaying session {row.session_id} at its own auto-compact "
+            f"window setting ({row.window:,} tokens) misses its real cost by "
+            f"{row.fidelity_pct:.1f}% (over {th.fidelity_warn_pct:.1f}%)."
         )
 
     return Section(
@@ -1278,19 +1279,21 @@ def _table(report: ReportModel, section_key: str, table_name: str):
 def _rediscovery_allowance_usd_used(report: ReportModel, thresholds: CompactionSimThresholds) -> float:
     """The rediscovery allowance :func:`simulate_compaction_windows`
     actually charged per simulated compaction in this report, read back
-    out of ``build_section``'s own ``"Rediscovery allowance used: X.XXXX
-    <currency>"`` note (the only place that number is rendered -- see
-    ``build_section``'s notes list above). Falls back to
-    ``thresholds.default_rediscovery_allowance_usd`` when the
+    out of ``build_section``'s own ``"Allowance for re-reading files:
+    $X.XXXX ..."`` note (the only place that number is rendered -- see
+    ``build_section``'s notes list above; the note's older
+    ``"Rediscovery allowance used: "`` wording is still read). Falls
+    back to ``thresholds.default_rediscovery_allowance_usd`` when the
     ``compaction_sim`` section or that note isn't present (e.g. a
     report filtered down to a single other section)."""
-    prefix = "Rediscovery allowance used: "
+    prefixes = ("Allowance for re-reading files: ", "Rediscovery allowance used: ")
     for section in report.sections:
         if section.key != "compaction_sim":
             continue
         for note in section.notes:
-            if note.startswith(prefix):
-                value_str = note[len(prefix):].split(" ", 1)[0].rstrip(".")
+            prefix = next((p for p in prefixes if note.startswith(p)), None)
+            if prefix is not None:
+                value_str = note[len(prefix):].split(" ", 1)[0].lstrip("$").rstrip(".")
                 try:
                     return float(value_str)
                 except ValueError:

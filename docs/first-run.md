@@ -233,7 +233,7 @@ first. Full detail: [`docs/onboarding.md`](onboarding.md).
 - **Cheaper isn't free.** A cheaper model, lower effort or an earlier
   summary can make Claude less thorough. Each change says what it trades
   away. Pick **Since my last change** in the window picker, or look at
-  **Profiles > Your changes and what they did**, to check the effect.
+  **Setup › Settings > Your changes and what they did**, to check the effect.
 - **Amounts on a Pro or Max plan are list-price equivalents** until the
   statusline has logged enough usage-limit readings.
 
@@ -282,7 +282,7 @@ includes `"service_registered": true` once
 `is_registered()`'s own platform probe (the same `schtasks` query
 above) has confirmed it — `false` or `null` (probe inconclusive) means
 check the output `install-service` printed. The dashboard's Overview
-tab also shows a banner when this comes back `false`.
+and Data quality pages also show a warning when this comes back `false`.
 
 ## 4. Open the dashboard
 
@@ -295,6 +295,10 @@ running `claude-token-lens serve` directly in a terminal you leave
 open). Loopback-only by default — nothing outside
 this machine can reach it unless you pass both `--bind <address>` and
 `--allow-remote`. It has no login, so don't do that on a shared network.
+
+It opens on the Overview: what to change next, from your own sessions.
+The README's [What each page answers](../README.md#what-each-page-answers)
+lists every page.
 
 ## 5. Run the first report
 
@@ -409,7 +413,8 @@ py -3 -m claude_token_lens install-service
 running dashboard, re-registers the task for this install and starts it
 again. On Linux it restarts the service too; on macOS run
 `launchctl kickstart -k gui/$(id -u)/com.claude-token-lens` instead.
-The dashboard's footer shows the version it is running. If a new
+The status line at the foot of the dashboard's sidebar shows the
+version it is running. If a new
 version reads transcripts differently, the dashboard re-reads them once
 after the restart, so the first page load can be slow.
 
@@ -418,9 +423,9 @@ after the restart, so the first page load can be slow.
 | Symptom | Fix |
 |---|---|
 | WSL sessions missing from the dashboard | Run `init` again and say yes to the WSL folder, or add it to `extra_projects_roots` in `config.toml` and run `install-service` to restart the dashboard. See the README's [Using Claude Code in WSL too](../README.md#using-claude-code-in-wsl-too) |
-| Dashboard still shows the old version after an update (see its footer) | Something else still holds port 8765: an older copy started by hand, from another Python install, or from Docker. The README's [An old dashboard won't go away](../README.md#an-old-dashboard-wont-go-away) shows how to find and stop it; then run `install-service` with the Python you updated (section 8) |
+| Dashboard still shows the old version after an update (see the foot of its sidebar) | Something else still holds port 8765: an older copy started by hand, from another Python install, or from Docker. The README's [An old dashboard won't go away](../README.md#an-old-dashboard-wont-go-away) shows how to find and stop it; then run `install-service` with the Python you updated (section 8) |
 | `claude-token-lens` not found | Use the full path to the venv's `Scripts\claude-token-lens.exe`, or `python -m claude_token_lens` (works regardless of `PATH`) |
-| The Data quality tab says the SessionStart hook isn't running | The hook command names a Python that isn't installed (`py` with no launcher), uses `%USERPROFILE%` (Claude Code runs hooks through Git Bash, which doesn't expand it), or has a path broken by single backslashes in JSON. Run `claude-token-lens init --repair-hook`: it shows the fixed command and changes it without asking, after copying `settings.json` to `settings.json.bak-<UTC time>`. It keeps your own Python when it's found and writes any `%VARIABLE%` out in full; otherwise it names your main Python install by full path. It can only fix a command whose script exists: if the script is missing, run `claude-token-lens init --connect` first, which copies it back into `<config-dir>\hooks\` |
+| The Data quality page says the SessionStart hook isn't running | The hook command names a Python that isn't installed (`py` with no launcher), uses `%USERPROFILE%` (Claude Code runs hooks through Git Bash, which doesn't expand it), or has a path broken by single backslashes in JSON. Run `claude-token-lens init --repair-hook`: it shows the fixed command and changes it without asking, after copying `settings.json` to `settings.json.bak-<UTC time>`. It keeps your own Python when it's found and writes any `%VARIABLE%` out in full; otherwise it names your main Python install by full path. It can only fix a command whose script exists: if the script is missing, run `claude-token-lens init --connect` first, which copies it back into `<config-dir>\hooks\` |
 | No usage-limit readings | The statusline runs only in Claude Code in a terminal, not in the desktop app or an IDE. Amounts stay list-price equivalents until readings arrive |
 | `py` launcher missing (`'py' is not recognized`) | Use `python`/`python3` directly, or reinstall Python from python.org with "py launcher" checked |
 | Python 3.10 or older | `pip install` refuses (`Requires-Python`); the `.pyz` fails at import with a `tomllib`-related error. Install 3.11+ (a user-level install needs no admin rights) |
