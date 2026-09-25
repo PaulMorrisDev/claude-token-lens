@@ -1,9 +1,8 @@
-# v0.3 profiles
+# Profiles
 
-`claude_token_lens.profiles` (plan Milestone v0.3: "baseline capture,
-archetype, profiles, apply") is the schema, shipped catalogue, diff
-renderer and apply/revert code for a **profile**: a small, allowlisted
-bundle of Claude Code settings/agent-frontmatter/environment-variable
+`claude_token_lens.profiles` is the schema, shipped catalogue, diff
+renderer and apply/revert code for a **profile**. A profile is a small,
+allowlisted bundle of Claude Code settings/agent-frontmatter/environment-variable
 levers that a user can apply to a project. This document is the
 contract for the package. `cli.py`'s `apply`/`init`/`baseline`
 subcommands and the `/api/profiles*`, `/api/profile-schema` and
@@ -593,14 +592,35 @@ only callers that write; the dashboard only reads the backups (to list
 your changes) and never calls `execute` or `revert`.
 
 ```
-claude-token-lens apply <profile> [--scope user|project-local|repo]
-claude-token-lens apply --set KEY=VALUE [--set ...] [--agent NAME]
-                                   [--scope user|project-local|repo]
-                                   [--project-dir PATH]
-                                   [--dry-run] [--launch]
-                                   [--allow-tracked] [--force]
-                                   [--revert TS [--ignore-changes]] [--list-backups]
+python -m claude_token_lens apply <profile> [--scope user|project-local|repo]
+python -m claude_token_lens apply --set KEY=VALUE [--set ...] [--agent NAME]
+                                             [--scope user|project-local|repo]
+                                             [--project-dir PATH]
+                                             [--dry-run] [--launch]
+                                             [--allow-tracked] [--force]
+                                             [--revert TS [--ignore-changes]] [--list-backups]
 ```
+
+For example:
+
+```bash
+# Preview the exact diff, nothing written:
+python -m claude_token_lens apply interactive-chat --dry-run
+
+# Apply it to the current project (writes .claude/settings.local.json):
+python -m claude_token_lens apply interactive-chat --project-dir .
+
+# Undo it, naming the timestamp the apply printed:
+python -m claude_token_lens apply --revert 20260919T100252Z
+
+# A one-session overlay instead of a persisted apply:
+python -m claude_token_lens apply interactive-chat --launch
+
+# One setting, no profile (the command a recommendation card shows):
+python -m claude_token_lens apply --set omitClaudeMd=true --agent code-reviewer --scope user --dry-run
+```
+
+Every flag is described in [`docs/cli.md`](cli.md#apply).
 
 `<profile>` is a catalogue id or a path to a profile TOML file.
 `--set` instead builds a one-off profile (id `one-off`) from the given

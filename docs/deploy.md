@@ -30,11 +30,11 @@ up. Only a continuously running, logon-registered service actually
 keeps it.
 
 ```bash
-claude-token-lens install-service                     # register for this platform
-claude-token-lens install-service --dry-run           # print the plan only — writes/runs nothing
-claude-token-lens install-service --port 9000 --bind 127.0.0.1
-claude-token-lens uninstall-service                   # remove whatever was registered
-claude-token-lens uninstall-service --dry-run
+python -m claude_token_lens install-service                     # register for this platform
+python -m claude_token_lens install-service --dry-run           # print the plan only — writes/runs nothing
+python -m claude_token_lens install-service --port 9000 --bind 127.0.0.1
+python -m claude_token_lens uninstall-service                   # remove whatever was registered
+python -m claude_token_lens uninstall-service --dry-run
 ```
 
 **Safety posture** (see the module's own docstring for the full
@@ -440,12 +440,12 @@ that actually delete a row.
   actually deletes them with `--yes`:
 
   ```bash
-  claude-token-lens serve --config-dir ~/.claude/token-lens --purge
+  python -m claude_token_lens serve --config-dir ~/.claude/token-lens --purge
   # claude-token-lens serve --purge: will delete:
   #   /home/you/.claude/token-lens/service.db
   # Re-run with --yes to actually delete these files.
 
-  claude-token-lens serve --config-dir ~/.claude/token-lens --purge --yes
+  python -m claude_token_lens serve --config-dir ~/.claude/token-lens --purge --yes
   # Deleted 1 file(s).
   ```
 

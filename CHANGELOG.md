@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The README is a short landing page now.** It keeps the quick start,
+  the page table, troubleshooting and the glossary, and gains dashboard
+  screenshots (synthetic data), a Privacy section and a "What it can't
+  measure" section. Its reference sections moved into `docs/`, each
+  linked from the README's Documentation table:
+  - every command and flag, exit codes and CLI timings:
+    new [`docs/cli.md`](docs/cli.md);
+  - what it reads, the SessionStart hook, the status line, Windows
+    notes and the roadmap: new [`docs/reference.md`](docs/reference.md);
+  - the report-sections table and recommendation fields:
+    [`docs/sections-reference.md`](docs/sections-reference.md#sections-at-a-glance);
+  - `exclude_projects`, `retention_days`, managed settings and provider
+    detection: [`docs/team.md`](docs/team.md#settings-for-teams-and-enterprise);
+  - the privacy grep audit: [`SECURITY.md`](SECURITY.md).
+- **Claims corrected while moving them.** The README no longer says the
+  tool makes "no network calls": `update` runs pip to download the new
+  version. `SECURITY.md` and `docs/team.md` now say a malformed
+  `exclude_projects` pattern stops `config.toml` from loading; it was
+  described as skipped. Commands in the docs use
+  `python -m claude_token_lens`, which works whether or not pip's
+  Scripts folder is on your `PATH`.
+
+### Added
+
+- `tests/test_doc_links.py` checks that every Markdown link to a
+  heading in the README, `docs/`, `SECURITY.md` and this file resolves.
+- `scripts/demo-corpus.py` builds the synthetic sessions the README's
+  screenshots use, so they can be redone when the dashboard changes.
+
 ## [0.6.2] - 2026-09-25
 
 ### Fixed
@@ -2415,7 +2446,7 @@ A v0.4 backlog, kept here until scheduled into a milestone:
   the target directory for `project-local`/`repo` scope, matching the
   identical collision `snapshot-config`/`probe-config` resolve the same
   way. See [docs/profiles.md#applying-a-profile](docs/profiles.md#applying-a-profile),
-  [README.md's "Applying a profile"](README.md#11-applying-a-profile),
+  [docs/cli.md's `apply`](docs/cli.md#apply),
   and [SECURITY.md](SECURITY.md#applying-a-profile-the-one-command-that-writes-outside-config-dir)
   for full detail.
 - **`compare` subcommand** (`compare.py`, work package V3-compare, plan

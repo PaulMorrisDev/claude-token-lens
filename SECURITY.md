@@ -1,7 +1,9 @@
 # Security policy
 
 claude-token-lens is a local analytics tool. It reads the files Claude
-Code writes; it never calls Claude or any other remote service. It uses
+Code writes; it never calls Claude or any other remote service. The one
+command that goes online is `update`, which runs pip to download a new
+version (see "No outbound network calls" below). It uses
 none of your tokens by default, and none at all unless you opt in to
 the optional **metrics capture** feature (see below), which has Claude
 itself read a short note and write a one-line tag inside your own
@@ -12,9 +14,7 @@ written to be verifiable against the code rather than taken on trust.
 **Status note:** every guarantee below describes what the *current*
 code does. This includes the `claude-token-lens serve` service
 (watcher, SQLite store, JSON API, static web UI) and its deployment
-artefacts — see
-[README.md's "Running the service"](README.md#10-running-the-service)
-and [docs/deploy.md](docs/deploy.md).
+artefacts — see [docs/deploy.md](docs/deploy.md).
 
 ## What is read
 
@@ -224,6 +224,17 @@ bare `@`, or a URL). Run it yourself:
 ```bash
 python -m pytest tests/test_privacy.py tests/test_scrub.py -q
 ```
+
+The same audit applies to `report --json` and `report --html PATH`
+output, or to JSON and HTML you generate by calling `render.json_out` or
+`render.html` yourself. Run it by hand over the file:
+
+```bash
+grep -RnoE '[^"]{65,}|[A-Za-z]:\\\\|/home/|\\\\Users\\\\|/c/Users/|@' report.json report.html
+```
+
+Treat any hit as a bug, and open an issue naming the field (never its
+value).
 
 <a id="applying-a-profile-the-one-command-that-writes-outside-config-dir"></a>
 
@@ -552,7 +563,7 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.claude\token-lens\cache"
 it as it parses); `--no-cache` skips the cache entirely for that one run
 without deleting anything already on disk. Both are wired through to
 `corpus.load_corpus` for every subcommand that loads a corpus — see
-[README.md](README.md#global-flags-clipy).
+[docs/cli.md](docs/cli.md#global-flags).
 
 ## Excluding confidential projects
 
@@ -560,7 +571,9 @@ without deleting anything already on disk. Both are wired through to
 regexes (matched with `re.search`, case-insensitive); any project whose
 slug matches is excluded from discovery entirely — never scanned, never
 parsed, never appearing in a cache file — not merely hidden from
-output. A malformed regex in the list is skipped, never fatal.
+output. A malformed regex stops `config.toml` from loading, with an
+error naming the pattern, so a typo can't quietly stop a project being
+excluded.
 
 ```toml
 exclude_projects = ["^confidential-", "client-acme$"]

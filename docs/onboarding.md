@@ -1,4 +1,4 @@
-# v0.3 onboarding: `init` and `baseline`
+# Onboarding: `init` and `baseline`
 
 Never run `init` on this machine before? [`docs/first-run.md`](first-run.md)
 is the short walkthrough, including what each question below actually
@@ -6,7 +6,7 @@ means in one line. This document is the full reference.
 
 `claude-token-lens init` (`src/claude_token_lens/onboarding.py`) and
 `claude-token-lens baseline` (`src/claude_token_lens/baseline.py`) are
-the plan's "Milestone v0.3" onboarding pair: `init` asks (or derives) a
+the onboarding pair: `init` asks (or derives) a
 handful of questions this codebase genuinely cannot infer on its own,
 writes `config.toml`, and starts an "onboarding capture window";
 `baseline` turns whatever corpus has accumulated since then into a
@@ -26,12 +26,49 @@ so `onboarding.py` stays free of installer side effects.
 
 ## `init`
 
+In short, `init` first finds what is already set up: an existing
+config, settings snapshots and a usage log. Then it asks the questions
+it can't work out itself:
+
+- your billing mode;
+- projects to always leave out;
+- whether you start Claude Code with extra settings files;
+- your time zone;
+- where `apply` writes by default;
+- how long the first capture window should run (7 days by default).
+
+Then it:
+
+1. writes `config.toml` into its own folder (`~/.claude/token-lens`);
+2. shows the change that connects the SessionStart hook to Claude
+   Code's `settings.json`, plus a status line if you have none. It makes
+   the change only after you say yes (`--no-install` skips this);
+3. records a first baseline for the current project;
+4. offers to start the dashboard at every logon (`--no-service` skips
+   this, `--install-service` says yes up front);
+5. asks whether to turn on metrics capture, after warning that it uses
+   tokens and showing what each level would have cost you. It stays off
+   unless you choose a level, and `--capture-level` answers up front.
+
+Running `init` again is safe: it keeps your existing capture window and
+shows any change before making it. For scripts or CI, run
+`python -m claude_token_lens init --non-interactive --no-install`. It
+works out the unanswered questions from what it found, and prints what
+it chose and why.
+
+The logon service matters because Claude Code deletes its own
+transcripts after `cleanupPeriodDays` (30 days by default). Only a
+dashboard that is running keeps their figures.
+[`deploy.md`](deploy.md) describes what it registers on each system.
+
+The full sequence, step by step:
+
 ```
-claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
-                        [--repair-hook] [--connect]
-                        [--install-service | --no-service] [--dry-run]
-                        [--capture-level LEVEL] [--capture-for DURATION | --capture-no-limit]
-                        [--feedback {on,off}]
+python -m claude_token_lens init [--answers FILE] [--non-interactive] [--no-install]
+                                  [--repair-hook] [--connect]
+                                  [--install-service | --no-service] [--dry-run]
+                                  [--capture-level LEVEL] [--capture-for DURATION | --capture-no-limit]
+                                  [--feedback {on,off}]
 ```
 
 1. **Detect** what's already on the machine (`onboarding.detect` ->
@@ -185,7 +222,7 @@ claude-token-lens init [--answers FILE] [--non-interactive] [--no-install]
 
 | Key | Asked as | Feeds |
 |---|---|---|
-| `billing` | How do you pay for Claude Code? (`subscription`, `api` or `auto`, the default when unset; `pro`, `max`, `team`, `enterprise` and `plan` mean `subscription`, and anything else is rejected — see the README's billing note) | `config.billing` |
+| `billing` | How do you pay for Claude Code? (`subscription`, `api` or `auto`, the default when unset; `pro`, `max`, `team`, `enterprise` and `plan` mean `subscription`, and anything else is rejected — see [billing modes](reference.md#what-it-reads-and-what-it-cant)) | `config.billing` |
 | `exclude_projects` | Projects to always leave out (folder names under `~/.claude/projects`, comma-separated) | `config.exclude_projects` |
 | `launch_overlays` | Do you start Claude Code with `--settings` or `CLAUDE_CONFIG_DIR` pointing at extra settings? | `config.launch_overlays` and this project's `projects/<slug>.toml` |
 | `shared_project_config` | Is this project's `.claude` folder (agents, skills) committed to a repo colleagues use? | `config.shared_project_config` and this project's `projects/<slug>.toml` |
@@ -241,7 +278,7 @@ omits falls back to interactive prompting, or a derived default under
 ## `baseline`
 
 ```
-claude-token-lens baseline [--days N] [--finalise] [--list] [--show ID]
+python -m claude_token_lens baseline [--days N] [--finalise] [--list] [--show ID]
 ```
 
 With no flags: builds a report over the given window (or all time),
@@ -282,7 +319,8 @@ only cite the report's own tables" convention `recommend.py`'s
 | `by_mode` | cost/re-cache/compactions per session, recomputed once per distinct mode over a session-filtered sub-corpus (see below) |
 
 These nine fields (v0.3 Task 2) feed `report --baseline <id|latest>`'s
-`## Baseline comparison` section (see the main README and
+`## Baseline comparison` section (see
+[`baseline_comparison`](sections-reference.md#baseline_comparison-reportpy) and
 [docs/exports.md](exports.md) for the wider export surface).
 `report.py` and `baseline.py` share the same extraction functions
 (defined once in `report.py`, imported by `baseline.py`) rather than
