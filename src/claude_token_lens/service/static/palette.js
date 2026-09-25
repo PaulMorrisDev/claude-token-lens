@@ -15,7 +15,7 @@
 
 import { clear, el, goTo, pickProject, state, WINDOW_OPTIONS } from "./core.js";
 import { icon } from "./icons.js";
-import { fetchJson, loadProjects, loadRecommendations, loadReport, scopeKey, withWindow } from "./api.js";
+import { fetchJson, loadProjects, loadQuickActions, loadRecommendations, loadReport, scopeKey, withWindow } from "./api.js";
 import { COST_CARDS, findPage, GLOSSARY, plainText, termSlug, VIEW_KEYS, viewFor, viewForSection, viewLabel } from "./links.js";
 import { evidenceView, openEvidence } from "./evidence.js";
 import { button, copyToClipboard, SEVERITY_LABELS, statusLabel, toast } from "./ui.js";
@@ -308,7 +308,7 @@ function loadEntries() {
       var body = result.body;
       return recommendationEntries(body && body.ok === true && Array.isArray(body.data) ? body.data : []);
     }),
-    safely(fetchJson(withWindow("/api/quick-actions")), function (result) {
+    safely(loadQuickActions(), function (result) {
       var body = result.body;
       return checkEntries(body && body.ok === true && body.data && Array.isArray(body.data.checks) ? body.data.checks : []);
     }),

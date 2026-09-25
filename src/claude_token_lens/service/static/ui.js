@@ -20,6 +20,65 @@ export function motionOK() {
   }
 }
 
+// A figure counting up to its value (docs/ui.md, "Motion"). The node
+// already shows the final text, so a reader who never sees a frame
+// (reduced motion, a hidden tab) reads the right figure. The count
+// writes write(value) from `from` to `to` over 700ms (--dur-count),
+// easing out, then puts the final text back. So does a timer, and the
+// tab going out of sight, in case animation frames stop mid-count.
+var COUNT_MS = 700;
+
+export function countUp(node, from, to, write) {
+  if (!node || !motionOK() || document.hidden || from === to || !isFinite(from) || !isFinite(to)) return;
+  var final = node.textContent;
+  var start = null;
+  var done = false;
+  function finish() {
+    if (done) return;
+    done = true;
+    node.textContent = final;
+    document.removeEventListener("visibilitychange", finish);
+  }
+  function step(now) {
+    if (done) return;
+    if (start === null) start = now;
+    var t = (now - start) / COUNT_MS;
+    if (t >= 1) {
+      finish();
+      return;
+    }
+    // Expo-out, the curve of --ease-out.
+    node.textContent = write(from + (to - from) * (1 - Math.pow(2, -10 * t)));
+    requestAnimationFrame(step);
+  }
+  node.textContent = write(from);
+  document.addEventListener("visibilitychange", finish);
+  setTimeout(finish, COUNT_MS + 100);
+  requestAnimationFrame(step);
+}
+
+// Rows that arrive one after another (docs/ui.md, "Motion"): each fades
+// in and rises 6px (app.css's .is-entering), 24ms after the one before,
+// the first `delay` ms from now. Only the first 6 are staggered; any
+// more arrive with the sixth. The rows are already in place, so this
+// only eases them in, and nothing moves under reduced motion.
+export function enterInTurn(rows, delay) {
+  if (!motionOK() || document.hidden) return;
+  Array.prototype.forEach.call(rows, function (row, i) {
+    function settle(event) {
+      if (event.target !== row) return;
+      row.classList.remove("is-entering");
+      row.style.removeProperty("--enter-delay");
+      row.removeEventListener("animationend", settle);
+      row.removeEventListener("animationcancel", settle);
+    }
+    row.style.setProperty("--enter-delay", (delay || 0) + Math.min(i, 5) * 24 + "ms");
+    row.classList.add("is-entering");
+    row.addEventListener("animationend", settle);
+    row.addEventListener("animationcancel", settle);
+  });
+}
+
 // -- buttons -------------------------------------------------------------
 
 // A button whose label says what happens ("Copy prompt", "Open session").

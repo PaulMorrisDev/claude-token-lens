@@ -66,6 +66,18 @@ inline SVG charts, `prefers-color-scheme` dark."
   report keeps its own palette (`render/html.py`'s `_STYLE`).
 - **One focus ring.** A global `:focus-visible` rule draws a 2px ring
   in `--focus` on every focusable element; nothing removes it.
+- **Forced colours.** Under Windows High Contrast
+  (`@media (forced-colors: active)`) the system's colours replace the
+  theme, and app.css keeps the dashboard readable in them. Charts keep
+  their own colours (`forced-color-adjust: none` on `.chart-svg`,
+  `.sparkline` and `.swatch`): a mark's colour and hatching are what
+  the legend names, and the system's few colours can't keep the series
+  apart. Axis text, labels and rules take CanvasText, gridlines
+  GrayText, a linked rule label LinkText, and the chart's keyboard
+  cursor and brush Highlight. Focus rings are Highlight. Chips, tiles,
+  panels, menus, popovers, the drawer, tooltips and toasts keep a
+  CanvasText border, the status dot is CanvasText, and a meter's lit
+  segments are filled while the rest are outlined.
 - **Icons are inline SVG.** `icons.js` draws every icon on a 16px grid
   in `currentColor`. The static scans ban emoji, arrow and check-mark
   characters, so those glyphs are icons too. Status is always an icon
@@ -382,8 +394,36 @@ When the data changes (a new window), `renderChart` keeps the frame
 and d3 moves the marks to their new places over 600ms, unless there
 are more than 1,500 of them. While new data loads, `holdChart` keeps
 the last drawing at 0.55 opacity, so nothing jumps. The first drawing
-of a line draws in once. Under reduced motion every transition has
-zero duration.
+draws in once. `opts.delay` holds a draw-in or morph back for that
+many milliseconds. A chart resized while it is still drawing in or
+morphing (`redraw`: a new width, or `setChartHeight`) carries on to
+the new size in the time it had left, rather than finishing at the
+old size; a settled chart is redrawn at once. Under reduced motion
+every transition has zero duration.
+
+The rest of the dashboard moves only `transform` and `opacity`, and
+none of it runs under reduced motion or in a hidden tab:
+
+- **A new view** fades in over the old one: `app.js`'s `changeView`
+  runs the route change inside `document.startViewTransition`, where
+  the browser has it and the view really changes. The old view fades
+  out over 120ms (`--dur-page-out`, `--ease-in`) and the new one fades
+  in over 220ms (`--dur-page`, `--ease-out`), rising 6px. While it
+  runs, `html` has `view-changing`, which names `.views`, the sidebar,
+  the page header and the toasts, so only the views fade and the rest
+  change at once. The old view keeps its place on screen however far
+  the page scrolls for the new one (`--view-shift`). Focus and scroll
+  are still `showView`'s, so Back and Forward restore the scroll as
+  before. No transition runs while a dialog (the drawer) is open.
+- **The Overview's entrance.** The headline figures count up over
+  700ms (`ui.js`'s `countUp`, expo-out): from 0 the first time, from
+  the figures last shown after a window change. The tile is drawn with
+  its final text first, and a timer and the tab being hidden both
+  finish the count, so the final text is always what stays. Money is
+  written by the billing mode's own format. The daily spend chart
+  draws in 80ms after the figures start, and the next best actions
+  arrive 24ms apart from 160ms (`enterInTurn`, app.css's
+  `.is-entering`); a seventh row or later arrives with the sixth.
 
 ### Micro-forms
 
@@ -595,7 +635,8 @@ offers **Show all projects** while one is picked.
      (a link to Actions › Recommendations), estimated saving and a Copy
      prompt button. Side by side, the chart grows (300px to 560px) to
      the actions' height, redrawn in place with no morph
-     (`setChartHeight`), so neither panel ends in a blank band;
+     (`setChartHeight`), so neither panel ends in a blank band; a
+     draw-in still running carries on to the new height;
    - **How your setup scores**: the overall level, set by the lowest
      area, then the five scorecard areas as segmented meters (level 5-4
      good, 3 fair, 2 poor, 1 very poor, 0 not measured), each with a
@@ -1022,6 +1063,25 @@ trace — the API never sends one, per its own `error.code`/`message`
 contract) on `{"ok": false, ...}`. No view holds state the server
 doesn't already have; a page reload is always safe.
 
+## Performance
+
+The budget, measured on Chrome at 1440px against a local service with
+its report already built:
+
+| Moment | Budget | Measured (median of 9 loads) |
+|---|---|---|
+| First contentful paint | under 300ms | 64ms (48ms to 220ms; the slowest is a cold browser) |
+| Shell ready (`performance.mark("tl-shell-ready")` at the end of `init()`) | under 500ms | 177ms (at most 217ms) |
+| A page or segment already drawn, to its first frame | under 100ms | 19ms to 35ms, the fade included |
+
+Once the Overview's chart is drawn, `api.js`'s `prefetchActions` asks
+for the recommendations and the checks (`/api/quick-actions`) while
+the browser is idle (`requestIdleCallback`, at most 2 seconds; half a
+second later where there's no idle callback). Both are cached per
+window (`loadRecommendations`, `loadQuickActions`), so Actions opens
+from them without a fetch. A new window or Redraw figures clears the
+cache.
+
 ## Testing
 
 `tests/test_service_static.py` greps every first-party file in
@@ -1039,7 +1099,7 @@ to a view. `tests/test_ui_copy.py` holds the dashboard's own words to
 every `JARGON` word is a Glossary term, that the client's token pattern
 is the server's, that each place server text shows goes through
 `prose()` (and `plainText` where a link can't go), that no string the
-dashboard shows says "tab", and that tables name the actions they feed. The chart tests hold `CHART_SPECS` to the catalogue above, check every chart's data names a real route or report table, and keep bars thin, colours tied to entities and money axes in step with the billing mode. There is no headless browser: `urllib.request` plus string checks is enough for a
+dashboard shows says "tab", and that tables name the actions they feed. The chart tests hold `CHART_SPECS` to the catalogue above, check every chart's data names a real route or report table, and keep bars thin, colours tied to entities and money axes in step with the billing mode. `tests/test_ui_motion.py` holds the motion, forced colours and load budget above to their source: the View Transition's guards and timing, the count-up's final text, the stagger's cap, the reduced-motion and forced-colours rules, the shell-ready mark and the idle prefetch. There is no headless browser: `urllib.request` plus string checks is enough for a
 stdlib-only test suite.
 
 ## Modules
@@ -1049,7 +1109,7 @@ stdlib-only test suite.
 | `app.js` | the entry point: the router (`resolveRoute`, `showView`, `VIEW_RENDERERS`), the sidebar, the page header, the project and window pickers (`menuControl`) and the theme toggle |
 | `core.js` | `el`/`clear`, `localStorage` helpers, the shared `state`, `WINDOW_OPTIONS`, `renderedViews`, the `goTo` and `pickProject` hooks (`setRouteHandler`, `setProjectHandler`) and the linked-highlight bus (`highlight`, `listenHighlight`) |
 | `format.js` | the one number format: `formatCell`, `money`/`moneyText`/`moneyNode`/`moneyParts` (the `Units.money` mirror), `currencyAmount`, `moneyUnit`, `readableAmounts`, `compactNumber`, `signedPercent`, `fraction` (a price ratio in words: "a tenth of"), `shortTs`/`relativeTime`, `projectName` |
-| `api.js` | `fetchJson`, `loadInto`, `postJson`, `withWindow`/`withProject`, `scopeKey`, `loadReport` and `loadRecommendations` (cached per window and project), `loadProjects` (the project picker's list), the figures-as-of stamp, and the connection state behind "Service unreachable" |
+| `api.js` | `fetchJson`, `loadInto`, `postJson`, `withWindow`/`withProject`, `scopeKey`, `loadReport`, `loadRecommendations` and `loadQuickActions` (each cached per window and project), `prefetchActions`, `loadProjects` (the project picker's list), the figures-as-of stamp, and the connection state behind "Service unreachable" |
 | `ui.js` | the components (see "Components"): buttons, chips, tiles, panels, callouts, empty states, skeletons, command blocks and `RESTART_NOTE`, popovers, tooltips, drawers, toasts and the confirm dialog |
 | `grid.js` | the data grid (`dataGrid`, with `link` and `swatch` for linked highlight), report tables (`renderTable`, `renderPlacedTables`), `renderMappedSections`, `simpleTable`, `pulseRow` |
 | `charts.js` | the chart frame: `CHART_SPECS`, `fillSummary`, `ENTITY_COLOURS`/`entityColour`, axes, the tooltip, keyboard reading, the table view, resize, `drawChart`/`holdChart`/`chartError` |

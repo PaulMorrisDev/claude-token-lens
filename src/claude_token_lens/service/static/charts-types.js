@@ -71,10 +71,11 @@ function sublayer(g, name, x, y) {
   return inner.attr("transform", "translate(" + x + "," + y + ")");
 }
 
-// Set attributes now, or over the morph when there is one.
+// Set attributes now, or over the morph when there is one (after the
+// delay the page asked for).
 function morph(selection, ctx, marks) {
   var ms = ctx.duration(marks);
-  return ms ? selection.transition().duration(ms).ease(ctx.ease) : selection;
+  return ms ? selection.transition().delay(ctx.delay).duration(ms).ease(ctx.ease) : selection;
 }
 
 // The tooltip and the click for a mark whose datum carries tip and open.
@@ -1344,6 +1345,7 @@ function buildSessionTimeline(ctx, session) {
         .attr("stroke-dasharray", length + " " + length)
         .attr("stroke-dashoffset", length)
         .transition()
+        .delay(ctx.delay)
         .duration(ms)
         .ease(ctx.ease)
         .attr("stroke-dashoffset", 0)
