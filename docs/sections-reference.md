@@ -422,7 +422,8 @@ The `autoCompactWindow` sweep: full write-up and worked example in
 - `compaction_sim_by_agent_type` — every agent type's (`"top-level"` and
   each subagent type) sessions, observed cost, best candidate window,
   its cost, the saving vs. observed (0 floor), the delta in percent, and
-  a recommendation string naming the window.
+  a recommendation string naming the window. Only the `"top-level"` row
+  says to set it: the window is one setting for the whole session.
 - `compaction_sim_by_task` — the same best-window roll-up as
   `compaction_sim_by_agent_type`, keyed by the kind of task metrics
   capture reported (`task=`) instead of agent type, main sessions only.
@@ -444,7 +445,11 @@ reply after it re-caching its whole context, with the share of the
 starting context real compactions still read from cache read, not
 written. Files re-read after a summary aren't charged by the sweep. A
 real, already-observed compaction is kept as-is under every candidate
-window rather than re-simulated.
+window rather than re-simulated, so a window above the one a session ran
+at costs what it did: raising the window can't be tested. Main sessions a
+scheduled or looped task started, with no message of yours, are not
+replayed (they never compact), and the `compactions` section leaves them
+out too.
 
 `recommend.recommend()` runs the `compaction-window` rule (lever
 `autoCompactWindow`, category `settings`). It names a floor ("at least
@@ -455,6 +460,10 @@ redundant read in `topology_redundant_reads`), is still more
 than 5% of observed cost (`1 - switch_pct`) and more than $1.00
 (`switch_usd`). The action says the figure is modelled, not observed.
 See [`docs/compaction-sim.md`](compaction-sim.md#the-report-section).
+Once the sweep has priced the main sessions, `compaction-churn` is
+dropped and `long-context-share` keeps only its workflow advice, whether
+or not `compaction-window` fires: the replay is the one answer on the
+setting.
 
 ## `model_swap` (`model_swap.py`)
 
@@ -626,13 +635,17 @@ test and privacy are in [concepts](concepts.md#7-quality-signals).
   say) is blank.
 - `quality_by_setup` — per agent type, model and effort (the model and
   effort most of a run's replies used; runs that never replied are left
-  out): the main shares and per-run measures, the setup compared with
-  (the one that agent used most), a verdict (`only`, `baseline`,
-  `worse`, `possibly_worse`, `better`, `possibly_better`,
-  `no_clear_difference`, `too_little_data`) and the difference in
-  words. Setups ran at different times on possibly different work. The
-  retried share is shown but not compared (the largest model can never
-  be retried on a larger one).
+  out, and so are main sessions a scheduled or looped task started with
+  no message of yours, `Run.scheduled`): the main shares and per-run
+  measures, the setup compared with (the one that agent used most), a
+  verdict (`only`, `baseline`, `worse`, `possibly_worse`, `better`,
+  `possibly_better`, `no_clear_difference`, `too_little_data`,
+  `not_comparable`) and the difference in words. `not_comparable` means
+  the two setups' mean replies per run are more than
+  `quality.COMPARABLE_SIZE` (5) times apart, so no test is run. Setups
+  ran at different times on possibly different work. The retried share
+  is shown but not compared (the largest model can never be retried on
+  a larger one).
 - `quality_retried` — per agent type and model with at least one run
   retried on a larger model (`quality.retried_rows`; the rule is in
   [concepts](concepts.md#7-quality-signals)): runs that edited files,

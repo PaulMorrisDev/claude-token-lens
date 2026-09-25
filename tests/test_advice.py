@@ -228,6 +228,52 @@ def test_compaction_window_is_dropped_when_already_at_or_below_the_floor():
     assert not any(r.id == "compaction-window" for r in out)
 
 
+def _replayed_report() -> ReportModel:
+    """A report whose compaction replay priced the main sessions and found
+    no window worth setting (the live case: 300,000 within 0.2% of the
+    cheapest point, so ``compaction-window`` didn't fire)."""
+    report = _model_swap_report([])
+    table = Table(
+        name="compaction_sim_by_window",
+        columns=[Column(key="window", label="Window"), Column(key="compactions_per_session", label="Per session"),
+                 Column(key="cost", label="Cost", kind="money"), Column(key="delta_usd", label="Delta", kind="money")],
+        rows=[["200,000", 4.57, 322.6, 14.8], ["300,000", 1.6, 308.4, 0.55], ["none", 1.57, 307.88, 0.0]],
+    )
+    report.sections.append(Section(key="compaction_sim", title="Compaction-window sweep", tables=[table]))
+    return report
+
+
+def test_with_a_replay_verdict_churn_and_long_context_leave_the_window_to_it():
+    snap = Snapshot(path=None, ts="2026-09-25T00:00:00Z", data={"effective": {"autoCompactWindow": 300_000}})
+    recs = [
+        _compaction("compaction-churn", title="churn",
+                    evidence=[("Compactions per session (mean)", 4.2, "compactions.compactions_summary", "x")]),
+        _compaction("long-context-share", title="long"),
+    ]
+    out = advice.finish(recs, _replayed_report(), snap, Units())
+    assert [r.id for r in out] == ["long-context-share"]
+    (long_ctx,) = out
+    assert long_ctx.lever is None and long_ctx.changes == [] and long_ctx.category == "workflow"
+    (fix,) = fixes.build_fixes(long_ctx)
+    words = (fix["prompt"] + " ".join(text for _label, text in fix["explainer"])).lower()
+    assert "subagent" in fix["prompt"]
+    assert "lower" not in words and "sooner" not in words and "autocompactwindow" not in words
+
+
+def test_without_a_replay_churn_and_long_context_never_point_the_window_opposite_ways():
+    recs = [_compaction("compaction-churn", title="churn"), _compaction("long-context-share", title="long")]
+    out = {r.id: r for r in advice.finish(recs, _model_swap_report([]), None, Units())}
+    (raise_it,) = out["compaction-churn"].changes
+    assert raise_it.key == "autoCompactWindow" and "larger" in raise_it.suggested
+    assert out["long-context-share"].changes == [] and out["long-context-share"].lever is None
+    # On its own, long-context-share still owns the setting.
+    (alone,) = advice.finish([_compaction("long-context-share", title="long")], _model_swap_report([]), None, Units())
+    assert alone.lever == "autoCompactWindow" and "smaller" in alone.changes[0].suggested
+    # ...unless the replay has a verdict.
+    (deferred,) = advice.finish([_compaction("long-context-share", title="long")], _replayed_report(), None, Units())
+    assert deferred.lever is None and deferred.changes == []
+
+
 def test_spawn_cost_is_dropped_for_agents_no_file_can_change():
     report = _model_swap_report([])
     recs = [

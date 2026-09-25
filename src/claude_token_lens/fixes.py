@@ -333,10 +333,13 @@ _WORKFLOW_PROMPTS = {
         "it to a value that fits this finding. Show me the diff before saving. Claude Code will ask my "
         "permission before editing files under .claude."
     ),
+    # Workflow only: this form is used once the auto-compact window has
+    # been left to the compaction replay or to compaction-churn (see
+    # advice._consolidate_compaction), so it never proposes the setting.
     "long-context-share": (
-        "My top-level context is running large: {title_lower}. Please check the current autoCompactWindow "
-        "and propose either lowering it so we compact sooner, or moving exploration-heavy work into a "
-        "subagent whose context is discarded when it finishes. Show me the change before making it."
+        "My top-level context is running large: {title_lower}. From now on, send searches and "
+        "exploration-heavy work to a subagent, whose context is discarded when it finishes, and when I switch "
+        "to an unrelated task, suggest starting a fresh session instead of carrying this one on."
     ),
     "spawn-task-prompt": (
         "The instructions I write when spawning {agent} are long: {title_lower}. From now on, when I'm "
@@ -461,13 +464,11 @@ _WORKFLOW_EXPLAINER: dict[str, tuple[str, str, str]] = {
         "Set autoCompactWindow back to its previous value (Claude Code shows the change before saving it).",
     ),
     "long-context-share": (
-        "settings.json's autoCompactWindow (compacting sooner), or nowhere in the config at all if you "
-        "instead move exploration into a subagent whose context is discarded when it finishes.",
-        "Compacting sooner drops detail the same way raising the window avoids; moving exploration into a "
-        "subagent means its findings only reach the main session through its final report, which can lose "
-        "nuance.",
-        "Set autoCompactWindow back to its previous value, or go back to exploring directly in the main "
-        "session.",
+        "Nowhere in the config: how you work in the main session. The auto-compact window is left to the "
+        "compaction check, so this card doesn't change it.",
+        "Moving exploration into a subagent means its findings only reach the main session through its final "
+        "report, which can lose nuance; a fresh session starts without what the old one knew.",
+        "Go back to exploring directly in the main session and carrying one session across tasks.",
     ),
     "cache-read-dominance": (
         "Nothing to change here -- this card is informational.",

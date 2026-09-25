@@ -80,6 +80,16 @@ Retries stay out of the setup comparisons: the largest model can never
 be retried on a larger one, so the test would favour it by construction.
 They show in the tables, in before-and-after comparisons of one agent,
 and through :func:`retried_models`.
+
+Scheduled runs stay out of the setup comparisons too: a main session a
+scheduled or looped task started, with no message of yours
+(``Run.scheduled``), is usually a check that runs a command or two and
+stops, a different job from the work you steer, and a few dozen of them
+would otherwise become the main session's most-used setup. And a setup
+is compared only when its runs' mean replies per run is within
+:data:`COMPARABLE_SIZE` times the other's: a verdict between two-reply
+checks and five-hundred-reply sessions would be about the work, not the
+setup ("not comparable").
 """
 
 from __future__ import annotations
@@ -92,7 +102,7 @@ from typing import TYPE_CHECKING, Callable, Iterable
 
 from . import capture_catalogue
 from .fixes import _model_family
-from .model import Column, EventKind, Section, Table, TranscriptResult, Turn
+from .model import Column, EventKind, Section, Table, TranscriptResult, Turn, scheduled_main_session
 from .pricing import Pricing, effective_rates, price_turn
 from .workstyle import model_tier
 
@@ -113,6 +123,9 @@ MIN_DENOMINATOR = 10
 ALPHA = 0.05
 #: The smallest move in a share (half a percentage point) worth a label.
 MIN_SHARE_CHANGE = 0.005
+#: Two setups are compared only when one's mean replies per run is within
+#: this many times the other's.
+COMPARABLE_SIZE = 5.0
 
 #: How long after an agent run's last reply a run of the same agent on a
 #: larger model editing the same files counts as a retry.
@@ -255,6 +268,9 @@ class Run:
     outcome: str | None = None
     #: The agent was ended early by Claude Code (a rate limit, say).
     terminated_early: bool = False
+    #: Main session only: started by a scheduled or looped task, with no
+    #: message of yours. Left out of the setup comparisons.
+    scheduled: bool = False
     tool_errors_by_tool: dict = field(default_factory=dict)
 
     @property
@@ -353,6 +369,7 @@ def run_facts(
     run.api_errors = kinds[EventKind.API_ERROR]
     run.fallbacks = kinds[EventKind.MODEL_FALLBACK]
     run.compactions = kinds[EventKind.COMPACT_BOUNDARY]
+    run.scheduled = scheduled_main_session(result)
     if run.is_agent:
         # Cut off: stopped, never replied, or the last reply asked for a
         # tool and nothing came after it. A final StructuredOutput call is
@@ -855,17 +872,20 @@ def _setup(run: Run) -> tuple[str, str]:
 def setup_rows(runs: list[Run], money: Callable[[float], str] | None = None) -> list[dict]:
     """Per agent (and the main session), per model and effort: the setup
     signals, and how each setup compares with the agent's most-used one.
-    Runs with no reply have no model, so they are left out here (the
-    other tables count them). ``money`` (UX-2) formats a cost-unit
-    signal's ``before_text``/``after_text`` for the report's billing
-    mode; see :func:`compare_runs`."""
+    Runs with no reply have no model, and scheduled runs are a different
+    job (see the module docstring), so both are left out here (the other
+    tables count them). A setup whose runs are not :data:`COMPARABLE_SIZE`
+    close in replies per run to the most-used one's is "not comparable".
+    ``money`` (UX-2) formats a cost-unit signal's
+    ``before_text``/``after_text`` for the report's billing mode; see
+    :func:`compare_runs`."""
     out = []
     for group, group_runs in _groups(runs):
         if group == ALL_AGENTS:
             continue
         by_setup: dict[tuple[str, str], list[Run]] = {}
         for run in group_runs:
-            if run.replies:
+            if run.replies and not run.scheduled:
                 by_setup.setdefault(_setup(run), []).append(run)
         if not by_setup:
             continue
@@ -888,12 +908,21 @@ def setup_rows(runs: list[Run], money: Callable[[float], str] | None = None) -> 
                 "comparison": [],
             }
             if setup != base:
+                row["compared_with"] = f"{base[0]}, effort {base[1]}"
+                row["compared_model"], row["compared_effort"] = base
+                size, base_size = _replies_per_run(setup_runs), _replies_per_run(by_setup[base])
+                if max(size, base_size) > COMPARABLE_SIZE * min(size, base_size):
+                    row["difference"] = (
+                        f"Not compared: its runs averaged {size:,.1f} replies against {base_size:,.1f}, more "
+                        f"than {COMPARABLE_SIZE:g} times apart, so a difference would be the work, not the setup."
+                    )
+                    row["setup_verdict"] = "not_comparable"
+                    out.append(row)
+                    continue
                 # Not retries: the largest model can never be retried on a
                 # larger one, so the test would favour it by construction.
                 compared = [s for s in signals_for(group) if s.key != "retried"]
                 comparison = compare_runs(by_setup[base], setup_runs, compared, money)
-                row["compared_with"] = f"{base[0]}, effort {base[1]}"
-                row["compared_model"], row["compared_effort"] = base
                 row["comparison"] = comparison
                 row["difference"] = _difference(comparison)
                 row["setup_verdict"] = setup_verdict(comparison)
@@ -904,9 +933,14 @@ def setup_rows(runs: list[Run], money: Callable[[float], str] | None = None) -> 
     return out
 
 
+def _replies_per_run(runs: list[Run]) -> float:
+    return sum(run.replies for run in runs) / len(runs)
+
+
 #: ``setup_verdict`` values, strongest first: a setup is as bad as its
 #: worst signal that has a direction, except that clearly worse on some
-#: signals and clearly better on others is "mixed".
+#: signals and clearly better on others is "mixed". "not_comparable" is
+#: set by :func:`setup_rows` before any test, not by :func:`setup_verdict`.
 SETUP_VERDICTS = (
     "worse",
     "mixed",
@@ -915,6 +949,7 @@ SETUP_VERDICTS = (
     "possibly_better",
     "no_clear_difference",
     "too_little_data",
+    "not_comparable",
 )
 
 
@@ -1183,6 +1218,11 @@ def build_section(runs: list[Run], units: "Units | None" = None) -> Section:
         "Setups are compared across the whole window. So a setup used for different kinds of work, or in a "
         "different week, can differ for that reason alone. \"Your changes and what they did\" on {{page:setup/settings}} "
         "compares before and after each change you made.",
+        "The quality-by-setup table leaves out main sessions a scheduled or looped task started with no message of "
+        f"yours ({sum(1 for run in runs if run.scheduled)} in this window). A check that runs and stops is a "
+        "different job from the work you steer. A setup is tested against the most-used one only when their "
+        f"runs' mean replies are within {COMPARABLE_SIZE:g} times of each other. Otherwise it is marked not "
+        "comparable.",
         "Corrections are messages that start or contain a fixed phrase such as \"that's wrong\" or \"still "
         "broken\". Only the yes/no is kept, never the text.",
         "A run counts as retried on a larger model when a later run of the same agent type edited one of its "
@@ -1232,6 +1272,7 @@ ASSUMPTIONS: tuple[str, ...] = (
 __all__ = [
     "ALL_AGENTS",
     "ASSUMPTIONS",
+    "COMPARABLE_SIZE",
     "LABELS",
     "MAIN",
     "MIN_DENOMINATOR",
