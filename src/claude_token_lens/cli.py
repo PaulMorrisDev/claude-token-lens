@@ -34,7 +34,7 @@ from pathlib import Path
 from zoneinfo import available_timezones
 
 from . import __version__, baseline as baseline_mod, capture_catalogue, capture_view, classify, discovery, installer as installer_mod
-from . import onboarding
+from . import invocation, onboarding
 from . import pages
 from . import helptext, hook_health, probe as probe_mod, recache, signals as signals_mod, snapshots
 from . import statusline as statusline_mod
@@ -691,7 +691,7 @@ def _add_capture_args(sub: argparse.ArgumentParser) -> None:
         "values",
         nargs="*",
         metavar="VALUE",
-        help="the level for 'level'; metric ids for 'enable' and 'disable' (see 'capture status'); "
+        help="the level for 'level'; metric ids for 'enable' and 'disable' (see 'claude-token-lens capture status'); "
         "on or off for 'feedback' and 'brief'",
     )
     sub.add_argument(
@@ -1463,7 +1463,9 @@ def _emit_report_outputs(model, args: argparse.Namespace) -> None:
     patch_text = _render_patch_set_text(model, args)
 
     if getattr(args, "json", False):
-        print(render_json(model, patch_set=patch_text))
+        # main leaves JSON output alone (a path in the prefix would break
+        # it as text); its commands are swapped string by string here.
+        print(invocation.rewrite_rendered(render_json(model, patch_set=patch_text), "json"))
     else:
         text = render_markdown(model, explain=getattr(args, "explain", False))
         print(text, end="")
@@ -1473,7 +1475,7 @@ def _emit_report_outputs(model, args: argparse.Namespace) -> None:
 
     html_path = getattr(args, "html", None)
     if html_path:
-        Path(html_path).write_text(render_html(model), encoding="utf-8")
+        Path(html_path).write_text(invocation.rewrite_rendered(render_html(model), "html"), encoding="utf-8")
         if patch_text:
             Path(html_path).parent.joinpath("patch-set.txt").write_text(patch_text, encoding="utf-8")
 
@@ -2948,7 +2950,7 @@ def _cmd_update(args: argparse.Namespace, *, runner=None) -> int:
         print(
             "claude-token-lens update: this copy runs from a .pyz file, which pip can't update. "
             f"Download the new claude-token-lens.pyz from {_RELEASES_URL}, put it in place of this one, "
-            "then run it with install-service.",
+            f"then run '{invocation.command_prefix()} install-service'.",
             file=sys.stderr,
         )
         return 2
@@ -2956,11 +2958,11 @@ def _cmd_update(args: argparse.Namespace, *, runner=None) -> int:
     install = [sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", "--no-deps", args.source]
     finish = [sys.executable, "-m", "claude_token_lens", "update", "--finish", *_update_finish_args(args)]
     print(f"claude-token-lens update: this is version {__version__}.")
-    print("1. Install the newest version:\n   " + " ".join(install))
+    print("1. Install the newest version:\n   " + invocation.shell_line(install))
     if args.dry_run:
         print(
             "2. Finish with the new version: restart the dashboard on it, bring Claude Code's hook entries "
-            "up to date, and look for copies installed for other Pythons:\n   " + " ".join(finish)
+            "up to date, and look for copies installed for other Pythons:\n   " + invocation.shell_line(finish)
         )
         print("Dry run: nothing installed or restarted.")
         return 0
@@ -2979,7 +2981,7 @@ def _cmd_update(args: argparse.Namespace, *, runner=None) -> int:
     )
     new_version = (probe.stdout or "").strip() or "unknown"
     print(f"   Installed version {new_version}.")
-    print("2. Finish with the new version:\n   " + " ".join(finish))
+    print("2. Finish with the new version:\n   " + invocation.shell_line(finish))
     sys.stdout.flush()
     return runner(finish).returncode
 
@@ -3040,7 +3042,7 @@ def _cmd_update_finish(
     dashboard still answers on the port, else 0."""
     import subprocess
 
-    from . import __version__, invocation, upgrade
+    from . import __version__, upgrade
 
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
@@ -3659,7 +3661,7 @@ def _capture_status(
     ids = capture.active_metrics()
     if capture.is_on:
         if capture.expired():
-            stdout.write("Its end time has passed, so the hook adds nothing now. Turn it back on with 'capture on'.\n")
+            stdout.write("Its end time has passed, so the hook adds nothing now. Turn it back on with 'claude-token-lens capture on'.\n")
         if capture.projects:
             only = [p for p in capture.projects if not p.startswith("!")]
             skip = [p[1:] for p in capture.projects if p.startswith("!")]
@@ -3889,7 +3891,7 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
                 stdout.write(f"  - {line}\n")
             if preview.sample < 100:
                 stdout.write(f"  (in {preview.sample}% of sessions)\n")
-            stdout.write(pages.plain("{{page:setup/capture}} and 'capture status' show what it really costs once it runs.\n"))
+            stdout.write(pages.plain("{{page:setup/capture}} and 'claude-token-lens capture status' show what it really costs once it runs.\n"))
         if args.dry_run:
             stdout.write("Dry run: config.toml left unchanged.\n")
         else:
@@ -4102,7 +4104,7 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
                 "   Not deleted: settings.json still runs claude-token-lens hooks from this folder (step 1 "
                 "above). Deleting it now would leave Claude Code calling hook scripts that no longer exist, "
                 "failing silently on every session or tool call. Remove the entries first (answer yes at step "
-                "1, or run 'claude-token-lens capture remove'), then run uninstall --delete-data again.\n"
+                "1, or run 'claude-token-lens capture remove'), then run 'claude-token-lens uninstall --delete-data' again.\n"
             )
         elif _ask(f"   Delete {footprint.home_label(plan.data_dir)}? This cannot be undone.", assume_yes=args.yes):
             failures = footprint.delete_data(plan.data_dir)
@@ -4115,7 +4117,12 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
                 print("   Deleted.")
             print()
 
-    print("Finally, remove the program itself with: pip uninstall claude-token-lens")
+    pyz = installer_mod.detect_pyz_path()
+    if pyz is not None:
+        print(f"Finally, remove the program itself: delete {pyz}")
+    else:
+        python = invocation._python_word(invocation._terminal_python(sys.executable))
+        print(f"Finally, remove the program itself with: {python} -m pip uninstall claude-token-lens")
     return 1 if problems else 0
 
 
@@ -4731,6 +4738,11 @@ def _insert_default_subcommand(argv: list[str]) -> list[str]:
     return [DEFAULT_SUBCOMMAND, *argv]
 
 
+#: Subcommands whose output is data for another program (Claude Code's
+#: statusline, a settings.json fragment, an export), printed as written.
+_DATA_OUTPUT = frozenset({"statusline", "snapshot-config", "export", "scrub-fixture"})
+
+
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -4738,9 +4750,28 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:]) if argv is None else list(argv)
     raw_argv = _insert_default_subcommand(raw_argv)
 
-    parser = _make_parser()
-    args = parser.parse_args(raw_argv)  # may raise SystemExit (--version, --help, errors)
+    # Every command this prints (help, notes, fixes, next steps) is
+    # written as 'claude-token-lens ...', which runs only when pip's
+    # Scripts folder is on PATH: print it in the form that runs this
+    # install (invocation.py). JSON is swapped string by string where it
+    # is rendered instead (a path in the prefix would break it as text).
+    streams = sys.stdout, sys.stderr
+    data = bool(raw_argv) and raw_argv[0] in _DATA_OUTPUT
+    prefix = invocation.SHORT if data else invocation.command_prefix()
+    if prefix != invocation.SHORT:
+        sys.stdout = invocation.RewritingStream(sys.stdout, prefix)
+        sys.stderr = invocation.RewritingStream(sys.stderr, prefix)
+    try:
+        parser = _make_parser()
+        args = parser.parse_args(raw_argv)  # may raise SystemExit (--version, --help, errors)
+        if getattr(args, "json", False):
+            sys.stdout = streams[0]
+        return _run(args)
+    finally:
+        sys.stdout, sys.stderr = streams
 
+
+def _run(args: argparse.Namespace) -> int:
     command = args.command or DEFAULT_SUBCOMMAND
 
     if command == "pricing-check":

@@ -373,7 +373,7 @@ making it:
 Nothing removes the `settings.json.bak-*` copies; delete them yourself
 once you're happy.
 
-Finally, if installed via `pip`: `pip uninstall claude-token-lens`. Via
+Finally, if installed via `pip`: `python -m pip uninstall claude-token-lens`. Via
 `.pyz`: delete the one file.
 
 ## 8. Update to a newer version

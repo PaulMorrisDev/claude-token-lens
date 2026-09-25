@@ -22,12 +22,16 @@ because PowerShell is the terminal Windows opens by default.
 
 :func:`rewrite` and :func:`rewrite_payload` swap the prefix into text that
 names a subcommand, so help written with the short form reads right on
-every install.
+every install: the dashboard's API, the CLI's own output
+(:class:`RewritingStream`, set up by ``cli.main``) and the reports it
+writes (:func:`rewrite_rendered`).
 """
 
 from __future__ import annotations
 
 import functools
+import html
+import json
 import os
 import re
 import shlex
@@ -127,11 +131,19 @@ def _quote(path: str) -> str:
 def _command_pattern() -> re.Pattern[str]:
     """``claude-token-lens`` followed by a real subcommand or an option,
     and not part of a longer name (``claude-token-lens.pyz``) or a
-    sentence ("claude-token-lens ships ...")."""
+    sentence ("claude-token-lens ships ..."). Nor a message's label, the
+    command's name and a colon ("claude-token-lens update: installed",
+    "claude-token-lens serve --purge: will delete"), which names the
+    command that is talking rather than one to run."""
     from .cli import SUBCOMMANDS  # the CLI imports the service; import late
 
     words = "|".join(re.escape(word) for word in sorted(SUBCOMMANDS, key=len, reverse=True))
-    return re.compile(r"(?<![\w./\\-])" + re.escape(SHORT) + r"(?= (?:(?:" + words + r")(?![\w-])|--?[a-z]))")
+    return re.compile(
+        r"(?<![\w./\\-])"
+        + re.escape(SHORT)
+        + r"(?= (?:(?:" + words + r")(?![\w-])|--?[a-z]))"
+        + r"(?! (?:\S+ )?\S*:(?:\s|$))"
+    )
 
 
 def rewrite(text: str, prefix: str) -> str:
@@ -155,3 +167,57 @@ def rewrite_payload(value: object, prefix: str) -> object:
     if isinstance(value, (list, tuple)):
         return [rewrite_payload(item, prefix) for item in value]
     return value
+
+
+def rewrite_rendered(text: str, kind: str, prefix: str | None = None) -> str:
+    """A rendered report with its commands in this install's form.
+    ``kind`` is how it was rendered: ``"json"`` (``render_json``: parsed,
+    rewritten string by string and rendered again the same way, sorted
+    keys and a 2-space indent), ``"html"`` (the prefix HTML-escaped, since
+    it may hold ``&`` and quotes) or ``"markdown"``."""
+    prefix = command_prefix() if prefix is None else prefix
+    if prefix == SHORT or SHORT not in text:
+        return text
+    if kind == "json":
+        return json.dumps(rewrite_payload(json.loads(text), prefix), sort_keys=True, indent=2)
+    if kind == "html":
+        return rewrite(text, html.escape(prefix, quote=True))
+    return rewrite(text, prefix)
+
+
+class RewritingStream:
+    """A text stream that writes through :func:`rewrite`, so every command
+    the CLI prints, whichever module wrote the text, is in this install's
+    form. ``cli.main`` puts it on ``sys.stdout``/``sys.stderr`` for
+    output people read; everything but ``write`` goes to the stream it
+    wraps."""
+
+    def __init__(self, stream, prefix: str) -> None:
+        self._stream = stream
+        self._prefix = prefix
+
+    def write(self, text: str) -> int:
+        return self._stream.write(rewrite(text, self._prefix))
+
+    def writelines(self, lines) -> None:
+        for line in lines:
+            self.write(line)
+
+    def __getattr__(self, name: str):
+        return getattr(self._stream, name)
+
+
+def shell_line(argv: list[str]) -> str:
+    """``argv`` as one line to paste into this platform's terminal: the
+    program through :func:`_quote`, each argument quoted when it needs it."""
+    if not argv:
+        return ""
+    words = [_quote(argv[0])]
+    for arg in argv[1:]:
+        if _PLAIN_PATH.fullmatch(arg):
+            words.append(arg)
+        elif sys.platform == "win32":
+            words.append('"' + arg + '"')
+        else:
+            words.append(shlex.quote(arg))
+    return " ".join(words)

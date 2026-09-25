@@ -1011,11 +1011,12 @@ def test_profile_diff_bad_scope_is_bad_request(server):
 def test_profile_diff_never_includes_a_project_path(server):
     # The route never accepts a client-supplied project directory (see
     # route_profile_diff's own docstring note) -- a project-scoped scope
-    # simply renders its apply command without --project-dir, so the
-    # user fills in their own path when they actually run it.
+    # names the folder the command is run from, and a note says to run
+    # it in the project's folder.
     resp, body = server.get_json("/api/profiles/interactive-chat/diff?scope=repo")
     assert resp.status == 200
-    assert "--project-dir" not in body["data"]["apply_command"]
+    assert "--project-dir . " in body["data"]["apply_command"] + " "
+    assert any("project's own folder" in note for note in body["data"]["notes"])
 
 
 def test_create_profile_writes_a_real_toml_file_and_is_listed(server):

@@ -5,7 +5,7 @@
  * metrics-capture banner.
  */
 
-import { clear, el, goTo, renderedViews, state, storageGet, storageSet } from "./core.js";
+import { clear, cli, el, goTo, renderedViews, state, storageGet, storageSet } from "./core.js";
 import { relativeTime, shortTs, thousands, timeNode } from "./format.js";
 import { connection, fetchJson, figures, resetFiguresAsOf, runReconnectRetries } from "./api.js";
 import { captureLink, pageLink } from "./links.js";
@@ -20,7 +20,7 @@ export function renderLogonNotice(health, container) {
     callout({
       tone: "critical",
       title: "The service doesn't start when you log on.",
-      text: "After a restart, history older than Claude Code's cleanup period (cleanupPeriodDays) is lost. To fix it, run: claude-token-lens install-service",
+      text: "After a restart, history older than Claude Code's cleanup period (cleanupPeriodDays) is lost. To fix it, run: " + cli("install-service"),
     })
   );
 }

@@ -586,7 +586,7 @@ METRICS: tuple[Metric, ...] = (
         title="Large tool outputs",
         what=f"After a tool result of about {BIG_OUTPUT_TOKENS:,} tokens or more, how much of it Claude "
         "needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or "
-        "MCP result. 'capture status' shows how long that has added, measured from your own sessions.",
+        "MCP result. 'claude-token-lens capture status' shows how long that has added, measured from your own sessions.",
         why="Quieter commands, offset reads and output caps where big outputs weren't needed.",
         powers=("tool_output",),
         tag="out=needed|part|unneeded",

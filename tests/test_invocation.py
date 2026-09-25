@@ -176,6 +176,12 @@ PREFIX = r'& "C:\Program Files\Python314\python.exe" -m claude_token_lens'
         ("claude-token-lens reports", "claude-token-lens reports"),
         ("~/.claude-token-lens capture", "~/.claude-token-lens capture"),
         ("my-claude-token-lens capture", "my-claude-token-lens capture"),
+        # A message's label names the command that is talking.
+        ("claude-token-lens update: installed.", "claude-token-lens update: installed."),
+        ("claude-token-lens serve --purge: will delete", "claude-token-lens serve --purge: will delete"),
+        ("claude-token-lens capture:\n", "claude-token-lens capture:\n"),
+        # A colon further on is part of the command.
+        ("claude-token-lens apply --revert 2026-09-25T10:00:00", f"{PREFIX} apply --revert 2026-09-25T10:00:00"),
     ],
 )
 def test_rewrite_swaps_only_commands(text, expected):
@@ -205,6 +211,114 @@ def test_rewrite_payload_reaches_nested_strings_and_leaves_keys():
         "rows": [["tl baseline", 3, None, True], ["tl sessions"]],
         "n": 1.5,
     }
+
+
+def test_rewrite_rendered_json_keeps_the_rendering():
+    text = json.dumps({"b": "claude-token-lens report\nclaude-token-lens baseline", "a": 1}, sort_keys=True, indent=2)
+    out = invocation.rewrite_rendered(text, "json", PREFIX)
+    assert json.loads(out) == {"a": 1, "b": f"{PREFIX} report\n{PREFIX} baseline"}
+    assert out == json.dumps(json.loads(out), sort_keys=True, indent=2)
+
+
+def test_rewrite_rendered_html_escapes_the_prefix():
+    out = invocation.rewrite_rendered("<code>claude-token-lens report</code>", "html", PREFIX)
+    assert out == f"<code>{html.escape(PREFIX, quote=True)} report</code>"
+
+
+def test_rewrite_rendered_markdown_and_the_short_form():
+    assert invocation.rewrite_rendered("Run `claude-token-lens report`.", "markdown", "tl") == "Run `tl report`."
+    text = "<p>claude-token-lens report</p>"
+    assert invocation.rewrite_rendered(text, "html", invocation.SHORT) is text
+
+
+def test_rewriting_stream_rewrites_what_it_writes_and_passes_the_rest_on():
+    import io
+
+    target = io.StringIO()
+    stream = invocation.RewritingStream(target, "tl")
+    stream.write("Run claude-token-lens report.\n")
+    stream.writelines(["claude-token-lens update: done.\n", "claude-token-lens baseline\n"])
+    stream.flush()
+    assert stream.getvalue() == "Run tl report.\nclaude-token-lens update: done.\ntl baseline\n"
+
+
+@pytest.mark.parametrize(
+    ("platform", "argv", "expected"),
+    [
+        (
+            "win32",
+            [r"C:\Program Files\Py\python.exe", "-m", "pip", "install", "git+https://example.test/x"],
+            r'& "C:\Program Files\Py\python.exe" -m pip install git+https://example.test/x',
+        ),
+        ("win32", [r"C:\Py\python.exe", "--projects-root", r"C:\my work"], r'C:\Py\python.exe --projects-root "C:\my work"'),
+        ("linux", ["/usr/bin/python3", "--config-dir", "/home/me/my dir"], "/usr/bin/python3 --config-dir '/home/me/my dir'"),
+        ("linux", [], ""),
+    ],
+)
+def test_shell_line_quotes_what_needs_it(monkeypatch, platform, argv, expected):
+    monkeypatch.setattr(invocation.sys, "platform", platform)
+    assert invocation.shell_line(argv) == expected
+
+
+# -- the CLI prints it ----------------------------------------------------
+
+
+@pytest.fixture
+def cli_form(monkeypatch):
+    from claude_token_lens import cli
+
+    monkeypatch.setenv(invocation.ENV_VAR, "tl")
+    return cli
+
+
+def test_the_cli_prints_commands_in_this_installs_form(cli_form, monkeypatch, capsys):
+    import sys
+
+    def fake(args):
+        print("Next: claude-token-lens capture status")
+        print("claude-token-lens pricing-check: done", file=sys.stderr)
+        return 0
+
+    monkeypatch.setattr(cli_form, "_cmd_pricing_check", fake)
+    before = sys.stdout, sys.stderr
+    assert cli_form.main(["pricing-check"]) == 0
+    assert (sys.stdout, sys.stderr) == before
+    out, err = capsys.readouterr()
+    assert out == "Next: tl capture status\n"
+    assert err == "claude-token-lens pricing-check: done\n"
+
+
+def test_cli_help_comes_in_this_installs_form(cli_form, capsys):
+    import sys
+
+    before = sys.stdout, sys.stderr
+    with pytest.raises(SystemExit):
+        cli_form.main(["capture", "--help"])
+    assert (sys.stdout, sys.stderr) == before
+    out = capsys.readouterr().out
+    assert out.startswith("usage: tl capture ")
+    assert "'tl capture status'" in out
+    assert not invocation._command_pattern().search(out)
+
+
+@pytest.mark.parametrize(
+    ("argv", "handler"),
+    [
+        (["report", "--json"], "_cmd_report_like"),
+        (["statusline"], "_cmd_statusline"),
+        (["export"], "_cmd_export"),
+        (["snapshot-config"], "_cmd_snapshot_config"),
+        (["scrub-fixture"], "_cmd_scrub_fixture"),
+    ],
+)
+def test_data_output_is_printed_as_written(cli_form, monkeypatch, capsys, argv, handler):
+    def fake(args, **_kwargs):
+        print('{"command": "claude-token-lens report"}')
+        return 0
+
+    monkeypatch.setattr(cli_form, handler, fake)
+    cli_form.main(argv)
+    assert capsys.readouterr().out == '{"command": "claude-token-lens report"}\n'
 
 
 # -- the service serves it ------------------------------------------------
@@ -251,6 +365,26 @@ def test_report_json_stays_valid_json_with_the_form_swapped_in(served):
     assert resp.status == 200
     leftover = [s for s in _strings(json.loads(raw)) if invocation._command_pattern().search(s)]
     assert leftover == []
+
+
+@pytest.mark.parametrize(("path", "form"), [("/api/report.md", SERVED), ("/api/report.html", html.escape(SERVED, quote=True))])
+def test_the_markdown_and_html_reports_come_in_this_installs_form(served, monkeypatch, path, form):
+    from claude_token_lens.service import api as service_api
+
+    rendered = service_api.invocation.rewrite_rendered
+    seen = []
+
+    def spy(text, kind, prefix=None):
+        seen.append(kind)
+        return rendered(text + "\nclaude-token-lens baseline", kind, prefix)
+
+    monkeypatch.setattr(service_api.invocation, "rewrite_rendered", spy)
+    resp, raw = served.request("GET", path)
+    assert resp.status == 200
+    text = raw.decode("utf-8")
+    assert seen == ["markdown" if path.endswith(".md") else "html"]
+    assert text.endswith(f"\n{form} baseline")
+    assert not invocation._command_pattern().search(text)
 
 
 def _strings(value):

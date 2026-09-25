@@ -40,6 +40,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the interpreter's full path when the `python` on `PATH` is a
   different one. Set `CLAUDE_TOKEN_LENS_COMMAND` to choose the form
   yourself (for example an alias).
+- The same goes for every command the CLI prints (help, next steps,
+  fixes, undo lines), the `report --html`/`--json` and `monthly-report`
+  files, and the dashboard's Markdown and HTML reports. A message's own
+  label ("claude-token-lens update: ...") stays as it is, and data other
+  programs read (the statusline, `export`, `--json` output) is printed
+  as written. Commands that named only the subcommand ('capture status',
+  `apply --revert`) now name the whole command, `update` prints its two
+  steps quoted so they paste, and `uninstall` ends with the pip command
+  for this Python (or the file to delete for the `.pyz`).
+- A profile's apply command for a project (`--scope project-local` or
+  `repo`) was refused with exit status 2: the dashboard left out
+  `--project-dir`. It now passes `--project-dir .` and says to run it in
+  the project's folder (the dashboard still never shows a path).
 - Setup › Capture says how its end time works: a choice saves as soon
   as you pick it, the days count from that moment, and the menu's first
   entry shows when capture ends now ("In 12 days: 2026-10-07 09:00

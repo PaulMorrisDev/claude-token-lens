@@ -318,10 +318,11 @@ def apply_command(profile_id: str, scope: str, project_path: str | None = None) 
 
     Privacy: when ``project_path`` is omitted, nothing in the returned
     text is an absolute path -- a ``project-local``/``repo`` scope with
-    no ``project_path`` simply omits ``--project-dir`` (matching
-    ``apply``'s own documented default of the current working
-    directory). When ``project_path`` is given it is printed exactly as
-    given, and nowhere else in the output.
+    no ``project_path`` writes ``--project-dir .``, the folder the
+    command is run from (``apply`` refuses a project scope without
+    ``--project-dir``, so leaving it out made a command that couldn't
+    run). When ``project_path`` is given it is printed exactly as given,
+    and nowhere else in the output.
 
     The flag is ``--project-dir``, not ``--project``: the CLI's common
     ``--project`` flag (every subcommand) already means "a repeatable
@@ -338,8 +339,8 @@ def apply_command(profile_id: str, scope: str, project_path: str | None = None) 
     # project-local with it, so any other scope is named explicitly.
     if scope != "user":
         args += ["--scope", scope]
-    if scope in ("project-local", "repo") and project_path:
-        args += ["--project-dir", project_path]
+    if scope in ("project-local", "repo"):
+        args += ["--project-dir", project_path or "."]
     if scope == "repo":
         args.append("--allow-tracked")
     apply_cmd = " ".join(args)

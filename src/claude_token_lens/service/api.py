@@ -325,10 +325,7 @@ def _report_json_commands(text: str) -> str:
     """/api/report.json with its commands in this install's form. It is
     rendered text (render_json), so it is parsed and re-rendered the same
     way (sorted keys, 2-space indent), and only when the form differs."""
-    prefix = invocation.command_prefix()
-    if prefix == invocation.SHORT or invocation.SHORT not in text:
-        return text
-    return json.dumps(invocation.rewrite_payload(json.loads(text), prefix), sort_keys=True, indent=2)
+    return invocation.rewrite_rendered(text, "json")
 
 
 _SESSION_ID_RE = re.compile(r"^/api/session/([^/]+)$")
@@ -1707,10 +1704,12 @@ def make_handler(
         # (unlike diff.py's own apply_command signature) -- this route's
         # response is API/UI output, and this project's privacy rule
         # forbids a raw filesystem path in any of it; a project-scoped
-        # apply command is rendered without --project-dir, exactly as
-        # apply_command's own docstring describes for "project_path
-        # omitted" (the user fills it in themselves when they run it).
+        # apply command names the folder it is run from (--project-dir .),
+        # as apply_command's own docstring describes for "project_path
+        # omitted", and a note says where to run it.
         apply_cmd, launch_cmd = profile_diff_mod.apply_command(profile.id, scope).split("\n", 1)
+        if scope != "user":
+            notes.append("Run the command in the project's own folder: --project-dir . means the folder you run it from.")
 
         from ..fixes import LEVER_LABELS, SETTING_TEXT, profile_change_where, profile_prompt
 
@@ -2722,6 +2721,10 @@ def make_handler(
                     _tag, content_type, text = result
                     if content_type == "application/json":
                         text = _report_json_commands(text)
+                    elif content_type.startswith("text/html"):
+                        text = invocation.rewrite_rendered(text, "html")
+                    elif content_type.startswith("text/markdown"):
+                        text = invocation.rewrite_rendered(text, "markdown")
                     self._write_text(200, content_type, text, head_only=head_only)
                     return
                 status, payload = result
