@@ -57,10 +57,8 @@ class Page:
 
 
 #: The sidebar, in order -- mirrors ``PAGES`` in
-#: ``service/static/links.js`` on the ``feat/ui-redesign`` branch.
-#: Glossary's ``terms``/``how-costs-work`` segments are a Phase 8
-#: addition this module carries first; see ``tests/test_pages.py`` for
-#: how the sync check treats that gap until the branches merge.
+#: ``service/static/links.js`` (``tests/test_pages.py`` checks both
+#: name the same pages and segments, with the same labels).
 PAGES: tuple[Page, ...] = (
     Page("overview", "Overview"),
     Page(

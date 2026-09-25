@@ -43,7 +43,7 @@ import { renderHabits } from "./page-habits.js";
 import { renderConfig, renderProfiles } from "./page-setup.js";
 import { renderCapture } from "./page-capture.js";
 import { renderDataQuality } from "./page-data.js";
-import { renderGlossary } from "./page-glossary.js";
+import { renderCostCards, renderGlossary } from "./page-glossary.js";
 
 // One renderer per view key (links.js's VIEW_KEYS, in sidebar order).
 var VIEW_RENDERERS = {
@@ -63,7 +63,8 @@ var VIEW_RENDERERS = {
   "setup/profiles": renderProfiles,
   "setup/capture": renderCapture,
   data: renderDataQuality,
-  glossary: renderGlossary,
+  "glossary/terms": renderGlossary,
+  "glossary/how-costs-work": renderCostCards,
 };
 
 // ======================================================================

@@ -4,12 +4,8 @@ shows.
 
 Covers, per ``docs/writing-help.md``'s "Linking to another page" section:
 
-- ``pages.PAGES`` stays in sync with the dashboard's own registry
-  (``links.js`` on the sibling ``feat/ui-redesign`` worktree/branch --
-  this worktree's own ``service/static/links.js`` predates the redesign
-  and has no ``PAGES`` export, so the sync check reads the sibling
-  worktree directly and skips itself, with a clear reason, when that
-  worktree isn't checked out next to this one).
+- ``pages.PAGES`` stays in sync with the dashboard's own registry,
+  ``PAGES`` in ``service/static/links.js``.
 - Every ``{{page:...}}`` token actually written into a server string
   under ``src/`` resolves against that registry.
 - A token never reaches a recommendation's ``why``/``title`` or a
@@ -36,15 +32,7 @@ from claude_token_lens import pages
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "claude_token_lens"
 
-#: This worktree (``feat/ui-redesign-server``) and the sibling worktree
-#: building the dashboard itself (``feat/ui-redesign``) are two checkouts
-#: of the same repository under ``.claude/worktrees``. Only the sibling's
-#: ``links.js`` has been given the redesign's ``PAGES`` registry; this
-#: worktree's own copy is still the pre-redesign, tab-based version.
-_THIS_WORKTREE = Path(__file__).resolve().parents[1]
-_SIBLING_LINKS_JS = (
-    _THIS_WORKTREE.parent / "ui-redesign" / "src" / "claude_token_lens" / "service" / "static" / "links.js"
-)
+_LINKS_JS = SRC / "service" / "static" / "links.js"
 
 
 def _js_objects(array_body: str) -> list[str]:
@@ -111,13 +99,7 @@ def _parse_links_js_pages(text: str) -> dict[str, dict]:
 
 
 def test_pages_registry_matches_dashboard_links_js():
-    if not _SIBLING_LINKS_JS.exists():
-        pytest.skip(
-            f"sibling worktree not found at {_SIBLING_LINKS_JS} -- "
-            "the dashboard/pages.py sync check only runs with feat/ui-redesign "
-            "checked out next to this worktree"
-        )
-    js_pages = _parse_links_js_pages(_SIBLING_LINKS_JS.read_text(encoding="utf-8"))
+    js_pages = _parse_links_js_pages(_LINKS_JS.read_text(encoding="utf-8"))
     py_pages = {page.id: {"label": page.label, "segments": {s.id: s.label for s in page.segments}} for page in pages.PAGES}
     assert set(py_pages) == set(js_pages), (
         f"pages.PAGES and links.js PAGES name different pages: "
@@ -126,14 +108,6 @@ def test_pages_registry_matches_dashboard_links_js():
     for page_id, js_page in js_pages.items():
         py_page = py_pages[page_id]
         assert py_page["label"] == js_page["label"], f"{page_id}: {py_page['label']!r} != {js_page['label']!r}"
-        if page_id == "glossary":
-            # Phase 8 gives Glossary "terms" and "how-costs-work"
-            # segments in pages.py first; links.js on the sibling branch
-            # doesn't carry them yet (see pages.py's own PAGES docstring).
-            # Once it does, drop this branch -- glossary should compare
-            # like every other page below.
-            assert js_page["segments"] == {}, "links.js now has glossary segments: update this test and pages.py's docstring"
-            continue
         assert py_page["segments"] == js_page["segments"], f"{page_id}: segment mismatch ({py_page['segments']} != {js_page['segments']})"
 
 

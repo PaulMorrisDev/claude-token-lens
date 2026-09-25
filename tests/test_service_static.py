@@ -1290,7 +1290,7 @@ def test_pages_registry_matches_the_view_renderers() -> None:
     an intro line, and every name is used once."""
     app_js = _app_js()
     pages = _pages()
-    renderers = re.findall(r'^\s*"?([a-z/]+)"?\s*:\s*render[A-Za-z]+,', _declaration_source(app_js, "VIEW_RENDERERS"), re.M)
+    renderers = re.findall(r'^\s*"?([a-z/-]+)"?\s*:\s*render[A-Za-z]+,', _declaration_source(app_js, "VIEW_RENDERERS"), re.M)
     assert renderers == _view_keys()
     id_shape = re.compile(r"^[a-z]+(-[a-z]+)*$")
     for page in pages:

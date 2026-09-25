@@ -269,13 +269,14 @@ a row of buttons under its title. Each page has its own address (such as
 | Setup › Profiles | Make a profile from a goal with an estimate of what it saves, compare it with my settings, and see what each change I made did. |
 | Setup › Capture | What does metrics capture cost so far, what would each level or metric add, and is it set up? |
 | Data quality | What did this tool install, what should I expect, and could every transcript be read and priced? |
-| Glossary | What does a term on the dashboard mean? |
+| Glossary › Terms | What does a term on the dashboard mean? |
+| Glossary › How costs work | How is each kind of token priced, and how does each change save me money? |
 
 The window picker at the top right sets the time every page covers: the
 last hour, today or the last 24 hours to see the effect of a change
 straight away, 7 to 90 days or all time for the long view, or **since my
 last change**. **Setup › Capture** doesn't depend on it, so there the
-picker gives way to a note saying so; the Glossary shows neither.
+picker gives way to a note saying so, as it does on **Glossary › Terms**.
 
 Amounts follow your billing mode. On a Pro or Max plan, savings are a
 share of your usage limits once your statusline has logged enough
