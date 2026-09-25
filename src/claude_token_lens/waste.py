@@ -453,9 +453,9 @@ def build_section(stats: WasteStats, thresholds: WasteThresholds | None = None) 
         "their pauses and cost."
     )
     notes.append(
-        f"{stats.failed_command_turns} turn(s) whose only failed tool calls were commands that "
-        "ran and reported failure (a failing test or build, a timeout) are not counted as wasted: "
-        "Claude used that output."
+        f"{stats.failed_command_turns} turn(s) had failed tool calls that were all commands that "
+        "ran and reported a failure, such as a failing test, build or timeout. Claude used that "
+        "output, so they are not counted as wasted."
     )
 
     return Section(key="waste", title="Wasted-turn spend", tables=tables, notes=notes)
@@ -548,8 +548,8 @@ def _by_cause_table(stats: WasteStats) -> Table:
         ],
         rows=rows,
         notes=[
-            "Both shares are of all replies and all cost, not just the "
-            "wasted ones, so across the costed causes they add up to the "
+            "Both shares are of all replies and all cost, not only the "
+            "wasted ones. So across the costed causes, they add up to the "
             "summary's share of replies and share of cost.",
             "\"API error, retried automatically\" is shown for how often "
             "it happens only: its cost and tokens are always 0, and it is "

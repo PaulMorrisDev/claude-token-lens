@@ -306,8 +306,8 @@ SECTION_COPY: dict[str, SectionCopy] = {
             "lower effort still does the job."
         ),
         help=Help(
-            shows="Each signal per agent type and for the main session, then per model and effort, with each "
-            "setup compared against the one that agent used most.",
+            shows="Each signal per agent type and for the main session, then per model and effort. Each setup is "
+            "compared with the one that agent used most.",
             read="Every signal is a share of something counted in your logs, such as failed tool calls out of all "
             "tool calls. A difference is marked only when it is unlikely to be chance; with few runs it says so.",
             act="If a setup is marked worse, move that agent back to the model or effort that did better. "
@@ -318,8 +318,8 @@ SECTION_COPY: dict[str, SectionCopy] = {
     "habits": SectionCopy(
         title="Work habits",
         intro=(
-            "How the way you work shapes what it costs: breaking work down, what you tell Claude, research, "
-            "planning, skills, agents and checks, with the habits worth trying."
+            "How the way you work shapes what it costs, with the habits worth trying. It covers breaking work down, "
+            "what you tell Claude, research, planning, skills, agents and checks."
         ),
         help=Help(
             shows="A playbook of habits ranked by what they would have saved you, then the evidence per kind of "
@@ -382,8 +382,8 @@ SECTION_COPY: dict[str, SectionCopy] = {
         title="What your usage limits hold",
         intro="How many tokens a full usage limit is worth for you, measured from your own usage-limit readings.",
         help=Help(
-            shows="Each time the status line logs how full a usage limit is, the rise since the last reading is "
-            "matched against the tokens your sessions used in between.",
+            shows="Each time the status line logs how full a usage limit is, this takes the rise since the last "
+            "reading. That rise is matched against the tokens your sessions used in between.",
             read="With enough readings that agree, this gives the tokens one full limit holds. With too few, or "
             "readings that disagree, no figure is shown and the reason says why.",
             act="Use it to judge how far a saving elsewhere in the report stretches your limits.",
@@ -426,7 +426,7 @@ SECTION_COPY: dict[str, SectionCopy] = {
         title="Where the work went",
         intro="How your cost splits between exploring, building, checking and everything else.",
         help=Help(
-            shows="Every reply sorted into a phase by the tools it called, for the whole window, for the main "
+            shows="Every reply sorted into a phase by the tools it called. Shown for the whole window, for the main "
             "session and subagents, and for each agent type.",
             read="Phases come from tool names only, not from what Claude intended. A reply that edits a file "
             "and runs tests in one go counts as building.",
@@ -438,9 +438,9 @@ SECTION_COPY: dict[str, SectionCopy] = {
         title="Cache rebuilds",
         intro="Which replies had to write their context into the cache again instead of reading it, and why.",
         help=Help(
-            shows="Replies that rebuilt the cache, what that cost, and what happened just before each one.",
-            read="A cache rebuild is a reply with a large context (over 20,000 tokens by default) that read less "
-            "than a fifth of it from the cache. Compare each cause's share of rebuilds with its share of all "
+            shows="Replies that rebuilt the cache, what that cost, and what happened right before each one.",
+            read="A cache rebuild is a reply with a large context that read less than a fifth of it from the cache. "
+            "Large means over 20,000 tokens by default. Compare each cause's share of rebuilds with its share of all "
             "replies: a cause far more common before rebuilds is likely behind them.",
             act="If rebuilds follow waits of 5 to 60 minutes, a longer cache lifetime (TTL) can help. If they follow "
             "a setting change, a hook or a note from Claude Code, that change is breaking the cache.",
@@ -453,8 +453,8 @@ SECTION_COPY: dict[str, SectionCopy] = {
             "each agent type."
         ),
         help=Help(
-            shows="What you paid with the cache lifetimes you used, what each lifetime would have cost, and how much "
-            "of what you wrote to the cache was ever read back.",
+            shows="What you paid with the cache lifetimes you used, and what each lifetime would have cost. Also how "
+            "much of what you wrote to the cache was ever read back.",
             read="A cache write costs more with a 1-hour lifetime than with a 5-minute one. It pays off only when "
             "enough replies come 5 to 60 minutes after the one before. The estimates replay your own replies "
             "and waits.",
@@ -498,8 +498,8 @@ SECTION_COPY: dict[str, SectionCopy] = {
             read="This cost is part of your cache read and cache write spend, not extra on top. Reply counts "
             "are measured. Output sizes are estimated at about 4 characters per token, and the cost split "
             "between cache reads and writes follows each reply's own mix.",
-            act="If one tool's output dominates, cap it at the source: pipe long command output through head "
-            "or tail, search with Grep before reading whole files, and ask subagents for short reports.",
+            act="If one tool's output dominates, cap it at the source. Pipe long command output through head or tail, "
+            "search with Grep before reading whole files, and ask subagents for short reports.",
         ),
     ),
     "compaction_sim": SectionCopy(
@@ -509,14 +509,13 @@ SECTION_COPY: dict[str, SectionCopy] = {
             "context size?"
         ),
         help=Help(
-            shows="A simulation that replays your sessions with the conversation summary (compaction) "
-            "triggered at context sizes from 100,000 to 500,000 tokens. The setting is autoCompactWindow "
-            "in settings.json.",
-            read="Only the \"As now\" figures are measured; every other cost is simulated. Each simulated "
-            "summary is shaped like your own past ones: it fires the same distance below the window, leaves "
-            "your usual starting context plus a summary of the usual size, and is charged for writing the "
-            "summary and re-caching the reply after it. The simulation can't see what a summary loses or "
-            "the files re-read after it, so small windows look better than they are.",
+            shows="A simulation that replays your sessions with the conversation summary (compaction) triggered at "
+            "context sizes from 100,000 to 500,000 tokens. The setting is the auto-compact window in settings.json.",
+            read="Only the \"As now\" figures are measured; every other cost is simulated. Each simulated summary is "
+            "shaped like your own past ones. It fires the same distance below the window, and leaves your usual "
+            "starting context plus a summary of the usual size. It is charged for writing the summary and for the "
+            "cache rebuild on the reply after it. The simulation can't see what a summary loses or the files re-read "
+            "after it, so small windows look better than they are.",
             act="Treat large savings at small windows with caution. {{page:actions/recommendations}} only suggests a "
             "minimum window, after taking off an allowance for re-reading.",
         ),
@@ -525,8 +524,8 @@ SECTION_COPY: dict[str, SectionCopy] = {
         title="Cheaper model: what if",
         intro="What your main session and each subagent type would have cost on a cheaper model, for the same tokens.",
         help=Help(
-            shows="Your measured tokens repriced at every model's list price, and the saving from moving each "
-            "agent type one tier down: Fable to Opus, Opus to Sonnet, Sonnet to Haiku.",
+            shows="Your measured tokens repriced at every model's list price. Also the saving from moving each agent "
+            "type one tier down: Fable to Opus, Opus to Sonnet, Sonnet to Haiku.",
             read="Real cost is measured. Costs at other models are recalculated, not observed: they assume the "
             "cheaper model uses the same tokens and replies. A smaller model may need more replies or fail "
             "the task, so every saving is the most you could save, not a forecast.",
@@ -542,8 +541,8 @@ SECTION_COPY: dict[str, SectionCopy] = {
         ),
         help=Help(
             shows="Replies whose output you never used, grouped by cause, agent type and session.",
-            read="Which replies were wasted is measured from your logs. Each one is priced at its full cost, "
-            "so the total is the most you could recover: some of that work would still have been needed.",
+            read="Which replies were wasted is measured from your logs. Each one is priced at its full cost, so the "
+            "total is the most you could recover. Some of that work would still have been needed.",
             act="Act when wasted cost is above 10% of your total. Start with the most expensive cause.",
         ),
     ),
@@ -621,8 +620,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             "often it actually used them.",
             read="Compare \"given\" with \"used\". A skills list given on 500 spawns and used on 2 is "
             "paid for 498 times for nothing.",
-            act="When an agent almost never uses something it is given, narrow it in that agent's file: "
-            "set its tools, MCP servers or skills, or turn off CLAUDE.md for agents that only search or read.",
+            act="When an agent almost never uses something it is given, narrow it in that agent's file. Set its "
+            "tools, MCP servers or skills. Agents that only search or read can skip CLAUDE.md.",
         ),
         columns={
             "spawns": ("", "Spawns with a measured startup."),
@@ -645,8 +644,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             shows="Startup parts that most agent types receive at about the same size, and where each "
             "one comes from.",
             read="\"Total across spawns\" is what that one source cost you in cache writes over the window.",
-            act="A big shared source is worth trimming at the source: move agent-specific sections out of "
-            "CLAUDE.md into the agent files or into skills loaded on demand.",
+            act="A big shared source is worth trimming at the source. Move agent-specific sections out of CLAUDE.md "
+            "into the agent files, or into skills loaded on demand.",
         ),
         columns={
             "part": ("", "The startup part."),
@@ -675,11 +674,11 @@ TABLE_COPY: dict[str, TableCopy] = {
     "habits_digest": TableCopy(
         title="",  # UX-4/7: the builder's title names the actual day span
         help=Help(
-            shows="The three habits worth the most to you right now, what the habits you already picked up are "
-            "saving, and what a piece of work that met its goal cost.",
-            read="Savings are a week's worth at your recent pace once there's a week of it; under 7 days, it's the "
-            "raw total so far, not stretched into a weekly rate. A habit counts as picked up when what it "
-            "addresses per message fell by a fifth or more over recent weeks.",
+            shows="The three habits worth the most to you right now, and what the habits you already picked up are "
+            "saving. Also what a piece of work that met its goal cost.",
+            read="Savings are a week's worth at your recent pace once there's a week of it. Under 7 days, it's the "
+            "raw total so far, not stretched into a weekly rate. A habit counts as picked up when what it addresses "
+            "per message fell by a fifth or more over recent weeks.",
             act="Start with the first habit: Habits worth trying below has an example to copy for each.",
         ),
         columns={
@@ -708,12 +707,12 @@ TABLE_COPY: dict[str, TableCopy] = {
     "habits_playbook": TableCopy(
         title="Habits worth trying",
         help=Help(
-            shows="Ways of working that would have cost less in your own sessions: how you break work down, "
-            "brief Claude, research, plan, use skills, delegate to agents and check changes.",
+            shows="Ways of working that would have cost less in your own sessions. They cover how you break work "
+            "down, brief Claude, research, plan, use skills, delegate to agents and check changes.",
             read="Each saving is rough, with how it was worked out alongside. Source says where the evidence came "
-            "from: inferred from the transcripts, reported by Claude in metrics-capture tags, or your own "
-            "feedback, which outranks the rest. By week shows what the habit addresses per message over recent "
-            "weeks, scaled so the worst week is 100; a dash is a week with too few messages.",
+            "from: inferred from the transcripts, reported by Claude in metrics-capture tags, or your own feedback. "
+            "Your feedback outranks the rest. By week shows what the habit addresses per message over recent weeks, "
+            "scaled so the worst week is 100. A dash is a week with too few messages.",
             act="Copy the example into your next message of that kind. Turning on metrics capture adds the "
             "reported evidence and makes the estimates firmer.",
         ),
@@ -734,11 +733,11 @@ TABLE_COPY: dict[str, TableCopy] = {
             "how_to_undo": ("How to undo it", "How to go back if it doesn't work out."),
             "covered_by": (
                 "Already covered by",
-                "The recommendation that already reports this saving, when one has fired -- blank otherwise.",
+                "The recommendation that already reports this saving, if there is one. Blank otherwise.",
             ),
             "covered_by_rule": (
                 "Covering rule",
-                "The id of the recommendation in \"Already covered by\", for linking to it -- blank otherwise.",
+                "The id of the recommendation in \"Already covered by\", for linking to it. Blank otherwise.",
             ),
         },
         value_labels={
@@ -816,7 +815,7 @@ TABLE_COPY: dict[str, TableCopy] = {
     "habits_agents": TableCopy(
         title="How agents were used",
         help=Help(
-            shows="Each subagent type: its reports, whether it finished, why it was retried, whether Claude "
+            shows="Each subagent type: its reports, whether it finished and why it was retried. Also whether Claude "
             "thought its model fit the work, whether it used your CLAUDE.md, and files it read again. The main "
             "session's row says how hard its work was.",
             read="Model fit and CLAUDE.md use are the agent's own report, so they only hold a cheaper model "
@@ -852,7 +851,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             shows="Your messages by how hard Claude said the work was and the effort it ran at.",
             read="Easy work at high effort spends thinking it doesn't need. Hard work at low effort that was "
             "often redone needed more.",
-            act="Lower the effort (the effortLevel setting) for quick edits and raise it for hard problems.",
+            act="Lower the effort (/effort, or your effort level setting) for quick edits and raise it for hard "
+            "problems.",
         ),
         columns={
             "setup": ("Work and effort", "How hard the work was, and the effort it ran at."),
@@ -879,14 +879,14 @@ TABLE_COPY: dict[str, TableCopy] = {
     "habits_setups": TableCopy(
         title="Best setup for each kind of task",
         help=Help(
-            shows="Each kind of task Claude reported, all together and by how hard it said the work was, with "
-            "the exact model, effort and speed that answered it: what a message cost and how often the work "
-            "went well.",
-            read="Went well is your feedback where you gave it, otherwise whether your next message redid the "
-            "work; the last message of each session is left out, since nothing after it confirms how that one "
-            "went. Shown from 5 messages each side; a cheaper setup that's mostly hard work at the all-levels row "
-            "is held back even if nothing else looks wrong, since that's what made it look cheap, not the setup "
-            "itself. A cheaper setup is only ticked to apply once it has at least 20 messages behind it.",
+            shows="Each kind of task Claude reported, all together and by how hard it said the work was. Each is "
+            "split by the exact model, effort and speed that answered it. It shows what a message cost and how often "
+            "the work went well.",
+            read="Went well is your feedback where you gave it, otherwise whether your next message redid the work. "
+            "The last message of each session is left out, since nothing after it confirms how it went. Shown from 5 "
+            "messages each side. A cheaper setup that's mostly hard work at the all-levels row is held back, even if "
+            "nothing else looks wrong. The hard work is what made it look cheap, not the setup itself. A cheaper "
+            "setup is only ticked to apply once it has at least 20 messages behind it.",
             act="On {{page:setup/profiles}}, start from the goal A profile for one kind of task, save it, and launch "
             "Claude with it for that kind of work.",
         ),
@@ -919,12 +919,12 @@ TABLE_COPY: dict[str, TableCopy] = {
     "habits_agents_by_task": TableCopy(
         title="Agents by kind of task",
         help=Help(
-            shows="Each kind of task Claude reported, split by the subagent type that answered it: its runs, "
+            shows="Each kind of task Claude reported, split by the subagent type that answered it. It shows the runs, "
             "what a run cost, whether it finished, and whether its runs said the model fit.",
-            read="Finished and model fit are the agent's own reports, the same signals as How agents were used, "
-            "just split by task. A cheaper model is named only when enough runs of that pairing point to one, "
-            "none of them said they needed a larger model or were mostly hard work, and the quality check hasn't "
-            "found that model worse for this agent.",
+            read="Finished and model fit are the agent's own reports: the same signals as How agents were used, split "
+            "by task. A cheaper model is named only when three things hold. Enough runs of that pairing point to it. "
+            "None of them said it needed a larger model or was mostly hard work. And the quality check hasn't found "
+            "that model worse for this agent.",
             act="On {{page:setup/profiles}}, the goal A profile for one kind of task offers this cheaper model as a "
             "candidate when the evidence here supports one.",
         ),
@@ -968,12 +968,11 @@ TABLE_COPY: dict[str, TableCopy] = {
     "habits_self_report": TableCopy(
         title="Claude's reports against your feedback",
         help=Help(
-            shows="Each level and brief quality Claude reported, against your feedback: how many messages it "
-            "covers, the share that met or missed its goal, and the share your next message redid or "
-            "corrected.",
-            read="Met and missed are out of the messages your feedback covers; redone counts every message "
-            "tagged this way, feedback or not. A note below the table says whether work Claude called easy "
-            "missed its goal more often than normal work, once there is enough feedback on both to tell.",
+            shows="Each level and brief quality Claude reported, against your feedback. It shows how many messages "
+            "each covers, the share that met or missed its goal, and the share your next message redid or corrected.",
+            read="Met and missed are out of the messages your feedback covers. Redone counts every message tagged "
+            "this way, feedback or not. A note below the table says whether work Claude called easy missed its goal "
+            "more often than normal work. It appears once there is enough feedback on both to tell.",
             act="If the note says easy work misses more than normal work, treat what Claude calls easy with "
             "caution, including the effort suggestion built from it.",
         ),
@@ -998,9 +997,9 @@ TABLE_COPY: dict[str, TableCopy] = {
     "habits_prompt_flags": TableCopy(
         title="What your messages contained",
         help=Help(
-            shows="How often your messages named a file, had code, an error, a link, done criteria, numbered "
-            "steps, a length cap or pasted text, and what the work cost with and without it. Always measured, "
-            "no metrics capture needed.",
+            shows="How often your messages named a file, had code, an error, a link, done criteria, numbered steps, a "
+            "length cap or pasted text. Also what the work cost with and without each. Always measured, no metrics "
+            "capture needed.",
             read="Only whether each was there is kept, never the text. Bigger asks tend to carry more of "
             "everything, so compare the reads and searches as well as the cost.",
             act="If messages that name a file need far fewer reads and searches, name the files you know.",
@@ -1050,8 +1049,8 @@ TABLE_COPY: dict[str, TableCopy] = {
     "habits_tool_output": TableCopy(
         title="Big tool output and failing commands",
         help=Help(
-            shows="Tool results of 8,000 tokens or more in one reply, per tool, and what keeping them in "
-            "context cost; plus commands that failed again and again within one message.",
+            shows="Tool results of 8,000 tokens or more in one reply, per tool, and what keeping them in context "
+            "cost. Also commands that failed again and again within one message.",
             read="Carrying is priced from the next reply to the next compaction, a cache write and then a "
             "read per reply, so it's a floor.",
             act="Ask for quieter output (only failures, a tail, an offset read) and to stop after two failed "
@@ -1069,13 +1068,13 @@ TABLE_COPY: dict[str, TableCopy] = {
     "capture_usage": TableCopy(
         title="What metrics capture cost",
         help=Help(
-            shows="What metrics capture cost since it was turned on, measured from the transcripts: the notes "
-            "that ask Claude for tags, the tags Claude wrote, /tl-feedback runs, a weekly rate, and what that "
-            "buys you: the habits worth trying whose evidence needs capture or your feedback.",
-            read="Share is out of what the captured sessions cost. Coverage is how many messages and agent "
-            "reports carried the tag they were asked for. What it's worth only counts habits whose evidence is "
-            "reported by Claude or your feedback, not everything the report finds; it says so instead of a "
-            "zero when nothing measured yet depends on either.",
+            shows="What metrics capture cost since it was turned on, measured from the transcripts. That covers the "
+            "notes that ask Claude for tags, the tags Claude wrote and /tl-feedback runs, with a weekly rate. It also "
+            "shows what that buys you: the habits worth trying whose evidence needs capture or your feedback.",
+            read="Share is out of what the captured sessions cost. Coverage is how many messages and agent reports "
+            "carried the tag they were asked for. What it's worth only counts habits whose evidence is reported by "
+            "Claude or your feedback, not everything the report finds. When nothing measured yet depends on either, "
+            "it says so instead of showing a zero.",
             act="{{page:setup/capture}} turns metrics on and off, one by one or by level. Once what it's worth "
             "clears what it costs by a comfortable margin, a lower level or fewer metrics may do.",
         ),
@@ -1117,29 +1116,29 @@ TABLE_COPY: dict[str, TableCopy] = {
             "took.",
             read="Each figure is a share of what your logs counted, so an agent with few runs can swing a lot. "
             "Read it with the number of runs.",
-            act="An agent that often doesn't finish, whose tool calls often fail, or that often has to be run again "
-            "on a larger model, needs a clearer task prompt, the right tools, or a stronger model or effort.",
+            act="An agent may often fail to finish, have its tool calls fail, or need running again on a larger "
+            "model. That agent needs a clearer task prompt, the right tools, or a stronger model or effort.",
         ),
         columns={
             "agent_type": ("Agent", "The main session, or the subagent type."),
             "runs": ("Runs", "Main sessions or subagent runs counted in this row."),
             "unfinished_pct": (
                 "Didn't finish",
-                "Subagent runs that reported failure, were stopped, ended early, were cut off before they "
-                "answered or ended their reply with [result: partial] or [result: blocked], out of the runs where "
-                "that is known.",
+                "Subagent runs that reported failure, were stopped, ended early or were cut off before they answered, "
+                "out of the runs where that is known. Ending a reply with [result: partial] or [result: blocked] "
+                "counts too.",
             ),
             "turn_limit_pct": (
                 "Likely out of turns",
-                "Subagent runs cut off right after a tool result came back, without being stopped. That is how a "
-                "run ends when it reaches its maxTurns; Claude Code doesn't record the reason, so this is likely, "
-                "not certain.",
+                "Subagent runs cut off right after a tool result came back, without being stopped. That is how a run "
+                "ends when it reaches its turn limit. Claude Code doesn't record the reason, so this is likely, not "
+                "certain.",
             ),
             "retried_pct": (
                 "Retried on a larger model",
-                "Subagent runs that were run again on a larger model, which edited the same files within two hours "
-                "or whose brief started [retry: model], out of the runs that edited files or were retried: the "
-                "cheaper model wasn't enough for that work.",
+                "Subagent runs that were run again on a larger model, out of the runs that edited files or were "
+                "retried. The rerun edited the same files within two hours, or its brief started [retry: model]. It "
+                "means the cheaper model wasn't enough for that work.",
             ),
             "tool_errors_pct": (
                 "Failed tool calls",
@@ -1197,15 +1196,15 @@ TABLE_COPY: dict[str, TableCopy] = {
             "runs": ("Runs", "Main sessions or subagent runs counted in this row."),
             "unfinished_pct": (
                 "Didn't finish",
-                "Subagent runs that reported failure, were stopped, ended early, were cut off before they "
-                "answered or ended their reply with [result: partial] or [result: blocked], out of the runs where "
-                "that is known.",
+                "Subagent runs that reported failure, were stopped, ended early or were cut off before they answered, "
+                "out of the runs where that is known. Ending a reply with [result: partial] or [result: blocked] "
+                "counts too.",
             ),
             "retried_pct": (
                 "Retried on a larger model",
-                "Subagent runs that were run again on a larger model, which edited the same files within two hours "
-                "or whose brief started [retry: model], out of the runs that edited files or were retried: the "
-                "cheaper model wasn't enough for that work.",
+                "Subagent runs that were run again on a larger model, out of the runs that edited files or were "
+                "retried. The rerun edited the same files within two hours, or its brief started [retry: model]. It "
+                "means the cheaper model wasn't enough for that work.",
             ),
             "tool_errors_pct": (
                 "Failed tool calls",
@@ -1228,8 +1227,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
             "setup_verdict": (
                 "Verdict",
-                "Worse if any signal is clearly worse than in the setup it is compared with and none clearly better, "
-                "Mixed if some are clearly worse and others clearly better, Better if one is clearly better and none "
+                "Worse if any signal is clearly worse than in the setup it is compared with, and none clearly better. "
+                "Mixed if some are clearly worse and others clearly better. Better if one is clearly better and none "
                 "worse.",
             ),
             "difference": (
@@ -1257,13 +1256,13 @@ TABLE_COPY: dict[str, TableCopy] = {
     "quality_retried": TableCopy(
         title="Agent runs retried on a larger model",
         help=Help(
-            shows="Each agent and model where the same agent was run again on a larger model soon after one of "
-            "its runs ended, and edited the same files: a sign the cheaper model wasn't enough for that work.",
+            shows="Each agent and model where the same agent was run again on a larger model soon after one of its "
+            "runs ended. The rerun edited the same files: a sign the cheaper model wasn't enough for that work.",
             read="Unless the retry's brief says why ([retry: ...], see Why agents were run again), one retry is a "
             "sign, not proof. Several, or a large share of the runs, is a pattern. A different agent or the main "
-            "session editing the files afterwards isn't counted, since a reviewer after a writer is often the plan, "
-            "unless its brief said [retry: model]. A retry whose brief said the brief, tools or something else was "
-            "the problem is never counted.",
+            "session editing the files afterwards isn't counted, unless its brief said [retry: model]. A reviewer "
+            "after a writer is often the plan. A retry whose brief said the brief, tools or something else was the "
+            "problem is never counted.",
             act="Once a tenth of an agent's runs on a model were retried on a larger one, that model isn't "
             "suggested for that agent. If its agent file is on that model and it happened twice or more, Quick "
             "actions offers to move it back up.",
@@ -1274,8 +1273,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             "runs": ("Runs that edited files", "This agent's runs on this model that edited at least one file."),
             "retried": (
                 "Retried on a larger model",
-                "Of those, runs after which the same agent was started again on a larger model, in the same session, "
-                "and edited one of the same files within two hours.",
+                "Of those, runs after which the same agent was started again on a larger model in the same session. "
+                "The rerun edited one of the same files within two hours.",
             ),
             "retried_pct": ("Share retried", "Retried runs out of the runs that edited files."),
             "said_model": (
@@ -1295,12 +1294,12 @@ TABLE_COPY: dict[str, TableCopy] = {
     "quality_retry_reasons": TableCopy(
         title="Why agents were run again",
         help=Help(
-            shows="Each agent and model whose runs were started again with a brief that said why: [retry: model], "
-            "[retry: brief], [retry: tools], [retry: scope] or [retry: other]. Claude writes these when metrics "
-            "capture or CLAUDE.md asks it to (Quick actions, \"Is any agent struggling?\").",
+            shows="Each agent and model whose runs were started again with a brief that said why. The reasons are "
+            "[retry: model], [retry: brief], [retry: tools], [retry: scope] or [retry: other]. Claude writes these "
+            "when metrics capture or CLAUDE.md asks it to (Quick actions, \"Is any agent struggling?\").",
             read="Only retries that said why are here, on any model. A retry is matched to the agent run that ended "
-            "last before it started, within two hours, preferring one whose files it edited and then one of the "
-            "same agent type.",
+            "last before it started, within two hours. It prefers a run whose files it edited, then one of the same "
+            "agent type.",
             act="The model: a larger model is worth trying (Agent runs retried on a larger model counts these). The "
             "brief: say what done looks like in the task prompt. Tools: give the agent the tools and permissions it "
             "needs. The task: split the work smaller before handing it over.",
@@ -1399,13 +1398,13 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
             "turn_limit": (
                 "Likely out of turns",
-                "Cut-off runs that ended right after a tool result came back, without being stopped: most likely "
-                "their maxTurns ran out.",
+                "Cut-off runs that ended right after a tool result came back, without being stopped: most likely they "
+                "reached their turn limit.",
             ),
             "retried": (
                 "Retried on a larger model",
-                "Subagent runs after which the same agent was run again on a larger model and edited the same files, "
-                "or a larger model was started with a brief that said [retry: model].",
+                "Subagent runs after which the same agent was run again on a larger model and edited the same files. "
+                "A larger model started with a brief that said [retry: model] counts too.",
             ),
             "terminated_early": (
                 "Ended early",
@@ -1904,8 +1903,8 @@ TABLE_COPY: dict[str, TableCopy] = {
         help=Help(
             shows="One row per model with no price list entry of its own, priced instead at the nearest "
             "registered model's rate. Shown only when there is at least one.",
-            read="These replies count toward the report's 100% priced score, but the price used is a guess: the "
-            "closest registered model, not this one's own rate, so the cost may be off.",
+            read="These replies count toward the report's 100% priced score, but the price used is a guess. It is the "
+            "closest registered model's rate, not this one's own, so the cost may be off.",
             act="Add this model to pricing.toml, with its own prices per million tokens, for an exact cost.",
         ),
         columns={
@@ -1920,8 +1919,8 @@ TABLE_COPY: dict[str, TableCopy] = {
         help=Help(
             shows="One row per model with at least one fast-mode reply that has no fast-mode price on file. "
             "Shown only when there is at least one.",
-            read="These replies were flagged fast mode by Claude Code, but this model's price list entry has no "
-            "fast rate, so they were costed at the model's standard rate instead -- likely too low.",
+            read="Claude Code flagged these replies as fast mode, but this model's price list entry has no fast rate. "
+            "So they were costed at the model's standard rate, which is likely too low.",
             act="Add a fast rate for this model in pricing.toml for an exact cost.",
         ),
         columns={
@@ -1933,13 +1932,12 @@ TABLE_COPY: dict[str, TableCopy] = {
     "pricing_fast_applied": TableCopy(
         title="Fast-priced replies",
         help=Help(
-            shows="One row per model with at least one reply actually billed at its fast-mode rate. Shown only "
-            "when there is at least one. PROF-08: fuels the Profiles \"fastMode\" lever's estimate.",
-            read="\"Cost at fast rate\" is what these replies were actually billed; \"Cost at standard rate\" is "
-            "what the same replies would have cost with fast mode off -- the price premium fast mode charges "
-            "for a faster reply.",
-            act="Draft a profile that turns fastMode off to see the saving, if the extra speed isn't worth its "
-            "price.",
+            shows="One row per model with at least one reply billed at its fast-mode rate. Shown only when there is "
+            "at least one. {{page:setup/profiles}} uses it to estimate what turning fast mode off would save.",
+            read="\"Cost at fast rate\" is what these replies were billed. \"Cost at standard rate\" is what they "
+            "would have cost with fast mode off. The gap is the premium fast mode charges for a faster reply.",
+            act="If the extra speed isn't worth its price, draft a profile that turns fast mode off to see the "
+            "saving.",
         ),
         columns={
             "model_id": ("Model", "The model name exactly as Claude Code recorded it."),
@@ -2053,10 +2051,10 @@ TABLE_COPY: dict[str, TableCopy] = {
         help=Help(
             shows="Your sessions grouped by the kind of work, judged from the tools used: tests run, files "
             "edited, reviews, plan mode, subagents started, and so on.",
-            read="Each session gets the first purpose whose signs it shows. A review that also started "
-            "subagents counts as a review; subagent fan-out only catches sessions with no clearer purpose. "
-            "While metrics capture is on, the kind of task Claude reported for most of a session's messages "
-            "decides it instead where it matches one of these (review, tests, planning, docs, refactoring).",
+            read="Each session gets the first purpose whose signs it shows. A review that also started subagents "
+            "counts as a review; subagent fan-out only catches sessions with no clearer purpose. While metrics "
+            "capture is on, the kind of task Claude reported for most of a session's messages decides instead. That "
+            "applies when it matches one of these: review, tests, planning, docs or refactoring.",
             act="Recommendations are tuned to your largest groups. A large subagent fan-out group is worth a "
             "look in {{page:agents/subagents}}.",
         ),
@@ -2365,8 +2363,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             read="\"Cache expired\" means almost nothing was left to read: the cache lifetime ran out. \"Cache "
             "broken by a change\" means part was read, but something early in the context changed. \"Expired "
             "during a usage-limit pause\" means you were waiting for a limit to reset.",
-            act="Expired caches respond to a longer cache lifetime. Broken ones don't: check what came just "
-            "before them in the causes table.",
+            act="Expired caches respond to a longer cache lifetime. Broken ones don't: check what came right before "
+            "them in the causes table.",
         ),
         columns={
             "signature": ("Reason", "What had happened to the cache."),
@@ -2424,7 +2422,7 @@ TABLE_COPY: dict[str, TableCopy] = {
         ],
     ),
     "recache_preceding_tool": TableCopy(
-        title="Cache rebuilds by the tool used just before",
+        title="Cache rebuilds by the tool used right before",
         help=Help(
             shows="Cache rebuilds grouped by the tool the previous reply called, next to the same split for all "
             "replies. Usage-limit pauses are left out.",
@@ -2434,7 +2432,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "long-running command that outlasts the cache.",
         ),
         columns={
-            "preceding_tool": ("Tool used just before", "The tool the previous reply called."),
+            "preceding_tool": ("Tool used right before", "The tool the previous reply called."),
             "turns": ("Rebuilds", "Cache rebuilds after this tool."),
             "share_pct_turns": ("Share of rebuilds", "This row's rebuilds as a share of all rebuilds."),
             "control_turns": ("All replies", "Every reply after this tool."),
@@ -2457,7 +2455,7 @@ TABLE_COPY: dict[str, TableCopy] = {
         ],
     ),
     "recache_top_command_prefixes": TableCopy(
-        title="Commands run just before a cache rebuild",
+        title="Commands run right before a cache rebuild",
         help=Help(
             shows="The 12 shell commands followed by the most rebuilt tokens. Usage-limit pauses are left out.",
             read="Only the first 40 characters are kept, with paths hidden. Waiting loops and long builds often "
@@ -2472,17 +2470,17 @@ TABLE_COPY: dict[str, TableCopy] = {
         },
     ),
     "recache_primary_cause": TableCopy(
-        title="What happened just before each cache rebuild",
+        title="What happened right before each cache rebuild",
         help=Help(
             shows="Cache rebuilds grouped by the most important thing that happened since the previous reply, next "
             "to the same split for all replies. Usage-limit pauses are left out.",
             read="\"Over-represented by\" is the share of rebuilds minus the share of all replies, in percentage "
             "points. A large positive number means that event comes before rebuilds far more often than usual.",
-            act="For a cause that is strongly over-represented, change it less often mid-session: for example, "
-            "switch model, mode or MCP servers at the start of a session instead of in the middle.",
+            act="For a cause that is strongly over-represented, change it less often mid-session. For example, switch "
+            "model, mode or MCP servers at the start of a session, not in the middle.",
         ),
         columns={
-            "preceding_primary": ("What came just before", "The most important event since the previous reply."),
+            "preceding_primary": ("What came right before", "The most important event since the previous reply."),
             "turns": ("Rebuilds", "Cache rebuilds after this event."),
             "share_pct_turns": ("Share of rebuilds", "This row's rebuilds as a share of all rebuilds."),
             "control_share_pct_turns": ("Share of all replies", "Replies after this event as a share of all replies."),
@@ -2538,7 +2536,7 @@ TABLE_COPY: dict[str, TableCopy] = {
         ],
     ),
     "recache_primary_cause_prefix_invalidated": TableCopy(
-        title="What came just before a broken cache",
+        title="What came right before a broken cache",
         help=Help(
             shows="The same causes as above, for caches broken by a change only. Expired caches are left out, "
             "because they had run out whatever came before.",
@@ -2547,7 +2545,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             act="The top over-represented cause here is the one to change first.",
         ),
         columns={
-            "preceding_primary": ("What came just before", "The most important event since the previous reply."),
+            "preceding_primary": ("What came right before", "The most important event since the previous reply."),
             "turns": ("Rebuilds", "Broken-cache rebuilds after this event."),
             "share_pct_turns": (
                 "Share of broken-cache rebuilds",
@@ -2603,7 +2601,7 @@ TABLE_COPY: dict[str, TableCopy] = {
     "recache_attachment_subsplit": TableCopy(
         title="Claude Code notes before a broken cache",
         help=Help(
-            shows="The kinds of note Claude Code added just before a cache broken by a change.",
+            shows="The kinds of note Claude Code added right before a cache broken by a change.",
             read="A rebuild with several kinds of note counts once for each, so rows can add up to more than the "
             "number of rebuilds.",
             act="Notes from hooks, output styles or mode switches are ones you control. If one of them leads, "
@@ -2611,7 +2609,7 @@ TABLE_COPY: dict[str, TableCopy] = {
         ),
         columns={
             "attachment_type": ("Note type", "The kind of note Claude Code added."),
-            "turns": ("Rebuilds", "Broken-cache rebuilds with this note just before."),
+            "turns": ("Rebuilds", "Broken-cache rebuilds with this note right before."),
             "cc_tokens": ("Tokens rebuilt", "Tokens those rebuilds wrote to the cache."),
         },
         value_labels={
@@ -2718,7 +2716,7 @@ TABLE_COPY: dict[str, TableCopy] = {
         help=Help(
             shows="Why the main session's cache missed, as Claude Code itself diagnosed it. Your statusline "
             "logs these while you work. Subagents are not included.",
-            read="These are measured, not inferred. Compare them with \"What happened just before each cache "
+            read="These are measured, not inferred. Compare them with \"What happened right before each cache "
             "rebuild\": where the two disagree, trust this table.",
             act="If a changed tool list or system prompt leads, stop switching MCP servers, plugins or modes in "
             "the middle of a session. If expiry leads, see {{page:cache/lifetime}}.",
@@ -2791,7 +2789,7 @@ TABLE_COPY: dict[str, TableCopy] = {
     "ttl_by_agent_type": TableCopy(
         title="Which cache lifetime costs less",
         help=Help(
-            shows="For the main session and each agent type: what you paid, and what you would have paid if every "
+            shows="For the main session and each agent type: what you paid. Also what you would have paid if every "
             "cache write had used a 5-minute or a 1-hour lifetime.",
             read="\"Over the cheaper lifetime\" is what you paid above the cheaper option; negative means your "
             "mix already beat both. \"Estimate error\" is how far the replay misses your real bill. Trust the "
@@ -2863,7 +2861,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "no material difference (suppressed: subscription billing)": (
                 "No change: a subscription ignores a 1-hour lifetime for subagents"
             ),
-            "promptCacheTtl": "promptCacheTtl in your settings",
+            "promptCacheTtl": "Cache lifetime in your settings",
         },
         lead_columns=[
             "agent_type", "spawns", "cost_observed", "best_policy", "saving_usd", "delta_pct", "recommendation",
@@ -3011,35 +3009,35 @@ TABLE_COPY: dict[str, TableCopy] = {
         },
     ),
     "ttl_near_miss": TableCopy(
-        title="Waits that just made or just missed the cache",
+        title="Waits that narrowly made or missed the cache",
         help=Help(
-            shows="Waits that ended just either side of the 5-minute and 1-hour limits: within the near-miss "
-            "window, which is 1 minute unless you changed it in config.toml.",
-            read="A \"just missed\" wait lost the cache by a small margin and rebuilt the whole context. "
-            "Many of these mean a slightly quicker reply would have saved the rebuild.",
-            act="If many waits just miss 5 minutes, reply a little sooner, or use the status line countdown to "
+            shows="Waits that ended close to either side of the 5-minute and 1-hour limits. Close means within the "
+            "near-miss window: 1 minute unless you changed it in config.toml.",
+            read="A \"narrowly missed\" wait lost the cache by a small margin and rebuilt the whole context. Many of "
+            "these mean a slightly quicker reply would have saved the rebuild.",
+            act="If many waits narrowly miss 5 minutes, reply a little sooner, or use the status line countdown to "
             "see when the cache will expire.",
         ),
         columns={
             "agent_type": ("", "The subagent type, or the main session."),
             "near_5m_hit": (
-                "Just made 5 minutes",
-                "Waits that ended just before 5 minutes. The cache was still there.",
+                "Narrowly made 5 minutes",
+                "Waits that ended shortly before 5 minutes. The cache was still there.",
             ),
             "near_5m_miss": (
-                "Just missed 5 minutes",
-                "Waits that ended just after 5 minutes. The cache had expired.",
+                "Narrowly missed 5 minutes",
+                "Waits that ended shortly after 5 minutes. The cache had expired.",
             ),
-            "near_5m_miss_tokens": ("Tokens rewritten after just missing 5 minutes", "The context rewritten on those replies."),
+            "near_5m_miss_tokens": ("Tokens rewritten after narrowly missing 5 minutes", "The context rewritten on those replies."),
             "near_5m_miss_usd": (
-                "Cost of just missing 5 minutes",
+                "Cost of narrowly missing 5 minutes",
                 "Rewriting the whole context on those replies, at the 5-minute write price.",
             ),
-            "near_1h_hit": ("Just made 1 hour", "Waits that ended just before 1 hour. The cache was still there."),
-            "near_1h_miss": ("Just missed 1 hour", "Waits that ended just after 1 hour. The cache had expired."),
-            "near_1h_miss_tokens": ("Tokens rewritten after just missing 1 hour", "The context rewritten on those replies."),
+            "near_1h_hit": ("Narrowly made 1 hour", "Waits that ended shortly before 1 hour. The cache was still there."),
+            "near_1h_miss": ("Narrowly missed 1 hour", "Waits that ended shortly after 1 hour. The cache had expired."),
+            "near_1h_miss_tokens": ("Tokens rewritten after narrowly missing 1 hour", "The context rewritten on those replies."),
             "near_1h_miss_usd": (
-                "Cost of just missing 1 hour",
+                "Cost of narrowly missing 1 hour",
                 "Rewriting the whole context on those replies, at the 5-minute write price.",
             ),
         },
@@ -3192,7 +3190,7 @@ TABLE_COPY: dict[str, TableCopy] = {
         help=Help(
             shows="Limit stops grouped by the local hour the limit said it would reset.",
             read="A peak at one hour shows when you usually run out. Stops with no reset time are left out.",
-            act="If limits often reset at a busy hour, start heavy work just after a reset.",
+            act="If limits often reset at a busy hour, start heavy work soon after a reset.",
         ),
         columns={
             "local_hour": ("Local hour", "The hour of day the limit reset, in your time zone."),
@@ -3258,7 +3256,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             shows="How many sessions were summarised, how large the context was before and after, and the cache "
             "write on the reply after each summary.",
             read="Costs only count replies within 15 minutes of the summary. \"Rebuilt most of the cache\" is the "
-            "part of that cost where the next reply read less than a fifth of its context from the cache.",
+            "part where the next reply read under a fifth of its context from the cache.",
             act="If summaries are frequent and large, split long tasks into separate sessions.",
         ),
         columns={
@@ -3450,8 +3448,8 @@ TABLE_COPY: dict[str, TableCopy] = {
     "carry_output_cap_savings": TableCopy(
         title="Saving from Claude Code's output limits",
         help=Help(
-            shows="For each Claude Code setting that limits a tool's output, at the value the tool output check "
-            "suggests: how many outputs it would have cut and what that would have saved.",
+            shows="Each Claude Code setting that limits a tool's output, at the value the tool output check suggests. "
+            "It shows how many outputs it would have cut and what that would have saved.",
             read="Worked out the same way as the table above, but only over the outputs that setting limits. "
             "Outputs from one reply are counted together, so treat it as an upper bound.",
             act="Set a limit only if it saves a real share of what those outputs cost. Most shell output is "
@@ -3534,7 +3532,7 @@ TABLE_COPY: dict[str, TableCopy] = {
     "compaction_sim_by_task": TableCopy(
         title="Best auto-compact window for each kind of task",
         help=Help(
-            shows="For each kind of task metrics capture has seen enough of in your main sessions: the window "
+            shows="Each kind of task metrics capture has seen enough of in your main sessions. For each: the window "
             "with the lowest simulated cost, and the saving against your real cost.",
             read="Savings are simulated and never below zero. \"No clear saving\" means the best window saves "
             "under 5% of the cost, or under $1.00 at list price. A kind of task only appears once you have "
@@ -3583,7 +3581,7 @@ TABLE_COPY: dict[str, TableCopy] = {
     "model_swap_by_agent_type": TableCopy(
         title="Cost of each agent type on other models",
         help=Help(
-            shows="One row for the main session and one per subagent type: its real cost, the same tokens "
+            shows="One row for the main session and one per subagent type. Each shows its real cost, the same tokens "
             "repriced at every known model, and the saving one tier down.",
             read="Only real cost is measured. The saving is the most you could save at today's usage, and it "
             "appears only when a cheaper tier exists.",
@@ -3644,7 +3642,7 @@ TABLE_COPY: dict[str, TableCopy] = {
         title="Wasted replies at a glance",
         help=Help(
             shows="All your replies and their cost, and how much went on replies that produced nothing.",
-            read="Shares are against everything in the window, not just the wasted replies.",
+            read="Shares are against everything in the window, not only the wasted replies.",
             act="Above 10% of cost is worth acting on. See \"Why replies were wasted\" for what to change.",
         ),
         columns={
@@ -3707,8 +3705,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             # The builder's lever text (waste.LEVERS), reworded for display.
             "Give exact paths and names in briefs, and have Claude check a path exists or read a file before "
             "it edits or runs against it, so a tool call works the first time.": (
-                "Give exact paths and names in your task prompts, and have Claude check a path or read a file "
-                "before it edits or runs a command on it."
+                "Give exact paths and names in your task prompts. Have Claude check a path or read a file before it "
+                "edits or runs a command on it."
             ),
             "Put the rule a hook enforces into the instructions of the agent that keeps hitting it (its prompt, "
             "or CLAUDE.md for the main session), so Claude doesn't try the blocked action first.": (
@@ -3937,14 +3935,15 @@ TABLE_COPY: dict[str, TableCopy] = {
         help=Help(
             shows="For each project: your auto-compact setting, the model's context window, and the context "
             "size at which Claude Code actually summarised the main session.",
-            read="\"Summarised at\" is the typical context size just before an automatic summary. \"Room left\" "
-            "is the context window minus that. The window is assumed unless your status line logged it.",
-            act="If \"Differs from setting\" is yes, summaries start more than 10% away from your "
-            "autoCompactWindow value. Check whether another settings file or an environment variable overrides it.",
+            read="\"Summarised at\" is the typical context size right before an automatic summary. \"Room left\" is "
+            "the context window minus that. The window is assumed unless your status line logged it.",
+            act="If \"Differs from setting\" is yes, summaries start more than 10% away from your auto-compact window "
+            "setting. Check whether another settings file or an environment variable overrides it.",
         ),
         columns={
             "project": ("", "The project folder."),
-            "configured_window": ("Auto-compact setting", "Your autoCompactWindow value, in tokens. Blank if not set."),
+            "configured_window": ("Auto-compact setting", "Your auto-compact window setting, in tokens. Blank if not "
+            "set."),
             "context_window_size": ("Context window", "The model's context window, in tokens."),
             "context_window_source": (
                 "Window from",
@@ -3953,7 +3952,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             ),
             "observed_threshold": (
                 "Summarised at",
-                "Typical context size just before an automatic summary, in tokens. Blank if none happened.",
+                "Typical context size right before an automatic summary, in tokens. Blank if none happened.",
             ),
             "implied_buffer": ("Room left", "Context window minus \"Summarised at\", in tokens."),
             "auto_compactions": ("Automatic summaries", "Automatic summaries in this project's main sessions."),
@@ -4044,11 +4043,13 @@ DIAGNOSTIC_LABELS: dict[str, tuple[str, str]] = {
 _PARSER_NOTE_LABELS: dict[str, tuple[str, str]] = {
     "unknown_line_types": (
         "Unrecognised line types",
-        "Kinds of log line no rule in this tool recognises at all, with counts -- unlike \"Line types skipped\" above, which also includes kinds this tool knows about and intentionally ignores.",
+        "Kinds of log line that no rule in this tool recognises, with counts. \"Line types skipped\" above also "
+        "includes kinds this tool knows about and ignores on purpose.",
     ),
     "unsized_blocks": (
         "Unsized image/document content",
-        "Image or document content this tool could not estimate a token count for (an oversized image, or a PDF page, whose cost isn't a fixed formula), by kind, with counts. Left out of context-size figures.",
+        "Images or document pages this tool could not estimate a token count for, by kind, with counts. An oversized "
+        "image or a PDF page has no fixed formula for its cost. They are left out of context-size figures.",
     ),
 }
 

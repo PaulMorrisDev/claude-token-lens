@@ -500,12 +500,12 @@ def _summary_table(
             ]
         ],
         notes=[
-            "A reply counts as a cache rebuild when it isn't the first reply in its conversation, its "
-            "context is large, and it read only a small share of that context from the cache. The "
-            "thresholds below set both.",
+            "A reply counts as a cache rebuild when three things hold. It isn't the first reply in its "
+            "conversation. Its context is large. And it read only a small share of that context from the "
+            "cache. The thresholds below set both.",
             "Avoidable cost leaves out rebuilds right after a usage-limit pause, which have their own "
-            "column: waiting for a limit to reset isn't a caching habit to fix. The usage limits "
-            "section prices every reply after a pause, not only the ones that count as rebuilds, so "
+            "column. Waiting for a limit to reset isn't a caching habit to fix. The usage limits "
+            "section prices every reply after a pause, not only the ones that count as rebuilds. So "
             "its figure is related to this one but not the same.",
         ],
     )
@@ -755,7 +755,7 @@ def _primary_cause_table(
         rows=rows,
         notes=[
             "Each rebuild is put down to the one event that ranks highest among those since the "
-            "previous reply. Shares are shown by count of replies and by tokens: a cause behind a few "
+            "previous reply. Shares are shown by count of replies and by tokens. A cause behind a few "
             "very large rebuilds looks small by count and large by tokens.",
         ],
     )
@@ -860,11 +860,11 @@ def _cooccurrence_table(
         ],
         rows=rows,
         notes=[
-            "Counts every event kind observed since the previous turn "
-            "(a turn can carry several), not just the highest-ranked "
-            "one — so a cause the precedence table hides "
-            "because a higher-ranked kind also occurred that turn is "
-            "still visible here.",
+            "Counts every kind of event since the previous reply, not only "
+            "the highest-ranked one: a reply can have several. So a cause "
+            "that \"What happened right before each cache rebuild\" hides, "
+            "because a higher-ranked event came in the same reply, still "
+            "shows here.",
         ],
     )
 
@@ -984,8 +984,8 @@ def _huge_context_table(all_turns: list[Turn], th: RecacheThresholds, pricing: P
             ]
         ],
         notes=[
-            "A context is very large when it reaches its model's own context window: 1,000,000 tokens "
-            "for a Claude 5 model with a 1M-token window, 200,000 otherwise, or "
+            "A context is very large when it reaches its model's own context window. That is 1,000,000 "
+            "tokens for a Claude 5 model with a 1M-token window, and 200,000 otherwise. It is "
             f"{th.huge_ctx:,} tokens when the model isn't in pricing.toml. This is about keeping context "
             "small, not a price rise: models from 4.6 on bill the whole 1M-token window at standard rates.",
         ],

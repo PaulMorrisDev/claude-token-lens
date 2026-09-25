@@ -114,19 +114,18 @@ _CHARS_PER_TOKEN_APPROX = 4
 ASSUMPTIONS: tuple[str, ...] = (
     "how many replies an output is kept for is counted from the replies "
     "that really follow it, never estimated",
-    "a conversation summary (compaction) before a later reply ends every "
-    "earlier output's carry at that point -- nothing at or past the "
-    "summary is priced as still cached",
-    "each later reply's carry cost is split between the model's cache "
-    "read price and its blended cache write price (5-minute and 1-hour) "
-    "in proportion to that reply's own split of cache reads and cache "
-    "writes -- an approximation, since nothing records which earlier "
-    "write produced which slice of a reply's cache",
+    "a conversation summary (compaction) ends the carry of every output "
+    "before it: nothing at or past the summary is priced as still cached",
+    "each later reply's carry cost mixes the model's cache read price and "
+    "its blended cache write price (5-minute and 1-hour). The mix follows "
+    "that reply's own split of cache reads and cache writes. This is an "
+    "approximation, since nothing records which earlier write produced "
+    "which part of a reply's cache",
     "tokens are characters divided by 4 (the approximation used "
     "throughout this report), not a real tokenizer",
-    "one output is everything one tool returned in one reply -- several "
-    "calls to the same tool in one reply are already summed together, "
-    "the finest grain the privacy-safe transcript summary keeps",
+    "one output is everything one tool returned in one reply. Several "
+    "calls to the same tool in one reply are already summed together: "
+    "that is the finest detail the privacy-safe transcript summary keeps",
 )
 
 #: What ``price_turn``/rate resolution accepts: an already-resolved rate
@@ -654,11 +653,11 @@ def _by_key_table(
         rows=table_rows,
         notes=[
             "Share of cache is each row's own share, not a slice of one "
-            "whole: a reply's cache read counts once for every output "
+            "whole. A reply's cache read counts once for every output "
             "still in context, so the rows don't add up to 100%.",
             "Saving if capped is what capping this row's own outputs at "
-            f"{th.big_result_tokens:,.0f} tokens would have saved, worked "
-            "out the same way as the capped-outputs saving table.",
+            f"{th.big_result_tokens:,.0f} tokens would have saved. It is "
+            "worked out the same way as the capped-outputs saving table.",
         ],
     )
 
@@ -681,10 +680,9 @@ def _build_top_results_table(stats: CarryStats) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "The single largest individual carried results by carry cost, "
-            "corpus-wide -- no content, no path, no command: only the tool "
-            "name, the agent type, its size, how many turns it carried, "
-            "and what that cost.",
+            "The carried results that cost the most, across every session. "
+            "Only the tool name, agent type, size, turns carried and cost "
+            "are kept: no content, no path, no command.",
         ],
     )
 
@@ -706,11 +704,11 @@ def _build_truncation_table(stats: CarryStats, th: CarryThresholds) -> Table:
         columns=columns,
         rows=rows,
         notes=[
-            "Exact, not simulated: carry cost is linear in a result's own "
-            "token count (the per-turn read/write rate mix doesn't depend "
-            "on the result's size), so the saving from capping every "
-            "result above the threshold at that limit is computed "
-            "directly rather than re-run through a hypothetical.",
+            "Exact, not simulated. Carry cost grows in step with a "
+            "result's own token count. Each reply's mix of read and write "
+            "prices doesn't depend on the result's size. So the "
+            "saving from capping every result above the threshold at that "
+            "limit is worked out directly.",
             f"An output counts as big at {th.big_result_tokens:,.0f} tokens; "
             "the by-tool and by-agent-type tables count how many clear it.",
         ],
@@ -740,10 +738,10 @@ def _build_cap_table(stats: CarryStats) -> Table:
         rows=rows,
         notes=[
             "One row per setting the tool-output check suggests, at the "
-            "value it suggests, over the results that setting caps: "
-            "worked out the same way as the capped-outputs saving table. Results "
-            "from one reply are counted together, so a reply's several "
-            "short outputs can count as one long one: an upper bound.",
+            "value it suggests, over the results that setting caps. It is "
+            "worked out the same way as the capped-outputs saving table. "
+            "Results from one reply are counted together, so a reply's "
+            "several short outputs can count as one long one: an upper bound.",
         ],
     )
 
@@ -766,8 +764,8 @@ def build_section(stats: CarryStats, thresholds: CarryThresholds | None = None) 
     notes = list(ASSUMPTIONS) + [f"Thresholds: {' '.join(th.describe())}"]
     if stats.unpriced_turns:
         notes.append(
-            f"{stats.unpriced_turns} priced turn(s) had a model this report's rate card couldn't "
-            "resolve -- their own carry contribution prices at zero rather than vanishing silently."
+            f"{stats.unpriced_turns} priced turn(s) used a model your pricing file has no price for. "
+            "Their share of carry cost counts as zero, and this note says so."
         )
     return Section(key="carry", title="Context carry cost per tool", tables=tables, notes=notes)
 
@@ -888,9 +886,9 @@ def _rule_tool_output_carry(report: ReportModel, th: CarryThresholds) -> list[Re
                 title=f"{tool}'s output dominates context carried across turns",
                 action=(
                     f"{tool} results made up {share:.1f}% of this corpus's cache volume once carry "
-                    f"cost is counted ({cost_text} paid to keep them cached turn after turn). Pipe "
-                    "long Bash/PowerShell output through head/tail or a digest script, prefer Grep "
-                    "over Read for large files, and cap agent report length before it enters "
+                    f"cost is counted. Keeping them cached turn after turn cost {cost_text}. Pipe "
+                    "long Bash/PowerShell output through head/tail or a digest script, and prefer "
+                    "Grep over Read for large files. Cap agent report length before it enters "
                     f"context.{saving_clause}"
                 ),
                 lever=None,

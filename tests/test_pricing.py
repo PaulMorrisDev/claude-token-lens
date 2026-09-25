@@ -1168,3 +1168,14 @@ def test_effective_rates_accept_bare_model_rates(min_pricing):
 
 def test_effective_rates_none_for_an_unresolved_model():
     assert effective_rates(_turn(), None) is None
+
+
+def test_model_name_reads_an_id_as_people_say_it():
+    from claude_token_lens.pricing import model_name, model_names_in
+
+    assert model_name("claude-opus-5-5") == "Opus 5.5"
+    assert model_name("claude-haiku-4-5-20251001") == "Haiku 4.5"
+    assert model_name("claude-3-5-haiku-20241022") == "Haiku 3.5"
+    assert model_name("claude-opus-5[1m]") == "Opus 5 [1m]"
+    assert model_name("gpt-4") == "gpt-4"
+    assert model_names_in("claude-sonnet-5 (+2 more), not claude-token-lens") == "Sonnet 5 (+2 more), not claude-token-lens"

@@ -652,23 +652,22 @@ def build_section(stats: CompactionStats) -> Section:
     # the cache-rebuild section uses, so the two can't drift apart;
     # is_recache_turn's standalone rule is kept only for its own tests.
     notes = [
-        "Whether the reply right after a summary rebuilt the cache is decided "
-        "by the same check the cache rebuild section uses, so the two always "
-        "agree.",
+        "The reply right after a summary counts as a cache rebuild by the "
+        "same check the cache rebuild section uses. So the two always agree.",
         "\"Tokens removed, as a % of all cache writes\" divides the tokens "
-        "removed by every reply's cache writes, not just the replies after a "
-        "summary, so it can pass 100% when summaries are large next to "
+        "removed by every reply's cache writes, not only the replies after a "
+        "summary. So it can pass 100% when summaries are large next to "
         "ordinary cache growth. The row below it divides by new input and "
-        "cache writes together, so it doesn't undercount sessions where much "
+        "cache writes together. So it doesn't undercount sessions where much "
         "of the traffic never reached the cache. Tokens removed are counted "
         "per summary, not from Claude Code's running total (which would count "
         "some tokens two or three times).",
         "\"Cache write cost on the reply after a summary\" adds up the cache "
         "write on the reply right after every summary. The row below it counts "
-        "only the replies that rebuilt most of the cache, and is usually far "
+        "only the replies that rebuilt most of the cache. It is usually far "
         "smaller, since most replies after a summary still read a warm cache. "
         "Both totals, and the per-session write cost, leave out a summary "
-        "whose next reply came more than 15 minutes later: that reply most "
+        "whose next reply came more than 15 minutes later. That reply most "
         "likely belongs to a resumed session.",
     ]
     if not stats.records:

@@ -23,7 +23,7 @@ These are rough sizes — the note's characters divided by four, plus Claude Cod
 
 ## What each metric is worth
 
-Gap 4: every metric here has to earn its keep — something has to actually read it and turn it into a decision, not just log it. This table is that trace: each metric's rough cost against what it feeds. The Capture page shows the same thing measured from your own transcripts, in tokens a week instead of per occurrence.
+Every metric here has to earn its keep. Something has to read it and turn it into a decision, not only log it. This table is that trace: each metric's rough cost against what it feeds. The Capture page shows the same thing measured from your own transcripts, in tokens a week instead of per occurrence.
 
 | Metric | Level | ~Output tokens each time | Feeds |
 |---|---|---|---|
@@ -195,7 +195,7 @@ Gap 4: every metric here has to earn its keep — something has to actually read
 
 - **Level:** Standard
 - **Captures:** Whether each subagent used the CLAUDE.md and memory instructions it was given.
-- **Why:** Which agents could start without your CLAUDE.md files (omitClaudeMd), saving their start-up tokens.
+- **Why:** Which agents could start without your CLAUDE.md files, saving their start-up tokens.
 - **Tag:** `rules=used|unused`
 - **Costs:** about 2 output tokens each time
 - **Hook:** SubagentStart
@@ -264,7 +264,7 @@ Gap 4: every metric here has to earn its keep — something has to actually read
 ### Large tool outputs (`big_output`)
 
 - **Level:** Deep
-- **Captures:** After a tool result of about 8,000 tokens or more, how much of it Claude needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or MCP result; 'capture status' shows how long that has actually added, measured from your own sessions.
+- **Captures:** After a tool result of about 8,000 tokens or more, how much of it Claude needed: all, part or none. Claude Code waits for the hook after each shell, read, search, web or MCP result. 'capture status' shows how long that has added, measured from your own sessions.
 - **Why:** Quieter commands, offset reads and output caps where big outputs weren't needed.
 - **Tag:** `out=needed|part|unneeded`
 - **Costs:** about 2 output tokens each time
@@ -303,7 +303,7 @@ Gap 4: every metric here has to earn its keep — something has to actually read
 ### How turns end (`turn_signals`)
 
 - **Level:** Free
-- **Captures:** Whether each turn ended normally or Claude Code re-asked the Stop hook, and the kind of API error on a failed turn (rate limit, overloaded and so on) -- never the error's own text.
+- **Captures:** Whether each turn ended normally or Claude Code asked the Stop hook again. On a failed turn, the kind of API error, such as a rate limit or overload, never the error's own text.
 - **Why:** An independent, hook-level check next to what the transcript already shows about limit hits and API errors.
 - **Tag:** No tag. A hook records it directly; Claude is never asked.
 - **Hook:** Stop, StopFailure
@@ -338,7 +338,7 @@ Gap 4: every metric here has to earn its keep — something has to actually read
 ### What your messages contain (`prompt_features`)
 
 - **Level:** Always measured, no hook
-- **Captures:** Whether each message names a file, has a code block, an error or stack trace, a URL, done-criteria wording or numbered steps, and whether it's short. Only yes/no is kept.
+- **Captures:** Whether each message names a file, has a code block, an error or stack trace, a URL, done-criteria wording or numbered steps. Also whether it's short. Only yes/no is kept.
 - **Why:** How you give Claude information, measured without asking Claude: cost per task with and without file paths or errors.
 - **Tag:** No tag. Read from the transcript Claude Code already writes; Claude is never asked, and it costs no tokens.
 - **Powers:** Giving Claude information
@@ -380,7 +380,7 @@ Gap 4: every metric here has to earn its keep — something has to actually read
 ### Coaching line (`coaching_line`)
 
 - **Level:** Live coaching, any level
-- **Captures:** A second status line with a live hint from your session, such as a large context before a new task, a large last output, or many reads so far.
+- **Captures:** A second status line with a live hint from your session. For example, a large context before a new task, a large last output, or many reads so far.
 - **Why:** Advice where you work, at the moment it applies. The status line is never sent to Claude.
 - **Tag:** No tag. Shown only in the status line; Claude is never asked, and it costs no tokens.
 - **Powers:** Clearing context, Tool output, Researching
@@ -398,7 +398,7 @@ Gap 4: every metric here has to earn its keep — something has to actually read
 ### Feedback skill (`feedback_skill`)
 
 - **Level:** Feedback, any level; switching to Deep turns it on
-- **Captures:** A /tl-feedback skill you run after a piece of work: four checkbox questions about the outcome, what slowed it, whether it was worth the tokens, and what would have helped.
+- **Captures:** A /tl-feedback skill you run after a piece of work. It asks four checkbox questions: the outcome, what slowed it, whether it was worth the tokens, and what would have helped.
 - **Why:** Cost per piece of work that met its goal, which outranks what Claude reports about itself.
 - **Tag:** `[tl-fb: outcome=met|partly|missed|stopped slow=unclear,rework,tools,none worth=yes|fair|no helped=context,plan,smaller,none]`
 - **Powers:** Cost per finished piece of work

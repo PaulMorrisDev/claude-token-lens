@@ -493,10 +493,10 @@ def _summary_table(stats: LimitStats, rows: list[LimitTypeStats]) -> Table:
             "and their cost can't be avoided, and aren't an ordinary cache "
             "rebuild.",
             "\"Cost of cache writes after a pause\" counts every reply after "
-            "a pause. The cache rebuild section's cost of rebuilds after a "
-            "usage-limit pause counts only the ones that also pass its "
-            "rebuild check, so the two are related but not equal "
-            "(docs/limits.md explains the difference).",
+            "a pause. The rebuild cost after a pause in the cache rebuild "
+            "tables counts only replies that also pass the rebuild check. "
+            "So the two are related but not equal: "
+            "docs/limits.md explains the difference.",
         ],
     )
 
@@ -569,9 +569,9 @@ def _pause_table(rows: list[LimitTypeStats]) -> Table:
         rows=[["all", total_count, round(total_s, 3), round(mean_s, 3) if mean_s is not None else None]],
         notes=[
             "One pause per reply whose wait since the previous reply "
-            "spanned a usage-limit pause; its length is that wait. The "
-            "typical and longest pause per agent type are on the "
-            "by-agent-type table, since an overall typical pause can't be "
+            "spanned a usage-limit pause. Its length is that wait. The "
+            "typical and longest pause per agent type are in the "
+            "by-agent-type table. An overall typical pause can't be "
             "worked out from the per-type ones.",
         ],
     )

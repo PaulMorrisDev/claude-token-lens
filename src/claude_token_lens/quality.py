@@ -1170,34 +1170,36 @@ def build_section(runs: list[Run], units: "Units | None" = None) -> Section:
     retried = retried_rows(runs)
     reasons = retry_reason_rows(runs)
     notes = [
-        "An agent run counts as cut off when it was stopped, never replied, or its last reply asked for a tool and "
-        "nothing came after it. Ending on a StructuredOutput call is a workflow agent's answer, so it counts as "
-        "finished. One cut off after its last tool result came back, without being stopped, most likely ran out of "
-        "turns (its maxTurns); Claude Code doesn't record why. The quality-by-setup table leaves out runs that never "
+        "An agent run is cut off when it was stopped, never replied, or its last reply asked for a tool and "
+        "nothing followed. A workflow agent that ends by handing back its structured answer counts as "
+        "finished. One cut off after its last tool result came back, without being stopped, most likely reached "
+        "its turn limit. Claude Code doesn't record why. The quality-by-setup table leaves out runs that never "
         "replied, since they have no model.",
-        f"A difference is marked only when it holds in a z-test at {ALPHA:.0%} (two-sided) after a Holm correction "
-        "for the number of signals compared; \"possibly\" when it holds on its own but not after the correction. "
+        "A difference is marked only when it is unlikely to be chance (a two-sided test at "
+        f"{ALPHA:.0%}, corrected for comparing several signals). It is marked \"possibly\" when it passes the "
+        "test on its own but not after the correction. "
         f"Fewer than {MIN_RUNS} runs (or {MIN_DENOMINATOR} of what a rate counts) on either side is too little data. "
         f"A share that moved by less than {100 * MIN_SHARE_CHANGE:.1f} percentage points is not marked.",
-        "Setups are compared across the whole window, so a setup used for different kinds of work, or in a different "
-        "week, can differ for that reason alone. \"Your changes and what they did\" on {{page:setup/settings}} "
+        "Setups are compared across the whole window. So a setup used for different kinds of work, or in a "
+        "different week, can differ for that reason alone. \"Your changes and what they did\" on {{page:setup/settings}} "
         "compares before and after each change you made.",
         "Corrections are messages that start or contain a fixed phrase such as \"that's wrong\" or \"still "
         "broken\". Only the yes/no is kept, never the text.",
-        "A run counts as retried on a larger model when a run of the same agent type on a larger model family "
-        f"(haiku, sonnet, opus, fable, smallest first), started after it ended, edited one of its files within "
-        f"{RETRY_WINDOW.seconds // 3600} hours of its last reply, in the same session. Another agent type or the "
+        "A run counts as retried on a larger model when a later run of the same agent type edited one of its "
+        "files. That later run used a larger model family (Haiku, Sonnet, Opus, Fable, smallest first). It "
+        "started after the first run ended, in the same session, and edited the file within "
+        f"{RETRY_WINDOW.seconds // 3600} hours of its last reply. Another agent type or the "
         "main session editing the file afterwards doesn't count, since a reviewer after a writer is often the plan. "
         "Files are compared by salted hash. Retries aren't part of the setup comparisons: the largest model can "
         "never be retried on a larger one.",
-        "An edit is a file changed with Edit, Write, MultiEdit or NotebookEdit, or written by a shell command with "
-        "content it authored (sed -i, Set-Content, a heredoc redirected to a file); a program's output captured to "
-        "a log isn't one, and neither is an edit whose tool call failed.",
-        "Markers are words Claude writes when CLAUDE.md asks it to (Quick actions, \"Is any agent struggling?\"): "
-        "a brief starting [retry: model|brief|tools|other] and a subagent's last reply ending "
-        "[result: done|partial|blocked]. Only the word is kept. A retry that says the brief, tools or something "
-        "else was the problem never counts against the cheaper model; one that says the model does, even for a "
-        "different agent. A run that says partial or blocked didn't finish. Explore and Plan start without "
+        "An edit is a file changed with Edit, Write, MultiEdit or NotebookEdit. A shell command that writes "
+        "content it authored also counts (sed -i, Set-Content, a heredoc redirected to a file). A program's output "
+        "captured to a log isn't an edit, and neither is an edit whose tool call failed.",
+        "Markers are words Claude writes when CLAUDE.md asks it to (Quick actions, \"Is any agent struggling?\"). "
+        f"They are a brief starting [retry: {'|'.join(RETRY_REASONS)}], and a subagent's last reply ending "
+        f"[result: {'|'.join(RESULT_WORDS)}]. Only the word is kept. A retry that says the brief, tools or "
+        "something else was the problem never counts against the cheaper model. One that says the model does, "
+        "even for a different agent. A run that says partial or blocked didn't finish. Explore and Plan start without "
         "CLAUDE.md, so they are left out of the result marker's share.",
     ]
     return Section(
@@ -1217,12 +1219,12 @@ def build_section(runs: list[Run], units: "Units | None" = None) -> Section:
 
 
 ASSUMPTIONS: tuple[str, ...] = (
-    "Quality signals are counted from the transcripts only: a failed tool call is one whose result is marked as an "
-    "error, and an agent's outcome is the status its notification or result reported.",
+    "Quality signals are counted from the transcripts only. A failed tool call is one whose result is marked as an "
+    "error. An agent's outcome is the status its notification or result reported.",
     "A message counts as a correction when it contains a fixed phrase such as \"that's wrong\" or \"still "
-    "broken\"; plain disagreement worded differently is missed, so the rate is a floor.",
-    "The same agent run again on a larger model, editing the same files soon after, is taken as a retry because "
-    "the cheaper model's work wasn't enough; unless the retry's brief says why, a single case is a sign, not proof.",
+    "broken\". Plain disagreement worded differently is missed, so the rate is a floor.",
+    "An agent run again on a larger model soon after, editing the same files, is taken as a retry: the cheaper "
+    "model's work wasn't enough. Unless the retry's brief says why, a single case is a sign, not proof.",
     "A marker Claude writes ([retry: ...], [result: ...]) is Claude's own account; it is taken at its word.",
 )
 

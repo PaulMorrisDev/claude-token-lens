@@ -409,10 +409,10 @@ def test_build_section_notes_flag_every_default():
     stats = simulate_compaction_windows([tr], SONNET_RATES, {})
     section = build_section(stats)
     joined = " ".join(section.notes)
-    assert "Summary size used: 20,000 tokens (default -- no real conversation summary found)" in joined
+    assert "Summary size used: 20,000 tokens (default, as no real conversation summary was found)" in joined
     assert "Trigger reserve used: 0 tokens below the window (default" in joined
     assert "Starting context still cached after a summary: 0% (default" in joined
-    assert "no real cache rebuild after a summary found" in joined
+    assert "no real cache rebuild after a summary was found" in joined
 
 
 def test_build_section_empty_corpus_notes_instead_of_crashing():
@@ -721,7 +721,7 @@ def test_rule_rediscovery_correction_suppresses_a_saving_that_only_clears_the_ba
 
 
 def test_rediscovery_allowance_used_note_round_trips_through_its_list_price_format():
-    """UX-2 regression: ``build_section``'s "Rediscovery allowance used:
+    """UX-2 regression: ``build_section``'s "Allowance for re-reading files:
     ..." note never prints a bare "$" (it reads "$X.XXXX at list price",
     see the module's own UX-2 comment there) --
     ``_rediscovery_allowance_usd_used`` must still read the number back
@@ -730,8 +730,8 @@ def test_rediscovery_allowance_used_note_round_trips_through_its_list_price_form
     would happen if it choked on the "$")."""
     build_th = CompactionSimThresholds(switch_usd=0.9, default_rediscovery_allowance_usd=0.1234)
     report = _plateau_report(build_th)  # note baked in at 0.1234 (this fixture's own default branch)
-    notes = [n for s in report.sections for n in s.notes if n.startswith("Rediscovery allowance used:")]
-    assert notes and notes[0].startswith("Rediscovery allowance used: $0.1234 at list price")
+    notes = [n for s in report.sections for n in s.notes if n.startswith("Allowance for re-reading files:")]
+    assert notes and notes[0].startswith("Allowance for re-reading files: $0.1234 at list price")
 
     # A different thresholds object, with a distinct default, at read time:
     # correct parsing returns the note's 0.1234, not this object's 0.9999.

@@ -36,17 +36,20 @@ from . import quality
 from .model_swap import ModelSwapThresholds
 
 
-def row_unfit_reason(row: dict, *, min_sessions: int | None = None) -> str | None:
-    """Why a habits agents row -- corpus-wide (``habits_agents``) or one
-    kind of task's slice of it (``habits_agents_by_task``) -- shouldn't
-    be offered a smaller model: Claude said a larger model was needed
-    at least as often as a smaller one would do, most of its work was
-    reported hard, or a run was retried because the model wasn't
-    enough. ``None`` when nothing vetoes it, including when its sample
-    (``row["runs"]``) is below ``min_sessions``. The main session
-    counts by how hard its work was only, since it has no ``fit``/
-    ``retried_model`` of its own -- matching the long-standing
-    ``habits.unfit_agents`` convention this replaces."""
+def row_unfit(row: dict, *, min_sessions: int | None = None) -> tuple[str, float] | None:
+    """``(kind, figure)`` for why a habits agents row -- corpus-wide
+    (``habits_agents``) or one kind of task's slice of it
+    (``habits_agents_by_task``) -- shouldn't be offered a smaller model:
+    ``"larger"`` (Claude said a larger model was needed at least as often
+    as a smaller one would do; the figure is those runs), ``"hard"``
+    (most of its work was reported hard; the figure is that share) or
+    ``"retried-model"`` (a run was retried because the model wasn't
+    enough; the figure is those retries). ``None`` when nothing vetoes
+    it, including when its sample (``row["runs"]``) is below
+    ``min_sessions``. The main session counts by how hard its work was
+    only, since it has no ``fit``/``retried_model`` of its own --
+    matching the long-standing ``habits.unfit_agents`` convention this
+    replaces."""
     runs = row.get("runs")
     if min_sessions is not None and isinstance(runs, (int, float)) and runs < min_sessions:
         return None
@@ -54,12 +57,50 @@ def row_unfit_reason(row: dict, *, min_sessions: int | None = None) -> str | Non
     smaller = row.get("fit_smaller") or 0
     hard = row.get("hard_pct")
     if larger and larger >= smaller:
-        return f"Claude said {larger} of its runs needed a larger model"
+        return "larger", larger
     if isinstance(hard, (int, float)) and hard >= 50:
-        return f"{hard:.0f}% of its work was reported hard"
+        return "hard", hard
     if (row.get("retried_model") or 0) >= 1:
-        return "a run was retried because the model wasn't enough"
+        return "retried-model", row.get("retried_model") or 0
     return None
+
+
+def unfit_reason(kind: str, figure: float) -> str:
+    """The clause for one :func:`row_unfit` result, for "left out
+    because ..."."""
+    if kind == "larger":
+        return f"Claude said {figure} of its runs needed a larger model"
+    if kind == "hard":
+        return f"{figure:.0f}% of its work was reported hard"
+    return "a run was retried because the model wasn't enough"
+
+
+def row_unfit_reason(row: dict, *, min_sessions: int | None = None) -> str | None:
+    """:func:`row_unfit` as a clause (:func:`unfit_reason`), or ``None``
+    when nothing vetoes the row."""
+    unfit = row_unfit(row, min_sessions=min_sessions)
+    return unfit_reason(*unfit) if unfit is not None else None
+
+
+def _floor(min_sessions: int | None) -> int:
+    return ModelSwapThresholds().min_sessions if min_sessions is None else min_sessions
+
+
+def unfit_kinds(tables, *, min_sessions: int | None = None) -> dict[str, tuple[str, float]]:
+    """``{agent: (kind, figure)}`` (:func:`row_unfit`) for every
+    corpus-wide habits agents row something vetoes -- the structured
+    form of :func:`raw`'s ``unfit``, for a caller that groups agents by
+    reason."""
+    floor = _floor(min_sessions)
+    out: dict[str, tuple[str, float]] = {}
+    for row in tables.rows("habits", "habits_agents"):
+        agent = row.get("agent_type")
+        if not agent:
+            continue
+        unfit = row_unfit(row, min_sessions=floor)
+        if unfit is not None:
+            out[agent] = unfit
+    return out
 
 
 def raw(tables, *, min_sessions: int | None = None) -> tuple[dict, dict, dict]:
@@ -68,18 +109,10 @@ def raw(tables, *, min_sessions: int | None = None) -> tuple[dict, dict, dict]:
     formats its own reason text per dict rather than using
     :meth:`ModelGate.reason`. ``min_sessions`` defaults to
     ``ModelSwapThresholds().min_sessions``."""
-    th = ModelSwapThresholds()
-    floor = th.min_sessions if min_sessions is None else min_sessions
+    floor = _floor(min_sessions)
     worse = quality.worse_models(tables.rows("quality", "quality_by_setup"))
     retried = quality.retried_models(tables.rows("quality", "quality_retried"), min_sessions=floor)
-    unfit: dict[str, str] = {}
-    for row in tables.rows("habits", "habits_agents"):
-        agent = row.get("agent_type")
-        if not agent:
-            continue
-        reason = row_unfit_reason(row, min_sessions=floor)
-        if reason:
-            unfit[agent] = reason
+    unfit = {agent: unfit_reason(*kind) for agent, kind in unfit_kinds(tables, min_sessions=floor).items()}
     return worse, retried, unfit
 
 
@@ -120,4 +153,4 @@ def build(tables, *, min_sessions: int | None = None) -> ModelGate:
     return ModelGate(worse=worse, retried=retried, unfit=unfit)
 
 
-__all__ = ["ModelGate", "row_unfit_reason", "raw", "build"]
+__all__ = ["ModelGate", "row_unfit", "row_unfit_reason", "unfit_kinds", "unfit_reason", "raw", "build"]

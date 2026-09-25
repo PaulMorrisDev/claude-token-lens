@@ -189,15 +189,15 @@ class TtlThresholds:
             f"what they really cost by more than {self.fidelity_warn_pct:.1f}%.",
             f"A switch is suggested only when the other lifetime would cost under "
             f"{self.switch_pct:.0%} of what was paid and save more than ${self.switch_usd:.2f} "
-            "at list price; both must hold.",
+            "at list price. Both must hold.",
             f"No switch is suggested for an agent type whose replay misses by more than "
-            f"{self.max_fidelity_for_advice_pct:.1f}%, or whose saving is smaller than that miss; "
-            "its row says why instead.",
+            f"{self.max_fidelity_for_advice_pct:.1f}%, or whose saving is smaller than that miss. "
+            "Its row says why instead.",
             f"The near-miss counts cover the {self.near_miss_window_s:.0f} seconds either side "
             "of each lifetime's end.",
-            f"When the cache-rebuild check hasn't run, a reply counts as a rebuild when its context "
-            f"is over {self.ctx_floor:,} tokens and it read less than {self.cr_ratio:.0%} of it from "
-            f"the cache, and as expired when it read under {self.full_expiry_cr:,} tokens.",
+            "When the cache-rebuild check hasn't run, a reply counts as a rebuild if two things hold. "
+            f"Its context is over {self.ctx_floor:,} tokens, and it read less than {self.cr_ratio:.0%} "
+            f"of it from the cache. It counts as expired when it read under {self.full_expiry_cr:,} tokens.",
         ]
 
 
@@ -1496,11 +1496,11 @@ class TtlStats:
         return list(self._subagent_mtimes_ns)
 
 
-#: Quoted verbatim from the plan's Risk 1 (subscription users are not
-#: billed in USD): the documented reason a 1h subagent recommendation is
-#: moot in subscription mode.
+#: The plan's Risk 1 (subscription users are not billed in USD), in plain
+#: words: the documented reason a 1h subagent recommendation is moot in
+#: subscription mode.
 _SUBSCRIPTION_1H_IGNORED_NOTE = (
-    "a 1h cacheTtl is ignored while on usage credits"
+    "a 1-hour cache lifetime is ignored while on usage credits"
 )
 
 
@@ -1674,10 +1674,11 @@ def build_section(
         columns=waste_columns,
         rows=waste_rows,
         notes=[
-            "A write is \"used\" when a later turn in the same transcript reads back at"
-            " least as much as the prefix it wrote, before that write's TTL (5m or 1h;"
-            " a mixed write counts as two) ever lapsed. Terminal writes (a transcript's"
-            " last turn) are unavoidable and excluded from the waste share."
+            "A cache write counts as used when a later reply in the same conversation reads"
+            " back at least as much as it wrote. That read must come before the write's"
+            " lifetime (5 minutes or 1 hour) runs out. A write with both lifetimes counts as"
+            " two. The last reply's write in each conversation can't be avoided, so it is"
+            " left out of the waste share."
         ],
     )
 
@@ -1733,10 +1734,10 @@ def build_section(
             " really used, grouped by the wait before the next reply.",
             "The extra cost columns price what a 1-hour write costs over a 5-minute one, on"
             " that write's own tokens.",
-            "\"1 hour pays off\" and the 5-minute rebuild cost price rewriting the next"
-            " reply's whole cached context at the 5-minute rate: the same basis as the"
-            " break-even table, so across replies that each write something the rebuild"
-            " costs add up to that table's expiry loss exactly.",
+            "\"1 hour pays off\" and the 5-minute rebuild cost both price rewriting the next"
+            " reply's whole cached context at the 5-minute rate. That is the same basis as"
+            " the break-even table. So across replies that each write something, the"
+            " rebuild costs add up to that table's expiry loss exactly.",
         ],
     )
 
@@ -1768,12 +1769,12 @@ def build_section(
         columns=break_even_columns,
         rows=break_even_rows,
         notes=[
-            "the 1h premium is paid on incremental writes; an expiry re-writes the whole"
-            " prefix, so the break-even share is the premium ratio scaled by the"
-            " incremental-to-prefix ratio",
-            "The 1-hour price premium comes from the model this agent type used most (by"
-            " tokens), not from one sample reply, so a mixed-model agent type's break-even"
-            " share follows the model that drives its cost.",
+            "The 1-hour premium is paid only on new cache writes. An expiry rewrites the"
+            " whole cached context. So the break-even share is the premium ratio, scaled"
+            " by how big new writes are next to the whole context.",
+            "The 1-hour price premium comes from the model this agent type used most, by"
+            " tokens, not from one sample reply. So when an agent type uses several"
+            " models, its break-even share follows the model that drives its cost.",
         ],
     )
 
@@ -1783,12 +1784,12 @@ def build_section(
         Column(key="agent_type", label="Agent type", kind="str"),
         Column(key="near_5m_hit", label=f"5m near-miss, hit ({b5_hit[0]:.0f}-{b5_hit[1]:.0f}s)", kind="int"),
         Column(key="near_5m_miss", label=f"5m near-miss, missed ({b5_miss[0]:.0f}-{b5_miss[1]:.0f}s)", kind="int"),
-        Column(key="near_5m_miss_tokens", label="5m just-missed rewrite tokens", kind="tokens"),
-        Column(key="near_5m_miss_usd", label="Cost of just missing 5 minutes", kind="money"),
+        Column(key="near_5m_miss_tokens", label="Tokens rewritten after narrowly missing 5 minutes", kind="tokens"),
+        Column(key="near_5m_miss_usd", label="Cost of narrowly missing 5 minutes", kind="money"),
         Column(key="near_1h_hit", label=f"1h near-miss, hit ({b1_hit[0]:.0f}-{b1_hit[1]:.0f}s)", kind="int"),
         Column(key="near_1h_miss", label=f"1h near-miss, missed ({b1_miss[0]:.0f}-{b1_miss[1]:.0f}s)", kind="int"),
-        Column(key="near_1h_miss_tokens", label="1h just-missed rewrite tokens", kind="tokens"),
-        Column(key="near_1h_miss_usd", label="Cost of just missing 1 hour", kind="money"),
+        Column(key="near_1h_miss_tokens", label="Tokens rewritten after narrowly missing 1 hour", kind="tokens"),
+        Column(key="near_1h_miss_usd", label="Cost of narrowly missing 1 hour", kind="money"),
     ]
     near_miss_rows = [
         [
@@ -1855,11 +1856,11 @@ def build_section(
         notes=[
             "A longer cache lifetime can prevent a rebuild after the cache expired. It"
             " can't prevent one after a change broke the cache: the cached content itself"
-            " changed. Each reply takes the cache-rebuild check's own verdict; when that"
-            " check hasn't run, a reply after the first counts as a rebuild when its"
-            f" context is over {th.ctx_floor:,} tokens and it read less than"
-            f" {th.cr_ratio:.0%} of it from the cache, and as expired when it read under"
-            f" {th.full_expiry_cr:,} tokens."
+            " changed. Each reply takes the cache-rebuild check's own verdict. When that"
+            " check hasn't run, a reply after the first counts as a rebuild if two things"
+            f" hold. Its context is over {th.ctx_floor:,} tokens, and it read less than"
+            f" {th.cr_ratio:.0%} of it from the cache. It counts as expired when it read"
+            f" under {th.full_expiry_cr:,} tokens."
         ],
     )
 
@@ -1914,8 +1915,8 @@ def build_section(
         rows=economy_rows,
         notes=[
             "Cost with no cache prices every token read from or written to the cache at"
-            " the model's plain input price: what the replies would have cost with no"
-            " caching at all. Return on cache writes is the amount saved by the cache"
+            " the model's plain input price. That is what the replies would have cost with"
+            " no caching at all. Return on cache writes is the amount saved by the cache"
             " divided by what the cache writes cost."
         ],
     )
@@ -1929,7 +1930,7 @@ def build_section(
         )
     if billing_mode == "subscription":
         notes.append(
-            "Subagent TTL switch recommendations are suppressed in subscription mode: "
+            "No cache lifetime switch is suggested for subagents on a subscription: "
             + _SUBSCRIPTION_1H_IGNORED_NOTE
             + "."
         )
@@ -1942,8 +1943,8 @@ def build_section(
                 break
         if stale:
             notes.append(
-                "Subagent runs join a window when their main session was last active,"
-                " not by their own date, so a long-lived or resumed session can bring"
+                "Subagent runs join a window by when their main session was last active,"
+                " not by their own date. So a long-lived or resumed session can bring"
                 " much older subagent runs into a recent window. At least one subagent"
                 " run in this report started before the window did."
             )

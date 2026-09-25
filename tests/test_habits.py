@@ -272,8 +272,8 @@ def test_misses_you_reported_name_the_kind_of_work_and_what_slowed_it():
     # cost figure to floor at all.
     assert item.sources == ("your feedback",) and item.saving == pytest.approx(3.0) and item.n == 2
     assert item.evidence == (
-        "2 pieces of work missed their goal or were stopped, costing 3.0x one that met it; mostly refactor work; "
-        "slowed most by: wrong approach or rework."
+        "2 pieces of work missed their goal or were stopped, costing 3.0x one that met it; mostly refactor work. "
+        "Slowed most by: wrong approach or rework."
     )
 
 
@@ -304,7 +304,7 @@ def test_every_table_is_there_even_with_nothing_to_show():
 
 def test_untagged_unrated_work_says_how_to_get_more():
     notes = habits.section_from(Habits(cycles=[_cycle()])).notes
-    assert any("turn on metrics capture" in n for n in notes)
+    assert any("turn on metrics capture" in n.lower() for n in notes)
     assert any("run /tl-feedback" in n for n in notes)
 
 
@@ -807,7 +807,8 @@ def test_the_capture_section_surfaces_a_step_down_suggestion_when_ready_and_stab
     assert any("claude-token-lens capture level deep" in n for n in table.notes)
     # What changes, where, the trade-off and the undo (no apply button).
     note = next(n for n in table.notes if "--dry-run" in n)
-    assert all(i in note for i in dropped)
+    # The dropped metrics by their Capture page names, never their ids.
+    assert habits.metric_list(dropped) in note
     assert "stops collecting them" in note and "writes nothing" in note
     assert "config.toml" in note and "settings.json" in note
     assert "per session start" in note and "per subagent start" in note

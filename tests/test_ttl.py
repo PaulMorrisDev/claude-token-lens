@@ -1808,8 +1808,9 @@ def test_build_section_new_tables_have_expected_notes():
     tables_by_name = {t.name: t for t in section.tables}
 
     assert (
-        "the 1h premium is paid on incremental writes; an expiry re-writes the whole prefix, so the"
-        " break-even share is the premium ratio scaled by the incremental-to-prefix ratio"
+        "The 1-hour premium is paid only on new cache writes. An expiry rewrites the whole cached context."
+        " So the break-even share is the premium ratio, scaled by how big new writes are next to the whole"
+        " context."
         in " ".join(tables_by_name["ttl_break_even_share"].notes)
     )
     assert "statusline countdown" in " ".join(tables_by_name["ttl_near_miss"].notes)

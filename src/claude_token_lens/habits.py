@@ -177,7 +177,7 @@ EXAMPLES = {
     "explore_research": "Use an Explore agent to find where retries are handled, and report the files and "
     "functions in under 200 words.",
     "plan_hard": "Before changing anything, plan this in plan mode and list the files you'll touch.",
-    "skip_plan_easy": "Just make this change, no plan needed: ...",
+    "skip_plan_easy": "Make this change directly, no plan needed: ...",
     "skill_early": "/<skill> <what you want>, as your first message for this kind of work.",
     "skill_unneeded": "Add disable-model-invocation: true to that skill's SKILL.md, so it loads only when you "
     "run it.",
@@ -191,7 +191,8 @@ EXAMPLES = {
     "allow_routine": "/permissions, then allow the commands you approve every time, for example "
     "Bash(npm test:*).",
     "state_limits": "Don't run migrations or push; ask me first if you think you need to.",
-    "effort_fit": "Lower the effort (the effortLevel setting) for quick edits, and raise it for hard problems.",
+    "effort_fit": "Lower the effort (/effort, or your effort level setting) for quick edits, and raise it for hard "
+    "problems.",
     "outcome_misses": "Before you start, tell me your plan in three lines and what done will look like.",
 }
 
@@ -224,20 +225,20 @@ BASES = {
 #: or file when there is one, otherwise a plain statement that it's about
 #: how you write messages, not a setting.
 WHERE = {
-    "split_large": "Nowhere in Claude Code's config -- this is how you phrase your own messages.",
-    "batch_small": "Nowhere in Claude Code's config -- this is when you start a new session.",
-    "clear_between": "Nowhere in Claude Code's config -- this is /clear or starting a fresh session.",
-    "brief_clearly": "Nowhere in Claude Code's config -- this is how you phrase your first message for a task.",
-    "name_files": "Nowhere in Claude Code's config -- this is what you put in your message.",
-    "paste_errors": "Nowhere in Claude Code's config -- this is what you put in your message.",
+    "split_large": "Nowhere in Claude Code's config. This is how you phrase your own messages.",
+    "batch_small": "Nowhere in Claude Code's config. This is when you start a new session.",
+    "clear_between": "Nowhere in Claude Code's config. This is /clear or starting a fresh session.",
+    "brief_clearly": "Nowhere in Claude Code's config. This is how you phrase your first message for a task.",
+    "name_files": "Nowhere in Claude Code's config. This is what you put in your message.",
+    "paste_errors": "Nowhere in Claude Code's config. This is what you put in your message.",
     "explore_research": (
-        "Nowhere in Claude Code's config -- this is choosing to spawn an Explore agent instead of reading "
+        "Nowhere in Claude Code's config. This is choosing to spawn an Explore agent instead of reading "
         "and searching yourself in the main session."
     ),
-    "plan_hard": "Nowhere in Claude Code's config -- this is asking for plan mode before a hard change.",
-    "skip_plan_easy": "Nowhere in Claude Code's config -- this is choosing not to ask for plan mode.",
+    "plan_hard": "Nowhere in Claude Code's config. This is asking for plan mode before a hard change.",
+    "skip_plan_easy": "Nowhere in Claude Code's config. This is choosing not to ask for plan mode.",
     "skill_early": (
-        "Nowhere in Claude Code's config -- this is running /<skill> as your first message instead of "
+        "Nowhere in Claude Code's config. This is running /<skill> as your first message instead of "
         "partway through."
     ),
     "skill_unneeded": "The skill's own SKILL.md frontmatter (disable-model-invocation: true).",
@@ -245,25 +246,24 @@ WHERE = {
     "better_briefs": "The Agent prompt you write when you spawn it.",
     "flatten_nesting": "The Agent prompt you write when you spawn it.",
     "quiet_output": (
-        "Nowhere in Claude Code's config directly -- this is how you invoke tools (head/tail, a digest "
-        "script), and separately, the env caps in settings.json (BASH_MAX_OUTPUT_LENGTH, "
-        "MAX_MCP_OUTPUT_TOKENS) that the env-caps card covers on their own."
+        "Nowhere in Claude Code's config directly. This is how you invoke tools (head/tail, a digest "
+        "script). The output-length caps in settings.json's env block have their own card."
     ),
     "tool_loops": (
-        "Nowhere in Claude Code's config -- this is stopping to explain the failure instead of retrying, "
+        "Nowhere in Claude Code's config. This is stopping to explain the failure instead of retrying, "
         "once it fails again."
     ),
-    "targeted_checks": "Nowhere in Claude Code's config -- this is which tests you ask Claude to run, and when.",
+    "targeted_checks": "Nowhere in Claude Code's config. This is which tests you ask Claude to run, and when.",
     "allow_routine": "/permissions, in the allow list for this project or your user settings.",
     "state_limits": (
-        "Nowhere in Claude Code's config -- this is what you put in your message, or a standing rule in "
+        "Nowhere in Claude Code's config. This is what you put in your message, or a standing rule in "
         "CLAUDE.md if it should apply every time."
     ),
     "effort_fit": (
-        "settings.json's effortLevel (or an agent's own effort frontmatter field); /effort raises it back "
+        "The effort level in settings.json, or the effort field in an agent's own file. /effort raises it "
         "for a single task without changing the setting."
     ),
-    "outcome_misses": "Nowhere in Claude Code's config -- this is reviewing your own /tl-feedback answers and messages.",
+    "outcome_misses": "Nowhere in Claude Code's config. This is reviewing your own /tl-feedback answers and messages.",
 }
 
 #: UX-8: the cost of trying each habit -- what you give up, or risk, by
@@ -276,24 +276,24 @@ TRADE_OFFS = {
         "turns out to depend on the next one anyway."
     ),
     "batch_small": (
-        "Batching small asks into one session means an unrelated one waits until you're ready to send it, "
-        "and the session's context keeps growing across all of them."
+        "Batching small asks into one session means an unrelated one waits until you're ready to send it. "
+        "The session's context also keeps growing across all of them."
     ),
     "clear_between": (
-        "A new session loses the context of what you were just doing, so anything from the last task you "
-        "still needed has to be re-explained."
+        "A new session loses the context of what you were doing, so anything from the last task you "
+        "still needed has to be explained again."
     ),
     "brief_clearly": (
-        "Spelling out \"done\" up front takes longer to write than a short ask, and can lock in a "
+        "Spelling out \"done\" up front takes longer to write than a short ask. It can also lock in a "
         "definition of done you'd have refined after seeing Claude's first attempt."
     ),
     "name_files": (
-        "Naming files means checking you've got the right ones first; naming the wrong one sends Claude "
+        "Naming files means checking you've got the right ones first. Naming the wrong one sends Claude "
         "down the wrong path faster than letting it search would have."
     ),
     "paste_errors": "A full paste can be long and include noise (stack frames, unrelated warnings) that costs tokens to send.",
     "explore_research": (
-        "An Explore agent's report only carries back what it chose to include; a detail you'd have "
+        "An Explore agent's report only carries back what it chose to include. A detail you'd have "
         "noticed reading the files yourself can get left out."
     ),
     "plan_hard": (
@@ -309,8 +309,8 @@ TRADE_OFFS = {
         "actually needs all of it."
     ),
     "skill_unneeded": (
-        "With auto-invocation off, Claude won't reach for the skill on its own even when it would have "
-        "helped -- you have to run it by name."
+        "With automatic loading off, Claude won't reach for the skill on its own, even when it would have "
+        "helped. You have to run it by name."
     ),
     "short_reports": (
         "A shorter report can leave out detail you'd have wanted, especially for a task whose outcome is "
@@ -328,47 +328,47 @@ TRADE_OFFS = {
     ),
     "targeted_checks": (
         "Running only the targeted tests during the work can miss a change's effect on an unrelated part "
-        "of the suite until the final full run catches it."
+        "of the suite. Only the final full run catches it."
     ),
     "allow_routine": (
-        "This is a security trade-off, not just a convenience one: once a command pattern is allowed, "
-        "Claude Code runs any future call that matches it without asking again, including one you would "
-        "have wanted to review this time -- keep the pattern as narrow as the commands you actually meant."
+        "This is a security trade-off, not only a convenience one. Once a command pattern is allowed, "
+        "Claude Code runs any future call that matches it without asking again. That includes one you "
+        "would have wanted to review this time. Keep the pattern as narrow as the commands you meant."
     ),
     "state_limits": (
-        "A stated limit is something Claude then has to check against before every relevant action, which "
-        "can make it ask for confirmation even when the limit wouldn't actually have been hit."
+        "Claude then has to check a stated limit before every relevant action. That can make it ask for "
+        "confirmation even when the limit wouldn't have been hit."
     ),
     "effort_fit": "Lower effort can miss things on a task that turns out to be harder than it looked.",
-    "outcome_misses": "None -- reviewing past work costs time but changes nothing on its own.",
+    "outcome_misses": "None: reviewing past work costs time but changes nothing on its own.",
 }
 
 #: UX-8: how to undo each habit, once tried.
 UNDO = {
-    "split_large": "Nothing to undo -- go back to asking for the whole thing in one message.",
-    "batch_small": "Nothing to undo -- go back to starting a session per ask.",
-    "clear_between": "Nothing to undo -- go back to continuing the same session.",
-    "brief_clearly": "Nothing to undo -- go back to writing briefer asks.",
-    "name_files": "Nothing to undo -- go back to describing the code instead of naming files.",
-    "paste_errors": "Nothing to undo -- go back to describing the failure in words.",
-    "explore_research": "Nothing to undo -- go back to reading and searching directly in the main session.",
-    "plan_hard": "Nothing to undo -- go back to building directly.",
-    "skip_plan_easy": "Nothing to undo -- go back to planning every change.",
-    "skill_early": "Nothing to undo -- go back to reaching for the skill only once you notice you need it.",
+    "split_large": "Nothing to undo: go back to asking for the whole thing in one message.",
+    "batch_small": "Nothing to undo: go back to starting a session per ask.",
+    "clear_between": "Nothing to undo: go back to continuing the same session.",
+    "brief_clearly": "Nothing to undo: go back to writing briefer asks.",
+    "name_files": "Nothing to undo: go back to describing the code instead of naming files.",
+    "paste_errors": "Nothing to undo: go back to describing the failure in words.",
+    "explore_research": "Nothing to undo: go back to reading and searching directly in the main session.",
+    "plan_hard": "Nothing to undo: go back to building directly.",
+    "skip_plan_easy": "Nothing to undo: go back to planning every change.",
+    "skill_early": "Nothing to undo: go back to reaching for the skill only once you notice you need it.",
     "skill_unneeded": (
         "Remove disable-model-invocation from the skill's frontmatter (Claude Code shows the change "
         "before saving it)."
     ),
     "short_reports": "Stop asking for a short report, or remove the added instruction from the agent file.",
-    "better_briefs": "Nothing to undo -- go back to writing shorter briefs.",
-    "flatten_nesting": "Nothing to undo -- go back to letting agents re-read files themselves.",
-    "quiet_output": "Nothing to undo -- go back to letting full output through.",
-    "tool_loops": "Nothing to undo -- go back to letting it retry as many times as it likes.",
-    "targeted_checks": "Nothing to undo -- go back to running the full suite after every change.",
+    "better_briefs": "Nothing to undo: go back to writing shorter briefs.",
+    "flatten_nesting": "Nothing to undo: go back to letting agents re-read files themselves.",
+    "quiet_output": "Nothing to undo: go back to letting full output through.",
+    "tool_loops": "Nothing to undo: go back to letting it retry as many times as it likes.",
+    "targeted_checks": "Nothing to undo: go back to running the full suite after every change.",
     "allow_routine": "/permissions, then remove the rule (Claude Code shows the current allow list there).",
-    "state_limits": "Nothing to undo -- go back to not stating the limit, or remove it from CLAUDE.md if you added it there.",
+    "state_limits": "Nothing to undo: go back to not stating the limit, or remove it from CLAUDE.md if you added it there.",
     "effort_fit": (
-        "Set effortLevel back to its previous value, or raise it for one task with /effort without "
+        "Set the effort level back to its previous value, or raise it for one task with /effort without "
         "touching the setting."
     ),
     "outcome_misses": "Nothing to undo.",
@@ -991,6 +991,29 @@ def _k(tokens: float) -> str:
     return f"{tokens / 1000:.0f}k" if tokens >= 1000 else f"{tokens:.0f}"
 
 
+#: The longest sentence an item's evidence text runs to before it starts
+#: a new one (``docs/writing-help.md``: 25 words at most).
+_MAX_SENTENCE_WORDS = 25
+
+
+def _clauses(parts: list[str]) -> str:
+    """An item's evidence clauses as text: joined with "; " while the
+    sentence stays within :data:`_MAX_SENTENCE_WORDS` words, then a new
+    sentence. Each sentence starts with a capital and ends with a full
+    stop."""
+    sentences: list[list[str]] = []
+    for part in parts:
+        if sentences and len(" ".join([*sentences[-1], part]).split()) <= _MAX_SENTENCE_WORDS:
+            sentences[-1].append(part)
+        else:
+            sentences.append([part])
+    out = []
+    for group in sentences:
+        text = "; ".join(group)
+        out.append(text[:1].upper() + text[1:] + ".")
+    return " ".join(out)
+
+
 def _item_split_large(h: Habits) -> Item | None:
     big = []
     for c in h.cycles:
@@ -1015,7 +1038,7 @@ def _item_split_large(h: Habits) -> Item | None:
     reported_saving = sum(0.5 * c.growth_cost for c, r in big if r)
     return Item(
         "split_large", saving, len(big), _sources(any(r for _, r in big), any(not r for _, r in big)),
-        "; ".join(parts) + ".", waste=_by_week((c.week, 0.5 * c.growth_cost) for c, _ in big),
+        _clauses(parts), waste=_by_week((c.week, 0.5 * c.growth_cost) for c, _ in big),
         reported_share=reported_saving / saving if saving else 0.0,
     )
 
@@ -1063,8 +1086,8 @@ def _item_clear_between(h: Habits) -> Item | None:
     if inferred:
         avg = _mean(c.stale_tokens for c, _ in inferred)
         parts.append(
-            f"{len(inferred)} messages came after a break of over an hour with about {_k(avg)} tokens of earlier "
-            "work, which the first reply wrote to the cache again"
+            f"{len(inferred)} messages came after a break of over an hour, with about {_k(avg)} tokens of "
+            "earlier work written to the cache again"
         )
     reported_saving = sum(usd for _, usd in reported)
     # SIG-2: end_reasons is a session-level signal (once per session that
@@ -1077,7 +1100,7 @@ def _item_clear_between(h: Habits) -> Item | None:
         parts.append(f"you cleared explicitly {explicit_clears} times")
     return Item(
         "clear_between", saving, len(found), _sources(bool(reported), bool(inferred)),
-        "; ".join(parts) + ".", waste=_by_week((c.week, usd) for c, usd in found),
+        _clauses(parts), waste=_by_week((c.week, usd) for c, usd in found),
         reported_share=reported_saving / saving if saving else 0.0,
     )
 
@@ -1118,7 +1141,7 @@ def _item_brief_clearly(h: Habits) -> Item | None:
     if missing and missing[0] in MISSING_LINES:
         example = MISSING_LINES[missing[0]][1]
     return Item(
-        "brief_clearly", saving if saving else None, len(unclear), ("reported",), "; ".join(parts) + ".",
+        "brief_clearly", saving if saving else None, len(unclear), ("reported",), _clauses(parts),
         example=example, waste=_by_week((c.week, usd) for c, usd in gaps),
     )
 
@@ -1184,7 +1207,7 @@ def _item_explore_research(h: Habits) -> Item | None:
     if not_found:
         parts.append(f"Claude said it didn't find what it looked for {not_found} times")
     return Item(
-        "explore_research", saving, len(heavy), _sources(confirmed > 0, confirmed < saving), "; ".join(parts) + ".",
+        "explore_research", saving, len(heavy), _sources(confirmed > 0, confirmed < saving), _clauses(parts),
         waste=_by_week((c.week, usd) for c, usd in gaps),
         reported_share=confirmed / saving if saving else 0.0,
     )
@@ -1252,7 +1275,7 @@ def _item_skill_early(h: Habits) -> Item | None:
     # the same disconnect CAP-5 fixes for explore_research (A4).
     return Item(
         "skill_early", saving or None, len(late) + would_help, _sources(bool(would_help), bool(late)),
-        "; ".join(parts) + ".", example=example, waste=_by_week((c.week, 0.5 * before) for c, _, before in late),
+        _clauses(parts), example=example, waste=_by_week((c.week, 0.5 * before) for c, _, before in late),
         reported_share=0.0,
     )
 
@@ -1312,7 +1335,7 @@ def _item_better_briefs(h: Habits) -> Item | None:
         parts.append("most often missing: " + ", ".join(MISSING_LINES[w][0].lower() for w, _ in missing.most_common(2) if w in MISSING_LINES))
     return Item(
         "better_briefs", sum(a.cost for a in restarted) or None, len(restarted) + len(stuck), ("reported",),
-        "; ".join(parts) + ".", waste=_by_week((a.week, a.cost) for a in restarted),
+        _clauses(parts), waste=_by_week((a.week, a.cost) for a in restarted),
     )
 
 
@@ -1331,10 +1354,9 @@ def _item_flatten_nesting(h: Habits) -> Item | None:
         if share:
             text += f" ({share:.0f}% of what agents cost)"
         parts.append(text)
-    body = "; ".join(parts)
     return Item(
         "flatten_nesting", saving or None, sum(a.overlap_reads for a in overlap) + len(nested), ("inferred",),
-        body[:1].upper() + body[1:] + ".", waste=_by_week((a.week, a.overlap_cost) for a in overlap),
+        _clauses(parts), waste=_by_week((a.week, a.overlap_cost) for a in overlap),
         reported_share=0.0,
     )
 
@@ -1398,7 +1420,6 @@ def _item_targeted_checks(h: Habits) -> Item | None:
     contradicted = sum(1 for c in reported_checked if c.tag.check == "none" and c.checked_by_tool)
     if contradicted:
         parts.append(f"{contradicted} said unchecked but a test command ran anyway")
-    body = "; ".join(parts)
     # Every dollar of saving is earned by an *unchecked, redone* cycle,
     # which needs the tag (there's no deriving "unchecked" from a
     # command's absence) -- the derived signal only widens `n`/evidence,
@@ -1406,7 +1427,7 @@ def _item_targeted_checks(h: Habits) -> Item | None:
     return Item(
         "targeted_checks", sum(0.5 * c.redo_cost for c in redone) or None, len(checked),
         _sources(bool(reported_checked), bool(inferred_checked)),
-        body[:1].upper() + body[1:] + ".", waste=_by_week((c.week, 0.5 * c.redo_cost) for c in redone),
+        _clauses(parts), waste=_by_week((c.week, 0.5 * c.redo_cost) for c in redone),
     )
 
 
@@ -1432,10 +1453,9 @@ def _item_allow_routine(h: Habits) -> Item | None:
         parts.append(f"auto mode blocked {count} requests and Claude had to find another way")
     if idle:
         parts.append(f"Claude sat waiting for you {idle} times")
-    body = "; ".join(parts)
     return Item(
         "allow_routine", sum(c.blocked_cost for c in blocked) or None, prompts + count, ("inferred",),
-        body[:1].upper() + body[1:] + ".", waste=_by_week((c.week, c.blocked_cost) for c in blocked),
+        _clauses(parts), waste=_by_week((c.week, c.blocked_cost) for c in blocked),
         reported_share=0.0,
     )
 
@@ -1502,7 +1522,7 @@ def _item_outcome_misses(h: Habits) -> Item | None:
     slow = Counter(w for p in misses for w in p.slow).most_common(1)
     if slow:
         parts.append(f"slowed most by: {_ANSWER_LABELS['slow'].get(slow[0][0], slow[0][0]).lower()}")
-    return Item("outcome_misses", saving or None, len(misses), ("your feedback",), "; ".join(parts) + ".")
+    return Item("outcome_misses", saving or None, len(misses), ("your feedback",), _clauses(parts))
 
 
 _BUILDERS = (
@@ -2645,8 +2665,8 @@ def section_from(h: Habits, *, model_swap=None) -> Section:
     notes = []
     if h.cycles and not any(c.tag is not None for c in h.cycles):
         notes.append(
-            "Nothing here was reported by Claude yet: turn on metrics capture ({{page:setup/capture}} or "
-            "claude-token-lens capture on) for kinds of task, brief quality and how hard the work was."
+            "Nothing here was reported by Claude yet. Turn on metrics capture ({{page:setup/capture}} or "
+            "claude-token-lens capture on) to see kinds of task, brief quality and how hard the work was."
         )
     if h.cycles and not h.pieces:
         notes.append(
@@ -2816,6 +2836,20 @@ def capture_dependent_value(
 CAPTURE_STEP_DOWN = {"deep": "standard", "standard": "essentials"}
 
 
+def metric_list(metric_ids) -> str:
+    """Capture metrics by their Capture page names, in lower case, for a
+    sentence: at most three named, the rest counted ("size of the work,
+    planning, skills and 5 more")."""
+    names = [
+        catalogue.METRICS_BY_ID[i].title.lower() if i in catalogue.METRICS_BY_ID else str(i) for i in metric_ids
+    ]
+    if len(names) > 3:
+        return ", ".join(names[:3]) + f" and {len(names) - 3} more"
+    if len(names) > 1:
+        return ", ".join(names[:-1]) + " and " + names[-1]
+    return names[0] if names else ""
+
+
 def step_down_terms(current: str, target: str) -> str:
     """CAP-7's what/where/trade-off/undo sentence, shared by the report's
     capture-section note and the Capture page's hint
@@ -2976,8 +3010,8 @@ def capture_section(
         ]
         notes.append(
             f"Every metric {catalogue.LEVEL_TITLES[level]} adds over {catalogue.LEVEL_TITLES[target]} "
-            f"has enough of its own evidence ({', '.join(dropped)}) and self-report calibration has settled: "
-            f"stepping down would save about {suggestion['session_note_tokens_saved']} tokens per session start "
+            f"has enough evidence of its own ({metric_list(dropped)}), and Claude's self-reports have settled. "
+            f"Stepping down would save about {suggestion['session_note_tokens_saved']} tokens per session start "
             f"and {suggestion['subagent_note_tokens_saved']} per subagent start. "
             + step_down_terms(level, target)
         )
@@ -3038,8 +3072,8 @@ def patch_capture_recommend_value(
             notes = [n for n in notes if "Nothing measured yet" not in n]
         if held_back:
             plural = "s" if held_back != 1 else ""
-            notes = [*notes, f"Capture's evidence held back {held_back} recommendation{plural} recommend() "
-                              "would otherwise make -- not counted as savings."]
+            notes = [*notes, f"Capture's evidence held back {held_back} recommendation{plural} that would "
+                              "otherwise be made. They are not counted as savings."]
         new_tables.append(replace(table, rows=new_rows, notes=notes))
     return replace(section, tables=new_tables)
 
