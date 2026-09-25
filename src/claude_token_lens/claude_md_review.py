@@ -44,6 +44,8 @@ import hashlib
 import json
 import os
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -404,12 +406,15 @@ class _ProjectIndex:
 
     def __init__(self, root: Path) -> None:
         self.root = root
-        self._paths: list[str] | None = None
+        self._paths: str | None = None
 
-    def _load(self) -> list[str]:
+    def _load(self) -> str:
+        """Every relative path, lower-cased, each after a newline."""
         if self._paths is None:
+            root = str(self.root)
+            skip = len(os.path.join(root, ""))
             paths: list[str] = []
-            stack = [self.root]
+            stack = [root]
             while stack and len(paths) < self._MAX_ENTRIES:
                 folder = stack.pop()
                 try:
@@ -419,19 +424,42 @@ class _ProjectIndex:
                 for entry in entries:
                     if entry.name in _WALK_SKIP or entry.name == "worktrees":
                         continue
-                    rel = os.path.relpath(entry.path, self.root).replace("\\", "/").lower()
-                    paths.append(rel)
+                    paths.append(entry.path[skip:])
                     if entry.is_dir(follow_symlinks=False):
-                        stack.append(Path(entry.path))
-            self._paths = paths
+                        stack.append(entry.path)
+            self._paths = ("\n" + "\n".join(paths)).replace("\\", "/").lower()
         return self._paths
 
     def has(self, token: str) -> bool:
         wanted = token.replace("\\", "/").strip("./").lower()
         if not wanted or "xx" in wanted or "..." in wanted:
             return True  # a placeholder such as sql/0xx, not a real path
+        if "\n" in wanted:
+            return False  # no one path holds it; searching could match across two
         # A prefix counts too: `sql/067` names the sql/067_*.sql file.
-        return any(path.startswith(wanted) or ("/" + wanted) in path for path in self._load())
+        paths = self._load()
+        return ("\n" + wanted) in paths or ("/" + wanted) in paths
+
+
+#: Walked project indexes kept across calls, by project root: every load
+#: of the CLAUDE.md view and of Checks asks about the same projects, and
+#: walking a large one takes seconds. A reference at its exact path is
+#: found by ``exists()`` before the index is asked, so a kept index only
+#: delays noticing a file matched relative to a subfolder.
+_INDEX_TTL_S = 120.0
+_INDEXES: dict[str, tuple[float, _ProjectIndex]] = {}
+_INDEXES_LOCK = threading.Lock()
+
+
+def _project_index(root: Path) -> _ProjectIndex:
+    now = time.monotonic()
+    key = os.path.normcase(str(root))
+    with _INDEXES_LOCK:
+        for old_key in [k for k, (at, _) in _INDEXES.items() if now - at >= _INDEX_TTL_S]:
+            del _INDEXES[old_key]
+        if key not in _INDEXES:
+            _INDEXES[key] = (now, _ProjectIndex(root))
+        return _INDEXES[key][1]
 
 
 def _stale_references(
@@ -888,13 +916,9 @@ def build_review(
     transcripts = dict(context_files.get("transcripts") or {})
     names = agent_names(config_dir, folders, list(transcripts))
     usage = {row["hash"]: row for row in context_files.get("files") or () if isinstance(row, dict)}
-    indexes: dict[str, _ProjectIndex] = {}
     reviews: list[FileReview] = []
     for candidate in discover(config_dir, projects=folders):
-        index = None
-        if candidate.project_root is not None:
-            key = os.path.normcase(str(candidate.project_root))
-            index = indexes.setdefault(key, _ProjectIndex(candidate.project_root))
+        index = _project_index(candidate.project_root) if candidate.project_root is not None else None
         review = read_file(candidate, salt, names, index)
         if review is None:
             continue

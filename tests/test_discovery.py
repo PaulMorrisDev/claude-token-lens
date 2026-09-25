@@ -295,6 +295,23 @@ def test_find_subagents_also_finds_workflow_nested_agents(tmp_path):
     assert names == {"agent-abc123.jsonl", "agent-1.jsonl", "agent-2.jsonl"}
 
 
+def test_find_subagent_paths_lists_without_reading_meta(tmp_path, monkeypatch):
+    session_id = "sess-1"
+    subagents_dir = tmp_path / session_id / "subagents"
+    subagents_dir.mkdir(parents=True)
+    (subagents_dir / "agent-b.jsonl").write_text("")
+    (subagents_dir / "agent-a.jsonl").write_text("")
+    (subagents_dir / "agent-a.meta.json").write_text(json.dumps({"agentType": "claude-implementer"}))
+    wf_dir = subagents_dir / "workflows" / "wf_run_a"
+    wf_dir.mkdir(parents=True)
+    (wf_dir / "agent-1.jsonl").write_text("")
+    expected = [path for path, _meta in discovery.find_subagents(tmp_path, session_id)]
+    monkeypatch.setattr(discovery, "_read_meta_dict", lambda _path: pytest.fail("meta read"))
+
+    assert discovery.find_subagent_paths(tmp_path, session_id) == expected
+    assert [path.name for path in expected] == ["agent-a.jsonl", "agent-b.jsonl", "agent-1.jsonl"]
+
+
 def test_find_subagents_rejects_unknown_subagent_window(tmp_path):
     with pytest.raises(ValueError):
         discovery.find_subagents(tmp_path, "sess-1", subagent_window="bogus")

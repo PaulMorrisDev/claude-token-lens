@@ -2,32 +2,76 @@
  *
  * The parts on every page: the sidebar's status line (service health,
  * figures, capture level, version), the health banner and the
- * metrics-capture banner.
+ * metrics-capture banner. Also the setup checklist, which the Overview
+ * and Data quality both draw.
  */
 
-import { clear, cli, el, goTo, renderedViews, state, storageGet, storageSet } from "./core.js";
+import { clear, el, goTo, renderedViews, state, storageGet, storageSet, withCli } from "./core.js";
 import { relativeTime, shortTs, thousands, timeNode } from "./format.js";
 import { connection, fetchJson, figures, resetFiguresAsOf, runReconnectRetries } from "./api.js";
+import { icon } from "./icons.js";
 import { captureLink, pageLink } from "./links.js";
-import { button, callout, prose, toast } from "./ui.js";
+import { button, callout, codeBlockWithCopy, prose, toast } from "./ui.js";
 
-// A service that doesn't start at logon loses history to Claude Code's
-// cleanup: said on the Overview, where it will be seen, and again with
-// the rest of the health detail on Data quality.
-export function renderLogonNotice(health, container) {
-  if (!health || health.service_registered !== false) return;
+// -- the setup checklist (setup_status.py, /api/setup/status) ------------------
+
+// Each state in words with its icon, never the colour alone. Amber, not
+// red, for a fix: it's a command to run, not a failure.
+var SETUP_STATE = {
+  ok: { cls: "severity-good", icon: "success" },
+  waiting: { cls: "severity-info", icon: "info" },
+  problem: { cls: "severity-advice", icon: "warning" },
+  off: { cls: "severity-info", icon: "info" },
+};
+
+function setupItem(item) {
+  var look = SETUP_STATE[item.state] || SETUP_STATE.off;
+  var badge = el("span", { class: "severity-badge " + look.cls }, [icon(look.icon, { size: 14 }), el("span", { text: item.word })]);
+  var row = el("li", { class: "setup-item" }, [
+    el("p", { class: "setup-item-head" }, [el("strong", { text: item.label }), badge]),
+    el("p", null, prose(withCli(item.detail || ""))),
+  ]);
+  // The dashboard changes nothing itself: a fix is a command to copy.
+  if (item.fix && item.state !== "ok") row.appendChild(codeBlockWithCopy(withCli(item.fix), "Command", item.label));
+  return row;
+}
+
+// Said at the top of the Overview while a part that matters isn't
+// working yet: how you pay, the connection to Claude Code, the dashboard
+// at logon (Claude Code deletes transcripts after cleanupPeriodDays, and
+// only a running dashboard keeps their figures: that item's text says
+// so), and capture when it's on. Only those parts are listed; Data
+// quality has the whole checklist.
+export function renderSetupCard(setup, container) {
+  if (!setup || setup.done) return;
+  var pending = (setup.items || []).filter(function (item) {
+    return item.essential && item.state !== "ok";
+  });
+  if (!pending.length) return;
+  var toFix = pending.some(function (item) {
+    return item.state !== "waiting";
+  });
   container.appendChild(
     callout({
-      tone: "critical",
-      title: "The service doesn't start when you log on.",
-      text: "After a restart, history older than Claude Code's cleanup period (cleanupPeriodDays) is lost. To fix it, run: " + cli("install-service"),
+      tone: toFix ? "warning" : "info",
+      class: "setup-card",
+      title: toFix ? "Setup isn't finished." : "Setup is almost done.",
+      children: [
+        el("ul", { class: "setup-list" }, pending.map(setupItem)),
+        el("p", { class: "notes" }, [pageLink("data", "Data quality"), " has the whole checklist."]),
+      ],
     })
   );
 }
 
+// The whole checklist, as 'claude-token-lens status' prints it.
+export function renderSetupList(setup, container) {
+  container.appendChild(el("p", { text: setup.verdict }));
+  container.appendChild(el("ul", { class: "setup-list" }, (setup.items || []).map(setupItem)));
+}
+
 export function renderHealth(health, container) {
   var watcher = health.watcher || {};
-  renderLogonNotice(health, container);
   var scan = health.scan || {};
   if (health.message) {
     container.appendChild(callout({ tone: health.status === "starting" ? "info" : "critical", text: health.message }));
@@ -93,6 +137,15 @@ function captureStatusText(block) {
   return "Capture: " + title;
 }
 
+// A running scan's progress in a few words, from /api/health's scan
+// block (the phases the banner's message names); "" before there's any.
+function scanProgressText(scan) {
+  if (scan.phase === "finding" && scan.done) return "Found " + thousands(scan.done) + " transcript files so far";
+  if (scan.phase === "reading" && scan.total) return "Read " + thousands(scan.done || 0) + " of " + thousands(scan.total) + " changed files";
+  if (scan.phase === "storing" && scan.total) return "Stored " + thousands(scan.done || 0) + " of " + thousands(scan.total) + " sessions";
+  return "";
+}
+
 function renderStatusLine() {
   var line = document.getElementById("status-line");
   if (!line) return;
@@ -101,9 +154,15 @@ function renderStatusLine() {
   var watcher = (health && health.watcher) || {};
   var scan = (health && health.scan) || {};
   var lastScan = scan.last_success_at || watcher.finished_at;
-  var label = HEALTH_LABELS[status] || "Service " + status;
+  // A later scan runs with the status still "ok": say so while it does.
+  var rescanning = status === "ok" && !!scan.scanning;
+  var label = rescanning ? "Checking for new sessions" : HEALTH_LABELS[status] || "Service " + status;
+  var tone = rescanning ? "accent" : HEALTH_TONES[status] || "muted";
+  var progress = status === "starting" || rescanning ? scanProgressText(scan) : "";
   var parts = [
     status,
+    rescanning ? "1" : "0",
+    progress,
     lastScan || "",
     watcher.errors || 0,
     figures.asOf || "",
@@ -123,10 +182,11 @@ function renderStatusLine() {
 
   line.appendChild(
     el("div", { class: "status-row status-health", "data-tip": label }, [
-      el("span", { class: "status-dot tone-" + (HEALTH_TONES[status] || "muted"), "aria-hidden": "true" }),
+      el("span", { class: "status-dot tone-" + tone, "aria-hidden": "true" }),
       el("span", { class: "status-text", text: label }),
     ])
   );
+  if (progress) line.appendChild(el("div", { class: "status-row status-detail", text: progress }));
   // Freshness reads relative, with the absolute time on hover (timeNode).
   if (lastScan || watcher.errors) {
     var scanRow = el("div", { class: "status-row status-detail" });
@@ -180,7 +240,17 @@ figures.notify = renderStatusLine;
 // codeId: the service's code.id when this page loaded; a different one
 // means it restarted on other code, which this page's scripts may not
 // match, so the banner offers a reload (reloadDue).
-var healthPoll = { status: null, timer: null, health: null, redrawDue: false, inflight: false, misses: 0, codeId: null, reloadDue: false };
+var healthPoll = {
+  status: null,
+  timer: null,
+  health: null,
+  redrawDue: false,
+  rescanning: false,
+  inflight: false,
+  misses: 0,
+  codeId: null,
+  reloadDue: false,
+};
 
 // options.focus moves focus to the page title: the button pressed is
 // redrawn away. A redraw after reconnecting leaves focus where it is.
@@ -321,6 +391,13 @@ export function pollHealth() {
       if (!healthPoll.codeId) healthPoll.codeId = health.code.id;
       else if (health.code.id !== healthPoll.codeId) healthPoll.reloadDue = true;
     }
+    // A later scan that stored sessions, seen running and now finished:
+    // the figures on screen are older than it, so offer the redraw.
+    var wasRescanning = healthPoll.rescanning;
+    healthPoll.rescanning = !!(health && health.status === "ok" && health.scan && health.scan.scanning);
+    if (wasRescanning && health && !healthPoll.rescanning && health.watcher && health.watcher.sessions_upserted) {
+      healthPoll.redrawDue = true;
+    }
     var failed = result.httpStatus !== 0 && !health ? (body && body.error) || {} : null;
     renderHealthBanner(result.httpStatus === 0 ? null : health, previous, failed);
     renderStatusLine();
@@ -332,7 +409,7 @@ export function pollHealth() {
     } else {
       healthPoll.misses = 0;
       // Poll quickly while a scan's progress is worth watching.
-      delay = health && health.status === "starting" ? 3000 : 60000;
+      delay = health && (health.status === "starting" || healthPoll.rescanning) ? 3000 : 60000;
     }
     healthPoll.timer = setTimeout(pollHealth, delay);
   });

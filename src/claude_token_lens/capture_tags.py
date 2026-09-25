@@ -27,11 +27,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Collection
-from dataclasses import replace
+from dataclasses import fields, replace
 
 from .capture_catalogue import (
+    ALL_FEEDBACK_QUESTIONS,
     FEEDBACK_LIST_KEYS,
-    FEEDBACK_QUESTIONS,
     FEEDBACK_REMINDER_LINE,
     FEEDBACK_TAG,
     FEEDBACK_VOCAB,
@@ -92,8 +92,8 @@ _FEEDBACK_TAG_RE = re.compile(
 )
 _FEEDBACK_SETS = {key: frozenset(words) for key, words in FEEDBACK_VOCAB.items()}
 #: AskUserQuestion header -> the question, and its labels -> words.
-_FEEDBACK_BY_HEADER = {q.header: q for q in FEEDBACK_QUESTIONS}
-_FEEDBACK_LABELS = {q.key: {label: word for word, label, _ in q.options} for q in FEEDBACK_QUESTIONS}
+_FEEDBACK_BY_HEADER = {q.header: q for q in ALL_FEEDBACK_QUESTIONS}
+_FEEDBACK_LABELS = {q.key: {label: word for word, label, _ in q.options} for q in ALL_FEEDBACK_QUESTIONS}
 
 #: The AskUserQuestion headers /tl-feedback asks with.
 FEEDBACK_HEADERS = frozenset(_FEEDBACK_BY_HEADER)
@@ -170,6 +170,16 @@ def _feedback(values: dict, source: str) -> Feedback:
     """A :class:`Feedback` from ``values``; "skipped" when nothing usable
     was answered."""
     return Feedback(source=source, **values) if values else Feedback(source="skipped")
+
+
+def merge_feedback(earlier: Feedback, later: Feedback) -> Feedback:
+    """Two answers of the same kind in one /tl-feedback run, as one: the
+    handoff question comes back from a second AskUserQuestion call. A
+    later answer wins where both answered."""
+    values = {
+        f.name: getattr(later, f.name) or getattr(earlier, f.name) for f in fields(Feedback) if f.name != "source"
+    }
+    return Feedback(source=later.source, **values)
 
 
 def parse_feedback_tag(text: str) -> Feedback | None:

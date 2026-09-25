@@ -99,6 +99,8 @@ PLACEMENT: dict[str, str] = {
     "compaction_sim_by_agent_type": "keep",
     "compaction_sim_by_task": "advanced",
     "compaction_sim_fidelity": "advanced",
+    "plan_handoff_summary": "keep",
+    "plan_handoff_by_session": "keep",
     "model_swap_by_agent_type": "keep",
     "model_swap_summary": "keep",
     "waste_summary": "keep",
@@ -131,6 +133,13 @@ PLACEMENT: dict[str, str] = {
     "topology_context_composition": "advanced",
     "topology_redundant_work": "advanced",
     "topology_redundant_reads": "advanced",
+    # splitting long subagent runs
+    "run_split_summary": "keep",
+    "run_split_by_agent": "keep",
+    "run_split_sweep": "advanced",
+    # your hooks
+    "hooks_summary": "keep",
+    "hooks_by_script": "keep",
     # quality signals
     "quality_by_agent": "keep",
     "quality_by_setup": "keep",
@@ -150,6 +159,7 @@ PLACEMENT: dict[str, str] = {
     "habits_setups": "keep",
     "habits_agents_by_task": "advanced",
     "habits_outcomes": "advanced",
+    "habits_by_shape": "keep",
     "habits_self_report": "advanced",
     "habits_prompt_flags": "advanced",
     "habits_skills": "advanced",
@@ -459,7 +469,8 @@ SECTION_COPY: dict[str, SectionCopy] = {
             "enough replies come 5 to 60 minutes after the one before. The estimates replay your own replies "
             "and waits.",
             act="Follow the advice column only when the estimate error is low. A subagent's lifetime is set in its "
-            "agent file; the main session's in your settings.",
+            "agent file, or for every subagent at once in your settings, which take priority over agent files. "
+            "The main session's is set in your settings.",
         ),
     ),
     "limits": SectionCopy(
@@ -518,6 +529,44 @@ SECTION_COPY: dict[str, SectionCopy] = {
             "after it, so small windows look better than they are.",
             act="Treat large savings at small windows with caution. {{page:actions/recommendations}} only suggests a "
             "minimum window, after taking off an allowance for re-reading.",
+        ),
+    ),
+    "plan_handoff": SectionCopy(
+        title="Building in a fresh session after a big plan",
+        intro=(
+            "Would the build after an approved plan cost less in a fresh session that starts from the plan alone?"
+        ),
+        help=Help(
+            shows="Each main session where you approved a plan, and how much planning context the build kept. "
+            "Also what the replies after it would have cost without it.",
+            read="An upper bound: a fresh session may need more than the plan. The cache write of the plan and an "
+            "allowance for re-reading files are taken off. Replies after a conversation summary aren't counted.",
+            act="When a big plan is approved, run /clear and ask Claude to carry out the plan file. Forking copies "
+            "the whole conversation, so it saves nothing.",
+        ),
+    ),
+    "run_split": SectionCopy(
+        title="Splitting long subagent runs",
+        intro="Would long subagent runs cost less as several shorter runs, each starting fresh from a short note?",
+        help=Help(
+            shows="Each agent type's runs split every so many replies, and the interval that saves most. Also what "
+            "each interval saves across every agent type.",
+            read="An upper bound: a thin note can send the next run back over old ground. Each split's note, cache "
+            "write and an allowance for re-reading files are taken off.",
+            act="Give an agent that pays one part of a large task per run. Start a fresh one for the next part with "
+            "a short note.",
+        ),
+    ),
+    "hooks": SectionCopy(
+        title="Your hooks",
+        intro="Whether each hook you set up works, and what it costs in kept context, blocked calls and waiting.",
+        help=Help(
+            shows="Each hook by its script's name: failed runs and why, calls it blocked, context it added, and "
+            "the time you waited on it.",
+            read="A failing hook doesn't do its job. A block costs the reply that reads it. Context a hook adds is "
+            "read again on every later reply.",
+            act="Fix failing hooks first. A script named by a relative path works only from the project root, so "
+            "start it with ${CLAUDE_PROJECT_DIR}. Hooks don't expand a Windows %VAR% path, so use $HOME instead.",
         ),
     ),
     "model_swap": SectionCopy(
@@ -967,6 +1016,39 @@ TABLE_COPY: dict[str, TableCopy] = {
         value_labels={"met": "Met", "partly": "Partly", "missed": "Missed", "stopped": "Stopped early"},
         lead_columns=["outcome", "pieces", "cost", "avg_cost", "task", "slow", "helped"],
     ),
+    "habits_by_shape": TableCopy(
+        title="Planning and building in one session",
+        help=Help(
+            shows="Your main sessions by whether you approved a plan and then built it in the same session. "
+            "Your feedback on each kind of session sits beside it.",
+            read="Planning kept is the context from before the plan that the build carried. The last three "
+            "columns count your /tl-feedback answers on whether the build could have started from the plan "
+            "alone.",
+            act="If most of your sessions plan and build and the plan was enough, start the build in a fresh "
+            "session. If the build needed the discussion, write fuller plans first.",
+        ),
+        columns={
+            "shape": ("Session", "Whether you approved a plan, and built it in the same session."),
+            "sessions": ("Sessions", "Main sessions of this kind."),
+            "share": ("Share", "Their share of your main sessions."),
+            "avg_cost": ("Per session", "The average cost of one, subagents included, at list price."),
+            "carried_median": ("Planning kept (median)", "The median context, in tokens, that a fresh start "
+                               "from the plan would have dropped."),
+            "pieces": ("Pieces rated", "Pieces of work in these sessions you gave feedback on."),
+            "met_pct": ("Met the goal", "Of the rated pieces, the share that met its goal."),
+            "worth_pct": ("Worth it", "Of the pieces you said were or weren't worth it, the share worth it."),
+            "costly_pct": ("Too costly", "Of the same pieces, the share you said cost too many tokens."),
+            "handoff_yes": ("Plan was enough", "Answers saying the build could have started fresh from the plan."),
+            "handoff_partly": ("Plan was partly enough", "Answers saying it needed a few things from earlier."),
+            "handoff_no": ("Needed the discussion", "Answers saying it relied on the earlier discussion."),
+        },
+        value_labels={
+            "plan_build": "Planned and built in one session",
+            "plan_only": "Planned, then built elsewhere",
+            "no_plan": "No plan",
+        },
+        lead_columns=["shape", "sessions", "share", "avg_cost", "carried_median", "met_pct", "handoff_yes"],
+    ),
     "habits_self_report": TableCopy(
         title="Claude's reports against your feedback",
         help=Help(
@@ -1182,7 +1264,8 @@ TABLE_COPY: dict[str, TableCopy] = {
         title="Quality by model and effort",
         help=Help(
             shows="Each agent's runs split by the model and effort they used, with each setup compared against "
-            "the one that agent used most.",
+            "the one that agent used most. Main sessions a scheduled task started, with no message of yours, are "
+            "left out.",
             read="Worse or Better means the difference is unlikely to be chance, even allowing for the number of "
             "signals compared. Possibly means it would be, taken alone. The setups ran at different times and "
             "maybe on different work. Check the before and after in \"Your changes and what they did\" on "
@@ -1232,7 +1315,8 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "Verdict",
                 "Worse if any signal is clearly worse than in the setup it is compared with, and none clearly better. "
                 "Mixed if some are clearly worse and others clearly better. Better if one is clearly better and none "
-                "worse.",
+                "worse. Not comparable if its runs averaged over five times as many replies as the setup it would be "
+                "compared with, or under a fifth. The work differs too much to judge the setup.",
             ),
             "difference": (
                 "Difference",
@@ -1251,6 +1335,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "possibly_better": "Possibly better",
             "no_clear_difference": "No clear difference",
             "too_little_data": "Too little data",
+            "not_comparable": "Not comparable",
             "baseline": "Most used",
             "only": "Only setup",
         },
@@ -2861,10 +2946,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             "switch to 1h": "Switch to 1 hour",
             "keep 5m (already dominant)": "Keep 5 minutes (already used)",
             "keep 1h (already dominant)": "Keep 1 hour (already used)",
-            "no material difference (suppressed: subscription billing)": (
-                "No change: a subscription ignores a 1-hour lifetime for subagents"
-            ),
             "promptCacheTtl": "Cache lifetime in your settings",
+            "subagentPromptCacheTtl": "Subagent cache lifetime in your settings",
         },
         lead_columns=[
             "agent_type", "spawns", "cost_observed", "best_policy", "saving_usd", "delta_pct", "recommendation",
@@ -3522,7 +3605,11 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "Change (%)",
                 "Simulated change at the best window, against real cost. Negative means cheaper.",
             ),
-            "recommendation": ("Suggestion", "Whether the simulated saving is big enough to act on."),
+            "recommendation": (
+                "Suggestion",
+                "Whether the simulated saving is big enough to act on. A subagent row names its cheapest window "
+                "but leaves the setting to the main session row.",
+            ),
         },
         value_labels={
             "top-level": "Main session",
@@ -3641,6 +3728,204 @@ TABLE_COPY: dict[str, TableCopy] = {
         },
         value_labels={"subagent types currently on Fable/Opus": "Subagent types on Fable or Opus"},
         lead_columns=["saving_usd", "saving_pct", "observed_cost_usd", "agent_types"],
+    ),
+    # -- savings: building fresh after a plan ------------------------------------
+    "plan_handoff_summary": TableCopy(
+        title="Building in a fresh session after a big plan",
+        help=Help(
+            shows="Main sessions with an approved plan, and what starting each build fresh from the plan could "
+            "have saved.",
+            read="A plan counts when a fresh start would drop a lot of context and many replies follow it. The "
+            "saving overlaps with the auto-compact saving.",
+            act="",
+        ),
+        columns={
+            "scope": ("Scope", "Which sessions this row covers."),
+            "main_sessions": ("Main sessions", "Main sessions in this window, scheduled checks left out."),
+            "sessions_with_plan": ("Sessions with an approved plan", "Main sessions where you approved at least one plan."),
+            "qualifying_sessions": (
+                "Sessions where it pays",
+                "Sessions with a plan big enough, and followed by enough replies, to be worth a fresh start.",
+            ),
+            "tokens_carried_median": (
+                "Planning context kept (median)",
+                "Context a fresh start would have dropped, over the plans that count. The middle value.",
+            ),
+            "saving_usd": ("Most you could save", "The replies after those plans without the planning context, at list price."),
+            "saving_pct": ("Share of main-session cost", "That saving as a share of all main-session cost."),
+            "main_session_usd": ("Main-session cost", "Cost of every main session in this window, at list price."),
+            "build_usd": (
+                "Cost after approved plans",
+                "Replies after each approved plan, up to the next plan, at list price.",
+            ),
+            "build_usd_sonnet": (
+                "Same at Sonnet's prices",
+                "Those replies repriced at Sonnet's list price. Empty when the price list has no Sonnet.",
+            ),
+        },
+        value_labels={"main sessions": "Main sessions"},
+        lead_columns=["saving_usd", "qualifying_sessions", "tokens_carried_median", "saving_pct"],
+    ),
+    "plan_handoff_by_session": TableCopy(
+        title="Sessions with an approved plan",
+        help=Help(
+            shows="One row per main session where you approved a plan, largest saving first.",
+            read="Planning context kept is what a fresh start would have dropped. Replies after a conversation "
+            "summary or the next plan aren't counted.",
+            act="",
+        ),
+        columns={
+            "session": ("Session", "The session's id."),
+            "plans": ("Approved plans", "Plans you approved in this session."),
+            "tokens_carried": ("Planning context kept", "The most context any of its plans would have dropped."),
+            "later_turns": ("Replies after the plan", "Replies after its plans, up to a summary or the next plan."),
+            "qualifies": ("Worth a fresh session", "Whether any of its plans was big enough to count."),
+            "saving_usd": ("Most you could save", "Those replies without the planning context, at list price."),
+            "build_turns": ("Build replies", "Replies after its approved plans, up to the next plan."),
+            "build_usd": ("Build cost", "Cost of those replies, at list price."),
+            "build_usd_sonnet": ("Build cost at Sonnet's prices", "The same replies at Sonnet's list price."),
+        },
+        value_labels={"yes": "Yes", "no": "No"},
+        lead_columns=["session", "tokens_carried", "later_turns", "qualifies", "saving_usd", "build_usd"],
+    ),
+    # -- splitting long subagent runs ------------------------------------------------
+    "run_split_summary": TableCopy(
+        title="Splitting long subagent runs",
+        help=Help(
+            shows="Every subagent run in this window, and what splitting the long ones at each agent type's best "
+            "interval could have saved.",
+            read="Only agent types where splitting pays are counted. The saving overlaps with the auto-compact "
+            "saving.",
+            act="",
+        ),
+        columns={
+            "scope": ("Scope", "Which runs this row covers."),
+            "runs": ("Subagent runs", "Subagent runs in this window. Workflow agents are left out."),
+            "paying_agents": ("Agent types where splitting pays", "Agent types whose runs would cost less split."),
+            "long_runs": ("Runs it would split", "Their runs long enough to split at their best interval."),
+            "splits": ("Splits", "How many times those runs would start fresh."),
+            "dropped_median": (
+                "Context each split drops (median)",
+                "Context a fresh start would leave behind at each split. The middle value.",
+            ),
+            "long_run_usd": ("Cost of those runs", "What the runs it would split cost, at list price."),
+            "saving_usd": (
+                "Most you could save",
+                "Those runs split, less what splitting adds back, at list price.",
+            ),
+            "saving_pct": ("Share of subagent cost", "That saving as a share of all subagent cost."),
+            "agent_usd": ("Subagent cost", "Cost of every subagent run in this window, at list price."),
+        },
+        value_labels={"subagent runs": "Subagent runs"},
+        lead_columns=["saving_usd", "paying_agents", "long_runs", "saving_pct"],
+    ),
+    "run_split_by_agent": TableCopy(
+        title="By agent type",
+        help=Help(
+            shows="One row per agent type: how long its runs get, and the split interval that saves most.",
+            read="An empty interval means splitting doesn't pay for that agent type at any interval tried.",
+            act="",
+        ),
+        columns={
+            "agent_type": ("Agent type", "The subagent type."),
+            "runs": ("Runs", "Its runs in this window."),
+            "longest_run": ("Longest run (replies)", "Replies in its longest run."),
+            "every_n": ("Split every (replies)", "The interval that saves most. Empty when none saves anything."),
+            "long_runs": ("Runs it would split", "Its runs longer than that interval."),
+            "replies_median": ("Replies in those runs (median)", "How long those runs were. The middle value."),
+            "splits": ("Splits", "How many times those runs would start fresh."),
+            "dropped_median": (
+                "Context each split drops (median)",
+                "Context a fresh start would leave behind at each split. The middle value.",
+            ),
+            "long_run_usd": ("Cost of those runs", "What those runs cost, at list price."),
+            "saving_usd": ("Most you could save", "Those runs split, less what splitting adds back, at list price."),
+            "saving_pct": ("Share of its cost", "That saving as a share of all its runs' cost."),
+            "agent_usd": ("Cost", "Cost of all its runs, at list price."),
+        },
+        lead_columns=["agent_type", "every_n", "long_runs", "replies_median", "saving_usd", "saving_pct"],
+    ),
+    "run_split_sweep": TableCopy(
+        title="Each split interval",
+        help=Help(
+            shows="Every agent type's runs split at each interval tried, and the net saving.",
+            read="Short intervals split often and pay the cost of starting fresh often. A net saving below zero "
+            "costs more than it saves.",
+            act="",
+        ),
+        columns={
+            "interval": ("Split interval", "The interval tried, in replies."),
+            "long_runs": ("Runs it would split", "Runs longer than that interval."),
+            "splits": ("Splits", "How many times those runs would start fresh."),
+            "net_usd": (
+                "Net saving, every agent type",
+                "What splitting at this interval saves less what it adds back, at list price. Below zero costs more.",
+            ),
+            "best_for": ("Best interval for (agent types)", "Agent types for which this interval saves most."),
+        },
+    ),
+    # -- your hooks -----------------------------------------------------------------
+    "hooks_summary": TableCopy(
+        title="Your hooks at a glance",
+        help=Help(
+            shows="Every hook of yours seen in this window: how often they failed, what they blocked and the "
+            "context they added.",
+            read="Claude Code records a tool hook's run only when it fails, blocks or adds context. Clean runs "
+            "aren't counted.",
+            act="",
+        ),
+        columns={
+            "scope": ("Scope", "Which hooks this row covers."),
+            "hooks": ("Hooks seen", "Hooks of yours that left a record in this window."),
+            "failing_hooks": ("Hooks that failed", "Hooks with at least one failed run."),
+            "failed": ("Failed runs", "Runs that ended in an error, so the hook didn't do its job."),
+            "failed_wait_secs": ("Time waited on failed runs", "How long those failed runs took, added up."),
+            "blocks": ("Calls blocked", "Tool calls your hooks stopped before they ran."),
+            "resent": ("Sent again unchanged", "Blocked calls Claude then sent again with the same input."),
+            "block_usd": ("Cost of blocks", "The replies that read those blocks, at list price."),
+            "context_tokens": ("Context added", "Context your hooks added in front of Claude, in tokens."),
+            "carry_usd": (
+                "Cost of keeping that context",
+                "That context read again on every later reply until a summary, at list price.",
+            ),
+        },
+        value_labels={"your hooks": "Your hooks"},
+        lead_columns=["failed", "failing_hooks", "carry_usd", "block_usd"],
+    ),
+    "hooks_by_script": TableCopy(
+        title="Each hook",
+        help=Help(
+            shows="One row per hook, by its script's name, or the start of its command when it names no script.",
+            read="Runs seen working undercounts tool hooks: a clean run that lets the call through leaves no record.",
+            act="A hook that failed in many sessions isn't guarding anything. Check its command first.",
+        ),
+        columns={
+            "hook": ("Hook", "The hook's script, or the start of its command."),
+            "events": ("Runs on", "The hook events it ran on, as named in settings.json."),
+            "failed": ("Failed runs", "Runs that ended in an error."),
+            "cause": ("Why it failed", "The most common reason, read from the error. Relative path: the script path is relative."),
+            "failed_sessions": ("Sessions it failed in", "Sessions with at least one failed run."),
+            "last_failed": ("Last failed", "The day of its most recent failed run."),
+            "worked": ("Runs seen working", "Recorded runs that worked, including the calls and stops it blocked."),
+            "blocks": ("Calls blocked", "Tool calls it stopped before they ran."),
+            "resent": ("Sent again unchanged", "Blocked calls Claude then sent again with the same input."),
+            "block_usd": ("Cost of blocks", "The replies that read its blocks, each block taking its share, at list price."),
+            "contexts": ("Times it added context", "How often it put a message in front of Claude."),
+            "context_tokens": ("Context added", "The size of those messages, in tokens."),
+            "carry_usd": (
+                "Cost of keeping its context",
+                "Those messages read again on every later reply until a summary, at list price.",
+            ),
+            "wait_secs": ("Time waited", "How long its recorded runs took, added up."),
+        },
+        value_labels={
+            "script not found": "Script not found",
+            "script not found (relative path)": "Script not found (relative path)",
+            "script not found (%VAR% not expanded)": "Script not found (%VAR% not expanded)",
+            "timed out": "Timed out",
+            "error": "Error",
+        },
+        lead_columns=["hook", "failed", "cause", "blocks", "resent", "context_tokens", "carry_usd"],
     ),
     # -- savings: wasted replies --------------------------------------------------
     "waste_summary": TableCopy(
@@ -4034,7 +4319,7 @@ DIAGNOSTIC_LABELS: dict[str, tuple[str, str]] = {
     "pre_split_turns": ("Replies from older Claude Code", "Replies logged before Claude Code split cache writes by lifetime."),
     "limit_hits": ("Usage-limit stops", "Times a session stopped at a usage limit."),
     "limit_resumes": ("Resumes after a limit", "Times a session carried on after a usage-limit stop."),
-    "agents_terminated": ("Subagents stopped by a limit", "Subagents that ended because a usage limit was reached."),
+    "agents_terminated": ("Subagents stopped early", "Subagents Claude Code ended before they finished, for any reason."),
     "pricing_closest_match_turns": ("Replies priced by closest match", "Replies costed at another, similar model's rate because this one has no price list entry of its own. See Usage's \"Priced by closest match\" table."),
     "pricing_fast_priced_as_standard_turns": ("Fast replies priced at standard rate", "Replies flagged fast mode but costed at the standard rate because this model has no fast-mode price on file."),
 }

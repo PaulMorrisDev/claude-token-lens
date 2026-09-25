@@ -514,8 +514,8 @@ then model. `cost` is at list price.
 
 ### Report-backed routes: windowing query params
 
-`/api/ttl`, `/api/carry`, `/api/compaction-sim`, `/api/model-swap`,
-`/api/waste`, `/api/config-diff`, `/api/recommendations`,
+`/api/ttl`, `/api/carry`, `/api/compaction-sim`, `/api/plan-handoff`,
+`/api/model-swap`, `/api/waste`, `/api/config-diff`, `/api/recommendations`,
 `/api/diagnostics`, `/api/claude-md`, `/api/claude-md/<id>`,
 `/api/skills`, `/api/profile-goals` (with `goal`), `/api/quick-actions`,
 `/api/quick-actions/<id>`, `POST /api/whatif` and
@@ -527,7 +527,7 @@ params it means all time rather than a 30-day default.
 `/api/sessions` and `/api/compactions` accept them all but, unlike the
 report routes, list everything when none is given. Every other route
 (`/api/health`, `/api/session/<id>`, `/api/recache`, `/api/baseline`,
-`/api/profiles*`, `/api/impact`, `/api/setup`, `/api/capture`) ignores them.
+`/api/profiles*`, `/api/impact`, `/api/setup`, `/api/setup/status`, `/api/capture`) ignores them.
 
 **Caching.** The service builds each window's report once per store
 change (`Store.change_token()`) or `config.toml` change (its
@@ -554,12 +554,18 @@ status line, at the foot of the sidebar.
   header picker: `1h` (the last hour), `today` (since midnight in
   `config.toml`'s `tz`, else the machine's zone), `24h`, `change` (since
   your latest `apply`, its undo, a settings change the config hook saw,
-  or a change to metrics capture; `400` when none is recorded yet) or
+  a change to metrics capture, or a model, effort or CLAUDE.md size
+  change your sessions show; the same newest change `/api/impact`
+  lists; `400` when there is none yet) or
   `all` (no limit). Anything else is `400`. A named window takes
   precedence over the other three params. It is turned into a `since`
   rounded down to the minute, so repeat requests share one cached report.
   A session counts when its last reply falls inside the window (so it
-  was active then), and it then counts in full.
+  was active then), and it then counts in full. `change` is the
+  exception: it counts the sessions whose *first* reply falls inside it
+  (the ones that started on the new settings), and `/api/daily-usage`
+  and `/api/compactions` then keep only those sessions' rows, so the
+  daily figures add up to `/api/summary`'s total.
 - **`window_days`** (int, at least 1, optional) — the last N days;
   defaults to 30 when neither `since` nor `until` is given.
 - **`since`** / **`until`** (ISO 8601, optional) — when either is
@@ -604,6 +610,16 @@ the per-agent-type best window and the fidelity check against each
 session's actually-configured window) — same shape as the CLI's
 `compaction-sim` section tables, sourced from the assembled report's
 `"compaction_sim"` section (`compaction_sim.py`).
+
+Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
+routes: windowing query params" above).
+
+### `GET /api/plan-handoff`
+
+The "building in a fresh session after a big plan" tables
+(`plan_handoff_summary`, `plan_handoff_by_session`), sourced from the
+assembled report's `"plan_handoff"` section (`handoff.py`, see
+[`plan-handoff.md`](plan-handoff.md)); `null` when the section is absent.
 
 Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
 routes: windowing query params" above).
@@ -685,6 +701,40 @@ across agent types (the same rule can fire once per subagent type), so
 across two runs of the same corpus. A dashboard link can use it as
 `#/actions/recommendations?id=<key>`.
 
+Each row also says whether you ignored it (`ignores.py`, see
+`POST /api/recommendations/ignore`), for the `project` asked about and
+the profile `apply` last marked active: `ignored` (bool), `ignored_at`
+(ISO-8601, or `null`), `ignored_in` (`"project"`, `"all"` for every
+project, or `null`) and `ignored_before` (`{"ignored_at", "changes":
+[{"agent", "key", "value"}, ...]}` when it was ignored here but now
+suggests something else, so it shows again; else `null`). The list
+itself is never filtered, and `/api/report.json` and the CLI reports
+carry no ignore fields.
+
+### `POST /api/recommendations/ignore`
+
+Ignore recommendations, or stop ignoring them. Query: the same window
+and `project` as `GET /api/recommendations`. With a `project`, the
+ignore applies in that project only; without one, in every project.
+Kept per profile: under the profile `apply <profile>` last marked
+active (`<config_dir>/active-profile`), or `none`.
+
+Body: `{"keys": [str, ...], "ignored": bool}` — 1 to 100 recommendation
+`key`s from this window's list (a rule for several agent types is one
+dashboard item, sent as one request). `400` when the body isn't that
+shape or a key isn't `[a-z0-9._:-]`; `404` when a key isn't in this
+window's list. The fingerprint that decides whether a recommendation
+has changed since (its rule and the changes it suggests, never its
+saving or wording) is worked out by the service from its own list,
+never taken from the request. Stopping removes whichever ignore
+applied, so stopping an every-project ignore from one project's view
+stops it everywhere.
+
+Stored in `<config_dir>/ignored-recommendations.json`.
+
+`data`: `{"keys", "ignored", "active_profile_id"}` (`null` when no
+profile has been applied).
+
 ### `GET /api/diagnostics`
 
 The report's parse-quality counters (`ReportModel.diagnostics`) as one
@@ -707,14 +757,14 @@ value `working` or `needs attention`.
 
 ### `GET /api/profiles`
 
-Every profile the service knows about (v0.3): the seven shipped
+Every profile the service knows about (v0.3): the eight shipped
 catalogue profiles (`profiles.catalogue`, package data — never a row in
 the store) plus every user profile written under
 `<config_dir>/profiles/*.toml` (`Store.profiles`, ingested by the
 watcher's `_scan_profiles`), each tagged with which of the two it came
 from.
 
-`data`: `{"profiles": [{"id", "name", "source": "catalogue"|"user", "archetype": str|null, "for": [str, ...], "tasks": [str, ...], "updated_at": str|null}, ...], "suggested_profile_id": str|null}`.
+`data`: `{"profiles": [{"id", "name", "source": "catalogue"|"user", "archetype": str|null, "for": [str, ...], "tasks": [str, ...], "updated_at": str|null}, ...], "suggested_profile_id": str|null, "active_profile_id": str|null, "active_profile_name": str|null}`.
 
 A catalogue entry's `archetype`/`for` come straight from its shipped
 TOML document; `tasks` is `for` normalised to the capture task
@@ -727,6 +777,10 @@ API-returned). `updated_at` is `null` for a catalogue entry (nothing to
 timestamp). `suggested_profile_id` is the latest recorded baseline's own
 `suggested_profile` field (`null` if no baseline has been captured yet),
 so the UI can mark that entry in the list without a second round trip.
+`active_profile_id` is the profile `apply <profile>` last marked active
+(`<config_dir>/active-profile`), `null` when none has been; ignored
+recommendations are kept under it. `active_profile_name` is its name
+(its id when it's no longer in the list).
 
 ### `GET /api/profile-schema`
 
@@ -827,7 +881,7 @@ been captured. `capture_status.summary` is the same one-line status
 
 One answer per way of saving tokens (`quick_actions.CHECKS`): models,
 effort, compaction, cache, tools, skills, claude-md, tool-output,
-habits and quality. Each check always answers, including "nothing to
+hooks, habits and quality. Each check always answers, including "nothing to
 do".
 
 Query: the windowing params above.
@@ -922,7 +976,10 @@ name (`"bugfix"` to `"Bug fix"`, from `capture_catalogue.TASK_LABELS`),
 first with a cheaper setup) and `note` says what was found; other goals
 return `[]`, `{}`, `null` and `null`.
 A candidate is ticked only when the data supports it; the main model is
-never pre-ticked. `tasks` also drafts a cheaper-model candidate (`key`
+never pre-ticked. The goals that start from recommendations
+(`recommendations`, `subagents`, `models`) leave out the ones ignored in
+this `project` under the active profile, unless they now suggest
+something else (`ignores.skip_keys`); so do the quick actions' fixes. `tasks` also drafts a cheaper-model candidate (`key`
 `"model"`, `agent` the subagent type) for each agent type that most
 answered that kind of task, from the Work habits section's
 `habits_agents_by_task` table, vetoed the same way as the `models`
@@ -939,25 +996,58 @@ settings with `POST /api/profiles/from-current` instead.
 ### `GET /api/impact`
 
 Each change you made (an `apply`, its undo, a settings change the
-config hook saw, or a change to metrics capture), with the sessions
+config hook saw, or a change to metrics capture), and each model,
+effort or CLAUDE.md size change your sessions show, with the sessions
 before it against those after it, on the measures that change should
 move.
 
 Takes no window: each change is compared over its own before and after
 periods, looking back at most `lookback_days`.
 
-`data`: `{"changes": [{"change": {"ts", "source", "label", "keys", "changes", "backup_ts", "reverted"}, "before_sessions", "after_sessions", "enough", "gate", "verdict", "measures": [{"label", "before", "after", "before_n", "after_n", "change_pct", "direction"}, ...], "quality": [{"group", "label", "before_runs", "after_runs", "verdict", "judged", "min_runs", "signals": [{"key", "label", "kind", "worse_when", "unit", "before", "after", "before_text", "after_text", "before_counts", "after_counts", "before_runs", "after_runs", "p", "label_key", "verdict"}, ...]}, ...]}, ...], "caveat", "min_sessions", "lookback_days"}`.
+`data`: `{"changes": [{"change": {"ts", "source", "label", "keys", "changes", "backup_ts", "reverted", "project", "project_name", "summary"}, "before_sessions", "after_sessions", "enough", "gate", "verdict", "measures": [{"label", "before", "after", "before_n", "after_n", "change_pct", "direction", "p", "label_key", "label_text"}, ...], "quality": [{"group", "label", "before_runs", "after_runs", "verdict", "judged", "min_runs", "signals": [{"key", "label", "kind", "worse_when", "unit", "before", "after", "before_text", "after_text", "before_counts", "after_counts", "before_runs", "after_runs", "p", "label_key", "verdict"}, ...]}, ...], "without": {"paid_usd", "without_usd", "saved_usd", "fidelity", "fidelity_text", "basis", "sessions", "text", "since_text", "per_key": [{"key", "agent", "fidelity", "fidelity_text", "saved_usd", "saved_text", "basis"}, ...]} | null}, ...], "caveat", "min_sessions", "lookback_days"}`.
 Newest change first, at most ten. `change.source` is `apply`, `revert`,
-`config` (a settings change the hook saw) or `capture` (a metrics
+`config` (a settings change the hook saw), `capture` (a metrics
 capture change from `capture-log.jsonl`, whose keys are `capture.<field>`
 and are measured by capture's own tokens per session and the share of
-messages Claude tagged). `enough` is false until each side has
+messages Claude tagged) or `transcript` (a change only the sessions
+show). `changes` lists `{"key", "agent", "old", "new"}` where the values
+are known: a `config` change records a setting's values only when both
+are plain values of at most 80 characters. `summary` is those changes
+in one line ("model: opus → sonnet"), then any other changed key by
+name. `project` is empty for a change that applies in every project;
+otherwise the change was made in one project's own settings files, it
+is judged on that project's sessions only, and `project_name` is
+that project's value in the project filter (empty when no session
+loaded is from it). `label_key` is a measure's
+ratio-test reading (`lower`, `possibly_lower`, `higher`,
+`possibly_higher`, `no_clear_change` or `too_little_data`) and
+`label_text` the same in words. `enough` is false until each side has
 `min_sessions` sessions; `gate` is the same check as a structured
 `{"reason": "min_sessions", "have", "need"}` object for a UI empty
 state, or `null` once `enough` is true. `before`/`after` are display
 text in the billing mode's units; `direction` is `lower`, `higher`,
 `same` or `null`. For an `apply` that is not yet undone, `backup_ts` is
 what `claude-token-lens apply --revert <backup_ts>` takes.
+
+`without` is what the sessions after the change would have cost
+without it (`counterfactual.py`), or `null` with fewer than
+`min_sessions` sessions after it. `fidelity` says how:
+
+| `fidelity` | For | How |
+|---|---|---|
+| `repriced` | `model`, `fastMode` | The same replies at the old model's prices, or with fast mode the other way. An old model that wasn't set is the one the sessions before ran on. |
+| `simulated` | cache lifetime keys; an `autoCompactWindow` the change raised | The same replies replayed under the old lifetime, or the old, smaller window. A lowered window can't be undone: its compactions happened. |
+| `approximate` | a CLAUDE.md size change, MCP servers, plugins, skills | The context the change removed or added, carried on every main-session reply. |
+| `before` | anything else, and any change to several settings at once | Each session after the change at the cost per reply of the sessions before it that did the same kind of work. |
+
+`paid_usd` and `without_usd` are list prices over the whole of each
+session after the change; `saved_usd` is their difference (negative
+when the change cost more). `text` is the card's first line ("Without
+this change: about X. You paid Y, so it saved about Z."), `since_text`
+the end of the Overview's "Without your last change (…), " sentence,
+and `basis` what was priced. `per_key` has a row per setting a method
+above covers; with several settings the rows overlap, so they don't add
+up to the headline, which then uses `before`.
 
 `quality` judges the change on the runs of each agent it changed (or
 the main session, for any other setting): one entry per group, with a
@@ -1000,6 +1090,29 @@ costs in tokens and how to undo it, plus what to expect
 (`footprint.py`). Used by the dashboard's Data quality page.
 
 `data`: `{"items": [{"key", "title", "status", "where", "what_it_does", "token_cost", "undo"}, ...], "expectations": [{"title", "text"}, ...], "uninstall_command"}`.
+
+### `GET /api/setup/status`
+
+Whether each part of the setup works (`setup_status.check_setup`), for
+the Overview's Setup card and Data quality: the same checklist
+`claude-token-lens status` prints. This dashboard answering is proof it
+runs, so only whether it starts at logon is asked, through the same
+cached probe as `/api/health`'s `service_registered`; `null` from that
+probe means "couldn't tell", never a problem.
+
+`data`: `{"items": [{"key", "label", "state", "word", "detail", "fix", "essential"}, ...], "done", "needs_attention", "verdict"}`.
+
+- `items`, in the order `init` sets them up: `billing`, `hook`,
+  `service`, `capture`, `skill` and `statusline`. `state` is `ok`,
+  `waiting` (set up, but nothing has happened yet to prove it works),
+  `problem` or `off` (left off by choice), and `word` says it the way
+  the CLI does (`Done`, `Waiting`, `Needs attention`, `Off`). `detail` is
+  one or two plain sentences, with the home folder written as `~` and no
+  other path. `fix` is a command to copy, or `null`.
+- `done`: every `essential` item is `ok`. The Setup card shows until it
+  is.
+- `needs_attention`: how many items are a `problem`.
+- `verdict`: "Everything's set up." or "N things need attention."
 
 ### `GET /api/capture`
 
@@ -1255,7 +1368,7 @@ JSON object, or if the schema rejects an unknown key or
 an out-of-range value — the schema's own problem text, joined with
 `"; "` (plan: "the schema rejects anything else so a profile can never
 promise an effect the harness cannot deliver"). `409`
-(`error.code: "conflict"`) if `id` names one of the seven shipped
+(`error.code: "conflict"`) if `id` names one of the eight shipped
 catalogue profiles — a catalogue id can never be created or overwritten
 this way, regardless of `?replace=1` — or if a user profile with that
 `id` already exists and `?replace=1` was not given.

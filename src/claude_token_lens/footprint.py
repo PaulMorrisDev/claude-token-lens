@@ -372,12 +372,13 @@ def inventory(
                 status="installed" if own_skill else "not installed",
                 where=home_label(feedback_skill_path(claude_root)),
                 what_it_does=(
-                    "A skill you run after a piece of work: four checkbox questions whose answers Token Lens reads "
-                    "from the transcript, so its suggestions fit how you work. Claude never runs it by itself."
+                    "A skill you run after a piece of work: four checkbox questions (five after an approved plan) "
+                    "whose answers Token Lens reads from the transcript, so its suggestions fit how you work. "
+                    "Claude never runs it by itself."
                 ),
                 token_cost=(
                     "None until you run it: Claude doesn't see its description. Each run costs about two short "
-                    "turns, shown on {{page:setup/capture}}."
+                    "turns, three after an approved plan, shown on {{page:setup/capture}}."
                 ),
                 undo="claude-token-lens capture feedback off",
             )

@@ -7,6 +7,204 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Agents & context › Hooks: whether each hook you set up works, and
+  what it costs.** Per hook, by its script's file name: failed runs and
+  why (script not found, timed out or an error), whether its path is
+  relative, calls it blocked and how many Claude then sent again
+  unchanged, the context it added and what keeping that context cost,
+  and time waited. Three recommendations come with it: `hook-failures`
+  (suggests `${CLAUDE_PROJECT_DIR}` for a relative path, and `$HOME`
+  for a Windows `%VAR%` path, which the hook's shell doesn't expand),
+  `hook-block-resent` (suggests `additionalContext` or `updatedInput`
+  instead of a block) and `hook-context-carry`. Actions › Checks and
+  `claude-token-lens check hooks` ask the same question. No command,
+  output or full path is stored. See [`docs/hooks.md`](docs/hooks.md).
+  Transcripts are read again once (`PARSER_VERSION` 23).
+- **Agents & context › Subagents: whether splitting long runs pays.**
+  Everything a subagent reads is read again on every later reply, so a
+  long run costs more than its length suggests. The new `run_split`
+  section prices each agent type's runs split every 50, 75, 100, 150,
+  200 or 300 replies, each part starting fresh from a short note. It
+  takes off what each split adds back: the note, the parent carrying it,
+  a fresh cache write and an allowance for re-reading files. It then
+  picks the interval that saves most per agent type. The `run-split`
+  recommendation gives a prompt that adds the habit to your CLAUDE.md.
+  See [`docs/run-split.md`](docs/run-split.md).
+- **The dashboard notices when its own code changes on disk.** An
+  editable install left running across a pull or release kept its old
+  modules in memory, and lazily loaded new ones against them: `/api/health`
+  still showed the old version while `/api/recommendations` and
+  `/api/quick-actions` failed with `internal_error (ImportError)`. Now,
+  after every scan, `serve` compares the package's files with the code it
+  loaded:
+  - `/api/health` reports `status: "outdated"` and a `code` block.
+  - The banner says to restart with `install-service`.
+  - A route that can't import answers `503 restart_needed` rather than
+    `internal_error`.
+  - The new `serve --exit-on-code-change`, which `install-service` and
+    both service scripts now register, exits once the change settles, so
+    the service starts again on the new code. Task Scheduler doesn't rerun
+    a task that exits with an error, so on Windows `serve` first arranges
+    for the `ClaudeTokenLens` task to be started again.
+  - Run `install-service` once to add the flag to an existing
+    registration. See [`docs/deploy.md`](docs/deploy.md#updating-under-a-running-serve).
+
+### Changed
+
+- **The dashboard's service idles on far less CPU.** Every 30 seconds
+  it re-read and re-totalled every session, whether or not anything had
+  changed: about 14 seconds of CPU a check on a corpus of 2,700
+  transcripts. It now skips a session whose files, tags, snapshots and
+  profile are all unchanged since it last totalled it, and reads each
+  subagent's details once a check instead of four times. The same idle
+  check now takes about 1 second. The first check after the service
+  starts still totals every session once.
+- **CLAUDE.md and Checks open faster.** Looking for each stale file
+  reference walked every project's folders again on every request:
+  over 4 seconds for each view. The walk is now quicker and kept for 2
+  minutes, so the CLAUDE.md view takes about 0.2 seconds, and Checks
+  about 2 seconds, down from nearly 5.
+- **Reports build about a third faster** (35 to 24 seconds on a
+  2,700-transcript corpus), with the same figures to the byte. The
+  compaction replay prices each unchanged reply once rather than once
+  for each of its 12 candidate windows, and snapshot times and model
+  names are each worked out once.
+
+### Fixed
+
+- **Kept reports stay kept while a workflow runs.** Re-reading a
+  workflow run file that hadn't changed stamped its row as updated,
+  which told every kept report the data had changed. Each view then
+  rebuilt its report (about a minute of CPU each) every 30 seconds while
+  a session with a workflow existed.
+
+- **Data quality counts usage-limit stops again.** "Usage-limit stops",
+  "Resumes after a limit" and "Subagents stopped early" always read 0:
+  each session's counts were never added into the report's totals. The
+  last is also renamed from "Subagents stopped by a limit", since
+  Claude Code stops a subagent early for other reasons too, such as a
+  network error.
+
+## [0.7.0] - 2026-09-25
+
+### Changed
+
+- **`init` asks four things and shows one review.** How you pay (`1` a
+  plan, `2` an API key), whether to connect to Claude Code, whether to
+  start the dashboard at logon, and optionally sharper tips (metrics
+  capture at Essentials for 14 days, plus `/tl-feedback`). Nothing is
+  written until one `Go ahead? [Y/n/d]`, where `d` shows the exact
+  `settings.json` change. It ends with a checklist of what's done, off
+  or needs attention. Pressing Enter no longer saves "api" on a fresh
+  machine: with nothing saved, the billing question asks again. The
+  rest of the old questions moved behind `init --advanced`, and
+  `projects/<slug>.toml` is written only there. `--dry-run` now writes
+  nothing at all, not even the hook copy. WSL folders it finds are
+  included and named. [`docs/onboarding.md`](docs/onboarding.md#init)
+  has the details.
+- **The main session is never told to use Haiku.** A main session on
+  Sonnet gets no model card; Opus still steps down to Sonnet. That card
+  is its own recommendation now, ranked after the compaction tips, and
+  its saving no longer counts in the Overview's available saving when it
+  would suggest Haiku.
+- **Essentials also tags the size of each piece of work.** The
+  before-and-after comparison and the new "without this change" figure
+  use it with the kind and difficulty of the work, so a change is judged
+  on like-for-like work. It adds about 10 tokens to each session's
+  note. A new "Measuring your changes" theme on the Capture page says
+  why these three are collected. Installed hooks pick it up when the
+  dashboard next starts, or after `update`.
+- **Your changes record what they changed, and where.** Each settings
+  change keeps its old and new values ("model: opus → sonnet"), and a
+  change made in one project's own settings is judged on that project's
+  sessions only. Changes only your sessions show (a model, effort or
+  CLAUDE.md size change) now appear in "Your changes and what they did"
+  and start the "Since my last change" window. Each measure shows its
+  reading ("Lower", "Possibly higher", "No clear change").
+
+### Fixed
+
+- **"Since my last change" counts only the sessions started since.**
+  It counted every session with a reply after the change, whole, so a
+  session begun before the change brought its earlier cost in, and the
+  daily spend chart took in the whole of the change's day. Every figure
+  on the page, the chart included, now covers the same sessions as the
+  "Without your last change" sentence.
+- **Loading says what it's waiting for.** Each view shows what is
+  loading in words over its skeleton, a view being refreshed keeps its
+  figures under an "Updating…" label, and the status line says when the
+  service is checking for new sessions, with how far the scan has got.
+- **Every recommendation has a key of its own.** A rule that made
+  several cards, such as one per CLAUDE.md source, gave them the same
+  key, so the dashboard couldn't tell them apart.
+- **The dashboard logs your estimates.** Saving a profile, or copying
+  the command or prompt for one, now logs its what-if estimate, so
+  "Did your estimates come true?" has something to judge.
+- **A change your sessions show isn't counted twice.** When an apply
+  changes the model and the next session runs on it, that's one change,
+  not two; the second one used to cut the first one's after sessions
+  short.
+- **Cache lifetime advice for subagents on a Pro or Max plan.** It was
+  always held back, as if every subscription were on usage credits.
+  Claude Code only draws on usage credits once a plan goes over its
+  limit. Within plan usage a subagent's 1-hour lifetime works, so the
+  advice now shows. A note says what changes on usage credits: the
+  main session drops to 5 minutes, and a 1-hour lifetime in an agent
+  file is ignored.
+- **The setting to change for a subagent's cache lifetime.** When
+  `subagentPromptCacheTtl` is already set, Claude Code uses it before
+  any agent file, so the card now changes that setting instead of an
+  agent file that would have no effect. Subagents whose type wasn't
+  recorded also get that setting, not an agent file named `unknown.md`.
+- The `promptCacheTtl` and `subagentPromptCacheTtl` explainers no longer
+  say a 1-hour lifetime is ignored on usage credits. Only an agent
+  file's is. The glossary's "Cache lifetime (TTL)" entry now gives the
+  main session's 1-hour default on a Pro or Max plan.
+
+### Added
+
+- **`claude-token-lens status`** says whether each part of the setup
+  works: how you pay, the Claude Code connection and whether it has seen
+  a session yet, the dashboard and its logon task, metrics capture and
+  the `/tl-feedback` skill. Each item says what fixes it. It exits 1
+  only when something essential needs attention. The Overview shows the
+  same checklist while anything essential isn't done, and the Data
+  quality page shows it in full. It replaces the old logon notice.
+- **Ignore a recommendation.** Its detail view has an "Ignore this
+  recommendation" button, and Actions gains "To do" and "Ignored"
+  filters. An ignore belongs to the profile that was active and the
+  project you were looking at (or every project), and lapses when the
+  recommendation changes what it suggests. Ignored ones also stay out of
+  "Start from my recommendations".
+- **"Start building in a fresh session once a big plan is approved."**
+  A new tip for sessions that approved a plan and then carried a lot of
+  planning context through the build. It suggests `/clear` and building
+  from the plan file, and says why forking the conversation saves
+  nothing. [`docs/plan-handoff.md`](docs/plan-handoff.md) has the
+  method.
+- **`/tl-feedback` asks whether the build could have started fresh.**
+  After a piece of work where you approved a plan, it asks one more
+  question. Your answers back or stop the fresh-session tip.
+- **A plan-then-build profile.** When at least half your recent
+  sessions plan and build in one session, the suggested profile is the
+  new built-in `plan-then-build`. Its detail offers "Plan on Opus,
+  build on Sonnet" (`model = opusplan`) as an unticked option, with its
+  saving, when your main sessions run on Opus.
+- **What it would have cost without a change.** Each change in "Your
+  changes and what they did" leads with "Without this change: about X.
+  You paid Y, so it saved about Z", and says how that was worked out: a
+  model or fast mode change is repriced reply by reply, a cache lifetime
+  or raised compaction window is replayed, removed context is priced as
+  carried, and anything else uses the sessions before it. The "Since my
+  last change" window adds the same figure under its headline, and the
+  back-test uses it where it's exact.
+  [`docs/concepts.md`](docs/concepts.md#6-windows-what-if-estimates-and-beforeafter-comparisons)
+  explains each method.
+
+## [0.6.3] - 2026-09-25
+
 ### Changed
 
 - **The README is a short landing page now.** It keeps the quick start,
@@ -31,26 +229,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `python -m claude_token_lens`, which works whether or not pip's
   Scripts folder is on your `PATH`.
 
+### Fixed
+
+- **On Windows the dashboard no longer flashes a console window every
+  few minutes, or opens a new tab in Windows Terminal.** While a
+  dashboard page is open it checks that its logon task is still set up
+  by running `schtasks`. The dashboard itself runs without a console
+  (`pythonw`), so each check got a console of its own. It now runs
+  without one, and terminal windows you already have open are left
+  alone. Run `python -m claude_token_lens update` to get the fix and
+  restart the dashboard.
+- **Quality verdicts no longer compare your work with scheduled checks.**
+  Main sessions a scheduled or looped task started, with no message of
+  yours, are left out of "Quality by model and effort" and of the
+  quality check in "Your changes and what they did". Twenty-two
+  two-reply watchdog runs had become the main session's most-used setup,
+  so real sessions at another effort were marked worse against them. A
+  setup whose runs averaged more than 5 times as many replies as the one
+  it would be compared with, or under a fifth, is now "Not comparable"
+  instead of tested.
+- **Scheduled checks no longer dilute the compaction figures.** The same
+  sessions are left out of the Compactions section and the compaction
+  replay: they never summarise, so they lowered the summaries per
+  session that the replay's "at most 2 a session" limit reads. In "Your
+  changes and what they did" they are a group of their own, so more or
+  fewer of them running after a change no longer reads as a saving or a
+  rise in cost per session.
+- **The compaction cards no longer disagree.** Once the compaction
+  replay has priced your main sessions, its verdict is the one answer on
+  the auto-compact window: "summarised often" (raise it) is dropped, and
+  "context running large" keeps only its workflow advice, whose prompt
+  no longer suggests lowering the window. A subagent type's row in "Best
+  auto-compact window for each agent type" names its cheapest window
+  without telling you to set it, since the window is one setting for the
+  whole session. The compaction check and the replay notes now say that
+  a larger window can't be tested: the replay keeps every real summary,
+  so windows above yours cost what your sessions did.
+
 ### Added
 
-- **The dashboard notices when its own code changes on disk.** An
-  editable install left running across a pull or release kept its old
-  modules in memory, and lazily loaded new ones against them: `/api/health`
-  still showed the old version while `/api/recommendations` and
-  `/api/quick-actions` failed with `internal_error (ImportError)`. Now,
-  after every scan, `serve` compares the package's files with the code it
-  loaded:
-  - `/api/health` reports `status: "outdated"` and a `code` block.
-  - The banner says to restart with `install-service`.
-  - A route that can't import answers `503 restart_needed` rather than
-    `internal_error`.
-  - The new `serve --exit-on-code-change`, which `install-service` and
-    both service scripts now register, exits once the change settles, so
-    the service starts again on the new code. Task Scheduler doesn't rerun
-    a task that exits with an error, so on Windows `serve` first arranges
-    for the `ClaudeTokenLens` task to be started again.
-  - Run `install-service` once to add the flag to an existing
-    registration. See [`docs/deploy.md`](docs/deploy.md#updating-under-a-running-serve).
 - `tests/test_doc_links.py` checks that every Markdown link to a
   heading in the README, `docs/`, `SECURITY.md` and this file resolves.
 - `scripts/demo-corpus.py` builds the synthetic sessions the README's

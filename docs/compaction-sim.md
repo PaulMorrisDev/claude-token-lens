@@ -63,21 +63,32 @@ transcript being replayed, so the sweep doesn't charge them; the
 `compaction-window` rule corrects for them instead. Candidate windows swept:
 `100k, 150k, 200k, 250k, 300k, 400k, 500k, none` (`none` = never
 auto-compact; a real compaction already in the transcript is still kept
-under this row — see the "no candidate window" identity below).
+under this row — see the "no candidate window" identity below). Because
+real compactions are kept, a window above the one a session ran at costs
+what the session did: the sweep can only test smaller windows, and the
+compaction quick action and the section notes say so. Main sessions a
+scheduled or looped task started, with no message of yours
+(`model.scheduled_main_session`), are not replayed: they never compact,
+so they would only lower the compactions per session the rule gates on.
 
 ## The report section
 
 | Table | Scope | What it shows |
 |---|---|---|
 | `compaction_sim_by_window` | Top-level sessions only | One row per candidate window: simulated compactions per session, mean ctx, total cost, and delta vs. the observed (`none`) cost, in USD and percent. |
-| `compaction_sim_by_agent_type` | `"top-level"` and every subagent type | Each key's own cheapest candidate window, its cost, the saving vs. observed (0 floor), and a recommendation string naming the window. |
+| `compaction_sim_by_agent_type` | `"top-level"` and every subagent type | Each key's own cheapest candidate window, its cost, the saving vs. observed (0 floor), and a recommendation string naming the window (only the `"top-level"` row says to set it). |
 | `compaction_sim_by_task` | Main sessions only, grouped by the kind of task metrics capture reported (`task=`) | Same shape as `compaction_sim_by_agent_type`, keyed by task instead of agent type. A task appears only once at least `MIN_TASK_SESSIONS` (5) main sessions reported it. |
 | `compaction_sim_fidelity` | Top-level sessions with a known configured window | Simulating at the session's own snapshot-configured `autoCompactWindow` against its true observed cost — a trust check on the simulation itself. |
 
 The `compaction_sim_by_agent_type`/`compaction_sim_by_task` recommendation
 strings name the cheapest window only when it is both below
 `CompactionSimThresholds.switch_pct` (default 0.95) × observed cost and
-more than `switch_usd` (default $1.00) cheaper.
+more than `switch_usd` (default $1.00) cheaper. The window is one setting
+for the whole session, so a subagent type's row names its cheapest
+window ("Cheapest at 200,000 tokens (saves ...), but the window is one
+setting for the whole session: choose it from the main session row")
+without telling you to set it; only the `"top-level"` row says "Set the
+auto-compact window to ...".
 
 `compaction_sim_by_task` (EST-P8) is accumulated the same way as
 `compaction_sim_by_agent_type` -- one `_WindowAccumulator` per
@@ -116,6 +127,18 @@ or `<project>/.claude/settings.local.json`, read via
 `snapshots.effective_provenance`), or `"managed"` (named, not offered as
 user-actionable) depending on which settings layer actually set the
 session's effective `autoCompactWindow`.
+
+Once `compaction_sim_by_window` has priced the main sessions (its
+`none` row has a cost), the replay has a verdict on `autoCompactWindow`
+whether or not this rule fires, and it is the one answer on that
+setting (`advice._consolidate_compaction`): `compaction-churn`
+("summaries happen too often", raise the window) is dropped, and
+`long-context-share` ("the context is too large") keeps only its
+workflow advice (subagents for exploration, a fresh session per task),
+never "lower the window". `compaction-window` is also dropped when the
+current window is already at or below its floor. Without a replay,
+`compaction-churn` keeps the setting and `long-context-share` still
+gives it up, so no two cards point the window opposite ways.
 
 ## Sign convention (differs from `ttl.py`)
 

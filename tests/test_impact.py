@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from claude_token_lens import impact
 from claude_token_lens.change_points import ChangePoint
 from claude_token_lens.corpus import load_corpus
@@ -59,6 +61,21 @@ def test_compare_reports_a_drop_with_counts():
     assert result["verdict"].startswith("Explore: cost per spawn fell 50%")
 
 
+def test_a_change_in_one_project_is_judged_on_that_projects_sessions():
+    sessions = [_session(-d, 2.0) for d in (1, 2, 3)] + [_session(d, 1.0) for d in (0.1, 0.2, 0.3)]
+    elsewhere = [_session(-d, 9.0) for d in (1.5, 2.5)] + [_session(0.5, 9.0)]
+    for facts in sessions:
+        facts.project = "slug:mine"
+    for facts in elsewhere:
+        facts.project = "slug:other"
+    point = ChangePoint(CHANGE, "config", "Your settings changed", keys=["effective.model"], project="slug:mine")
+    result = impact.compare(point, sessions + elsewhere, UNITS, now=CHANGE + timedelta(days=1))
+    assert (result["before_sessions"], result["after_sessions"]) == (3, 3)
+    everywhere = ChangePoint(CHANGE, "config", "Your settings changed", keys=["effective.model"])
+    result = impact.compare(everywhere, sessions + elsewhere, UNITS, now=CHANGE + timedelta(days=1))
+    assert (result["before_sessions"], result["after_sessions"]) == (5, 4)
+
+
 def test_too_few_sessions_after_gives_no_verdict():
     sessions = [_session(-d, 2.0) for d in (1, 2, 3)] + [_session(0.1, 1.0)]
     result = impact.compare(ChangePoint(CHANGE, "apply", "x", keys=["model"]), sessions, UNITS)
@@ -96,6 +113,23 @@ def test_changes_made_together_share_their_before_and_after():
         assert result["enough"]
 
 
+def test_without_is_asked_about_each_change_with_its_own_sides():
+    """``without`` (counterfactual.for_impact) gets each change point and
+    the sessions on each side of it; its answer is the row's "without"."""
+    sessions = [_session(-d, 2.0) for d in (1, 2, 3)] + [_session(d, 1.0) for d in (0.1, 0.2, 0.3)]
+    point = ChangePoint(CHANGE, "apply", "x")
+    seen = []
+
+    def without(p, before, after):
+        seen.append((p, len(before), len(after)))
+        return {"text": "Without this change: about 6.00 USD."}
+
+    [result] = impact.impact([point], sessions, UNITS, without=without)
+    assert seen == [(point, 3, 3)]
+    assert result["without"] == {"text": "Without this change: about 6.00 USD."}
+    assert impact.compare(point, sessions, UNITS)["without"] is None
+
+
 def test_quality_compares_the_changed_agents_runs_before_and_after():
     from claude_token_lens import quality
 
@@ -126,6 +160,16 @@ def test_a_group_with_too_few_runs_is_not_judged():
     group = impact.compare(ChangePoint(CHANGE, "apply", "x", keys=["model"]), sessions, UNITS)["quality"][0]
     assert group["judged"] is False and group["min_runs"] == quality.MIN_RUNS
     assert "6 before and 1 after" in group["verdict"]
+
+
+def test_scheduled_main_sessions_are_left_out_of_the_quality_check():
+    from claude_token_lens import quality
+
+    sessions = [_session(-d / 10, 2.0) for d in range(1, 7)] + [_session(d / 10, 1.0) for d in range(1, 7)]
+    for i, session in enumerate(sessions):
+        session.runs = [quality.Run(replies=5, tool_calls=20, scheduled=i % 2 == 1)]
+    group = impact.compare(ChangePoint(CHANGE, "apply", "x", keys=["model"]), sessions, UNITS)["quality"][0]
+    assert (group["before_runs"], group["after_runs"]) == (3, 3)
 
 
 # -- metrics capture changes ---------------------------------------------------
@@ -185,6 +229,75 @@ def test_stratum_prefers_task_then_purpose_then_a_catch_all():
     assert impact.stratum(facts) == "refactor"
     facts.task = "test"
     assert impact.stratum(facts) == "test"
+
+
+def test_how_hard_and_how_big_split_the_stratum_once_half_the_sessions_carry_them():
+    facts = _tasked(0, 1.0, "feature")
+    facts.level = "hard"
+    assert impact.stratum(facts, ("level", "size")) == "feature/hard/-"
+    assert impact.stratum(facts) == "feature"
+    others = [_tasked(0, 1.0, "feature") for _ in range(2)]
+    assert impact.stratum_fields([facts] + others) == ()
+    others[0].level, others[0].size = "easy", "s"
+    assert impact.stratum_fields([facts] + others) == ("level",)
+
+
+def test_harder_work_after_a_change_doesnt_read_as_the_change_costing_more(tmp_path):
+    """Before: easy features at 2.00. After: easy features at 2.00 and
+    hard ones at 20.00. Reweighted to before's all-easy mix, nothing
+    changed; the same mix by task alone reads as a big rise."""
+    def work(days, cost, level):
+        facts = _tasked(days, cost, "feature")
+        facts.level = level
+        return facts
+
+    before = [work(-d, 2.0, "easy") for d in (1, 2, 3)]
+    after = [work(d, 2.0, "easy") for d in (0.1, 0.2)] + [work(d, 20.0, "hard") for d in (0.3, 0.4, 0.5)]
+    assert impact._stratified_estimate(impact._COST, before, after).value == pytest.approx(2.0)
+    for s in before + after:
+        s.level = None
+    assert impact._stratified_estimate(impact._COST, before, after).value > 10.0
+
+
+def test_session_facts_reads_how_hard_and_how_big_from_capture_tags(tmp_path):
+    from helpers import attachment_line, user_str_line
+
+    note_text = "Token Lens metrics capture (tl-cap v1 task,level,size): ..."
+    note = attachment_line(
+        "hook_additional_context",
+        rendered=f"<system-reminder>\nSessionStart hook additional context: {note_text}\n</system-reminder>",
+        content=[note_text], hookName="SessionStart", hookEvent="SessionStart", toolUseID="SessionStart",
+    )
+    note["timestamp"] = "2026-09-18T11:59:59.000Z"
+    lines = [note]
+    for n, tag in enumerate(("task=feature level=hard size=l", "task=feature level=hard size=m", "task=feature level=hard size=l")):
+        lines.append(user_str_line("go on", origin={"kind": "human"}, timestamp=f"2026-09-18T12:00:{2 * n:02d}.000Z"))
+        lines.append(turn_line(content=[{"type": "text", "text": f"Done.\n[tl: {tag}]"}], timestamp=f"2026-09-18T12:00:{2 * n + 1:02d}.000Z"))
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    write_jsonl(project_dir / "s.jsonl", lines)
+    [facts] = impact.session_facts(load_corpus([project_dir]), load_pricing())
+    assert (facts.task, facts.level, facts.size) == ("feature", "hard", "l")
+
+
+def test_scheduled_sessions_are_their_own_stratum_so_their_count_does_not_move_cost():
+    """Before: 3 real sessions at 10.00 and 3 scheduled checks at 0.10.
+    After: the same real sessions and prices, but 30 checks ran. Pooled,
+    cost per session falls about 85%; reweighted to before's mix it
+    doesn't move."""
+    def scheduled(days: float) -> SessionFacts:
+        facts = _session(days, 0.10)
+        facts.scheduled = True
+        return facts
+
+    assert impact.stratum(scheduled(0)) == "(scheduled)"
+    before = [_session(-d, 10.0) for d in (1, 2, 3)] + [scheduled(-d - 0.5) for d in (1, 2, 3)]
+    after = [_session(d, 10.0) for d in (0.1, 0.2, 0.3)] + [scheduled(0.4 + d / 100) for d in range(30)]
+    cost = impact._COST
+    old = impact._ratio_estimate(impact._pairs(cost, before)).value
+    pooled = impact._ratio_estimate(impact._pairs(cost, after)).value
+    assert pooled < 0.2 * old
+    assert impact._stratified_estimate(cost, before, after).value == pytest.approx(old)
 
 
 def test_stratified_after_estimate_matches_before_task_mix():

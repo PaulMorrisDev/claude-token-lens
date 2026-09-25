@@ -5,7 +5,7 @@
 
 import { clear, cli, el, onParams, state } from "./core.js";
 import { fetchJson, findSection, loadInto, loadReport, postJson, withWindow } from "./api.js";
-import { shortTs, signedPercent } from "./format.js";
+import { projectName, shortTs, signedPercent } from "./format.js";
 import { button, callout, chip, codeBlockWithCopy, commandBlock, drawer, emptyState, errorNotice, loadingNode, prose, toast } from "./ui.js";
 import { dataGrid, pulseNode, renderMappedSections, renderPlacedTables, renderSectionGeneric, simpleTable } from "./grid.js";
 import { captureLink, viewIntro } from "./links.js";
@@ -419,21 +419,25 @@ function renderProfileDetail(profile, container) {
   container.appendChild(scopeRow);
   var estimate = el("div", { class: "profile-estimate" });
   container.appendChild(estimate);
-  renderProfileEstimate(profile, estimate);
+  var logEstimate = renderProfileEstimate(profile, estimate);
   var body = el("div");
   container.appendChild(body);
   function load() {
     loadInto(
       body,
       "/api/profiles/" + encodeURIComponent(profile.id) + "/diff?scope=" + encodeURIComponent(scopeSelect.value),
-      renderProfileDiff
+      function (data, box) {
+        renderProfileDiff(data, box, logEstimate);
+      }
     );
   }
   scopeSelect.addEventListener("change", load);
   load();
 }
 
-function renderProfileDiff(data, container) {
+// onCopy: runs when its prompt or command is copied (the estimate is
+// logged then, as a change you mean to make).
+function renderProfileDiff(data, container, onCopy) {
   (data.notes || []).forEach(function (note) {
     container.appendChild(callout({ tone: "info", text: note }));
   });
@@ -457,7 +461,7 @@ function renderProfileDiff(data, container) {
         ((data.agents || []).length || (data.env || []).length
           ? " A one-session trial carries the settings only, not the agent or environment changes."
           : ""),
-    })
+    }, { onCopy: onCopy })
   );
 
   var raw = el("details", { class: "advanced-detail" });
@@ -522,7 +526,7 @@ function setLeverValue(field, value) {
 
 function renderProfileEditor(container, profiles, onSaved) {
   clear(container);
-  container.appendChild(loadingNode());
+  container.appendChild(loadingNode("Loading the profile editor"));
   loadProfileSchema().then(function (schema) {
     clear(container);
     if (!schema) {
@@ -922,11 +926,13 @@ function renderGoalDraft(draft, container, onSaved) {
     return { settings: settings, agents: agents };
   }
   var pending = 0;
+  var whatifUrl = function () {
+    return withWindow("/api/whatif") + (draft.task ? "&task=" + encodeURIComponent(draft.task) : "");
+  };
   function refreshTotal() {
     var ticket = ++pending;
     total.textContent = "Working out the estimate…";
-    var url = withWindow("/api/whatif") + (draft.task ? "&task=" + encodeURIComponent(draft.task) : "");
-    postJson(url, chosen()).then(function (result) {
+    postJson(whatifUrl(), chosen()).then(function (result) {
       if (ticket !== pending) return;
       var body = result.body;
       if (!body || body.ok !== true) {
@@ -976,12 +982,19 @@ function renderGoalDraft(draft, container, onSaved) {
       }
       status.textContent = "Saved. It's under Your profiles and the built-in ones: pick \"Show what it changes\" for the prompt and the command that make the change.";
       toast("Profile saved.");
+      // Log the estimate, so Setup can later check it against what the
+      // change did (see "Did your estimates come true?").
+      postJson(whatifUrl(), { settings: picked.settings, agents: picked.agents, log: true });
       if (onSaved) onSaved(body.data.id);
     });
   });
 }
 
+// Returns a function that logs this estimate (at most once), so Setup can
+// later check it against what the change did.
 function renderProfileEstimate(profile, container) {
+  var request = null;
+  var logged = false;
   Promise.all([fetchJson("/api/profiles/" + encodeURIComponent(profile.id)), loadProfileSchema()]).then(function (results) {
     var body = results[0].body;
     if (!body || body.ok !== true) return;
@@ -995,7 +1008,8 @@ function renderProfileEstimate(profile, container) {
     // /api/whatif rejects it); several scale by their combined share.
     var tasks = p.tasks && p.tasks.length ? p.tasks.join(",") : "";
     var url = withWindow("/api/whatif") + (tasks ? "&task=" + encodeURIComponent(tasks) : "");
-    postJson(url, { settings: p.settings || {}, agents: p.agents || {} }).then(function (res) {
+    request = { url: url, settings: p.settings || {}, agents: p.agents || {} };
+    postJson(url, { settings: request.settings, agents: request.agents }).then(function (res) {
       var data = res.body && res.body.ok === true ? res.body.data : null;
       if (!data || !data.rows.length) return;
       clear(container);
@@ -1015,6 +1029,11 @@ function renderProfileEstimate(profile, container) {
       );
     });
   });
+  return function () {
+    if (logged || !request) return;
+    logged = true;
+    postJson(request.url, { settings: request.settings, agents: request.agents, log: true });
+  };
 }
 
 function renderImpact(data, container) {
@@ -1030,7 +1049,10 @@ function renderImpact(data, container) {
     var change = item.change || {};
     var card = el("article", { class: "rec impact-card", "data-day": String(change.ts || "").slice(0, 10) });
     card.appendChild(el("h3", { text: change.label + (change.reverted ? " (since undone)" : "") }));
-    card.appendChild(el("p", { class: "profile-card-meta", text: shortTs(change.ts) + (change.keys && change.keys.length ? " · " + change.keys.join(", ") : "") }));
+    var what = change.summary || (change.keys || []).join(", ");
+    var where = change.project ? "In " + (change.project_name ? projectName(change.project_name) : "one project") + " only" : "";
+    card.appendChild(el("p", { class: "profile-card-meta", text: [shortTs(change.ts), where, what].filter(Boolean).join(" · ") }));
+    renderWithout(item.without, card);
     if (item.gate) {
       card.appendChild(emptyState(item.verdict, item.gate));
     } else {
@@ -1039,9 +1061,9 @@ function renderImpact(data, container) {
     if (item.enough) {
       card.appendChild(
         simpleTable(
-          [{ label: "Measure" }, { label: "Before" }, { label: "After" }, { label: "Change" }],
+          [{ label: "Measure" }, { label: "Before" }, { label: "After" }, { label: "Change" }, { label: "Reading" }],
           (item.measures || []).map(function (m) {
-            return [m.label, m.before, m.after, signedPercent(m.change_pct)];
+            return [m.label, m.before, m.after, signedPercent(m.change_pct), m.label_text || ""];
           })
         )
       );
@@ -1100,6 +1122,26 @@ function renderImpact(data, container) {
     }
     container.appendChild(card);
   });
+}
+
+// What the sessions after a change would have cost without it
+// (counterfactual.py). One line, how it was worked out, and a row per
+// setting when the change made several at once (their figures overlap,
+// so the headline uses the sessions before instead).
+function renderWithout(without, card) {
+  if (!without) return;
+  card.appendChild(el("p", { class: "quick-summary" }, [el("strong", { text: without.text })]));
+  card.appendChild(el("p", { class: "notes", text: [without.fidelity_text, without.basis].filter(Boolean).join(" ") }));
+  var rows = without.fidelity === "before" ? without.per_key || [] : [];
+  if (!rows.length) return;
+  card.appendChild(
+    simpleTable(
+      [{ label: "Setting" }, { label: "Without it" }, { label: "How" }],
+      rows.map(function (row) {
+        return [(row.agent ? row.agent + ": " : "") + row.key, row.saved_text, row.fidelity_text];
+      })
+    )
+  );
 }
 
 // EST-P4/P8: did a saving estimate come true? Rows are

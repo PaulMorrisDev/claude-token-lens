@@ -1,6 +1,6 @@
 /* claude-token-lens service UI: page-agents.js
  *
- * The Agents & context page: Agents, Quality and Context.
+ * The Agents & context page: Agents, Quality, Context and Hooks.
  */
 
 import { clear, el } from "./core.js";
@@ -11,8 +11,8 @@ import { dataGrid, renderMappedSections, simpleTable } from "./grid.js";
 import { viewIntro } from "./links.js";
 
 // ======================================================================
-// Agents & context, Agents (agent_startup, agents) and Quality (quality,
-// workflows, workstyle): report sections only
+// Agents & context, Agents (agent_startup, agents, run_split), Quality (quality,
+// workflows, workstyle) and Hooks (hooks): report sections only
 // ======================================================================
 
 function renderReportSections(container, viewKey) {
@@ -41,6 +41,14 @@ export function renderAgentQuality(panel) {
   var container = el("div", { id: "agent-quality-sections" });
   panel.appendChild(container);
   renderReportSections(container, "agents/quality");
+}
+
+export function renderAgentHooks(panel) {
+  clear(panel);
+  viewIntro(panel, "agents/hooks");
+  var container = el("div", { id: "agent-hooks-sections" });
+  panel.appendChild(container);
+  renderReportSections(container, "agents/hooks");
 }
 
 // ======================================================================

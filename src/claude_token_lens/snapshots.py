@@ -63,6 +63,7 @@ through the same renderers as every other report table.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import statistics
@@ -162,11 +163,15 @@ def load_snapshots(config_dir: Path | str) -> list[Snapshot]:
 # -- timestamp parsing / join -------------------------------------------
 
 
+@functools.lru_cache(maxsize=8192)
 def _parse_ts(ts: str | None) -> datetime | None:
     """Parse either a hook snapshot ``ts`` or a transcript ``first_ts``
     into a UTC-aware ``datetime``. Returns ``None`` for anything that
     doesn't match a known format rather than raising, so a malformed
     timestamp degrades to "no snapshot found" instead of crashing a report.
+
+    Cached: :func:`snapshot_for` parses every snapshot's ``ts`` for every
+    session it joins, half a million ``strptime`` calls for one report.
     """
     if not ts:
         return None

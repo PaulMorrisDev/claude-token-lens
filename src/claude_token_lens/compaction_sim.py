@@ -129,7 +129,7 @@ from __future__ import annotations
 
 import statistics
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
@@ -143,6 +143,7 @@ from .model import (
     Table,
     TranscriptResult,
     Turn,
+    scheduled_main_session,
 )
 from .pricing import ModelRates, ResolvedRates, price_turn
 from .recache import RecacheThresholds
@@ -178,7 +179,9 @@ ASSUMPTIONS: list[str] = [
     "This lasts until the next summary, real or simulated. Growth after "
     "the summary is kept whole",
     "a real summary already in a session is kept as it is under every "
-    "candidate window: never simulated again, never removed",
+    "candidate window: never simulated again, never removed. So a window "
+    "above the one your sessions ran at costs what they did, and raising "
+    "the window can't be tested",
     "a change in cost is the candidate window's cost minus the observed "
     "cost. Negative means the candidate is cheaper (a saving): the "
     "opposite sign to the cache lifetime tables",
@@ -545,35 +548,66 @@ class _Shape:
     cached_prefix_share: float = 0.0
 
 
-def _shrunk_cost(turn: Turn, rates: RatesArg, dropped: float) -> float:
+class _PricedTurn:
+    """A turn with some of its token counts changed, holding only what
+    :func:`price_turn` reads. The replay prices over a million changed
+    turns for one report, and ``dataclasses.replace`` of a whole ``Turn``
+    for each was most of its cost."""
+
+    __slots__ = (
+        "ctx", "input_tokens", "output_tokens", "cache_read_tokens", "cc_5m", "cc_1h",
+        "speed", "inference_geo", "web_search_requests",
+    )
+
+    def __init__(
+        self, turn: Turn, ctx: int, input_tokens: int, output_tokens: int, cache_read_tokens: int, cc_5m: int, cc_1h: int
+    ) -> None:
+        self.ctx = ctx
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.cache_read_tokens = cache_read_tokens
+        self.cc_5m = cc_5m
+        self.cc_1h = cc_1h
+        self.speed = turn.speed
+        self.inference_geo = turn.inference_geo
+        self.web_search_requests = turn.web_search_requests
+
+
+def _shrunk_cost(turn: Turn, rates: RatesArg, dropped: float, output_tokens: int | None = None) -> float:
     """Price ``turn`` with ``dropped`` tokens taken out of its context:
     out of its cache reads first (the dropped history is the old, cached
     part of the prefix), then out of its cache writes once the reads are
-    used up (a turn that re-cached its whole prefix)."""
+    used up (a turn that re-cached its whole prefix). ``output_tokens``,
+    when given, replaces the turn's own."""
     if dropped <= 0:
-        return price_turn(turn, rates).total
+        if output_tokens is None:
+            return price_turn(turn, rates).total
+        request = _PricedTurn(
+            turn, turn.ctx, turn.input_tokens, output_tokens, turn.cache_read_tokens, turn.cc_5m, turn.cc_1h
+        )
+        return price_turn(request, rates).total  # type: ignore[arg-type]
     ctx = max(0, int(round(turn.ctx - dropped)))
     read = max(0, int(round(turn.cache_read_tokens - dropped)))
     from_writes = max(0.0, dropped - turn.cache_read_tokens)
     write = turn.cache_creation_tokens
     keep = max(0.0, (write - from_writes) / write) if write else 1.0
-    shrunk = replace(
+    shrunk = _PricedTurn(
         turn,
-        ctx=ctx,
-        cache_read_tokens=read,
-        cache_creation_tokens=int(round(write * keep)),
-        cc_5m=int(round(turn.cc_5m * keep)),
-        cc_1h=int(round(turn.cc_1h * keep)),
+        ctx,
+        turn.input_tokens,
+        turn.output_tokens if output_tokens is None else output_tokens,
+        read,
+        int(round(turn.cc_5m * keep)),
+        int(round(turn.cc_1h * keep)),
     )
-    return price_turn(shrunk, rates).total
+    return price_turn(shrunk, rates).total  # type: ignore[arg-type]
 
 
 def _summary_request_cost(turn: Turn, rates: RatesArg, dropped: float, summary_tokens: float) -> float:
     """The summary request a compaction sends and the transcript never
     logs: the triggering turn's own (already shrunk) context, read and
     written the way that turn's was, with the summary as its output."""
-    request = replace(turn, output_tokens=int(round(summary_tokens)), thinking_tokens=0)
-    return _shrunk_cost(request, rates, dropped)
+    return _shrunk_cost(turn, rates, dropped, int(round(summary_tokens)))
 
 
 def _recached_reply_cost(turn: Turn, rates: RatesArg, new_ctx: float, cached_prefix: float) -> float:
@@ -587,16 +621,32 @@ def _recached_reply_cost(turn: Turn, rates: RatesArg, new_ctx: float, cached_pre
     write = ctx - read - uncached
     written = turn.cc_5m + turn.cc_1h
     write_1h = int(round(write * turn.cc_1h / written)) if written else 0
-    reply = replace(
-        turn,
-        ctx=ctx,
-        input_tokens=uncached,
-        cache_read_tokens=read,
-        cache_creation_tokens=write,
-        cc_5m=write - write_1h,
-        cc_1h=write_1h,
-    )
-    return price_turn(reply, rates).total
+    reply = _PricedTurn(turn, ctx, uncached, turn.output_tokens, read, write - write_1h, write_1h)
+    return price_turn(reply, rates).total  # type: ignore[arg-type]
+
+
+def _observed_prices(priced_turns: list[Turn], lookup: RatesLookup) -> tuple[list[RatesArg], list[float]]:
+    """Each turn's resolved rates and its cost at its own observed
+    values. Both are the same under every candidate window, so
+    :meth:`CompactionSimStats.add_transcript` works them out once per
+    transcript rather than once per window.
+
+    SURV-9: ``lookup`` is cached by model string, the same pattern as
+    ``habits._Rates._resolve``: almost every turn of a session shares the
+    same handful of model strings. Only that turn-independent resolve
+    step and each unchanged turn's price are reused, never a changed
+    turn's price: ``ctx`` alone can cross a model's long-context pricing
+    threshold."""
+    resolved: dict[str, RatesArg] = {}
+    rates_by_turn: list[RatesArg] = []
+    costs: list[float] = []
+    for turn in priced_turns:
+        if turn.model not in resolved:
+            resolved[turn.model] = lookup(turn.model)
+        rates = resolved[turn.model]
+        rates_by_turn.append(rates)
+        costs.append(price_turn(turn, rates).total)
+    return rates_by_turn, costs
 
 
 def _replay_transcript(
@@ -605,29 +655,18 @@ def _replay_transcript(
     window: int | None,
     shape: _Shape,
     real_after: dict[int, int],
+    observed: tuple[list[RatesArg], list[float]] | None = None,
 ) -> _ReplayResult:
     """Walk ``priced_turns`` in order under candidate ``window``. See the
     module docstring's algorithm description and its "no candidate
     window" identity (``window=None`` reproduces the true observed cost
     exactly, since ``dropped`` then never leaves 0).
 
-    SURV-9: ``lookup(turn.model)`` used to run uncached on every turn of
-    every window this is replayed for, even though almost every turn of
-    a session shares the same handful of model strings. ``resolved``
-    caches just that resolve step, by model string, the same pattern as
-    ``habits._Rates._resolve`` -- one dict local to this call, so it
-    naturally resets per window (a candidate ``window`` never changes
-    which model a turn used, so the cache is safe to share across the
-    whole replay, but never needs to outlive it). This is *not* ttl.py's
-    identity shortcut (skipping a ``dataclasses.replace`` when nothing
-    would change): ``_shrunk_cost``/``_summary_request_cost``/
-    ``_recached_reply_cost`` below build a genuinely different turn on
-    almost every call (``ctx`` shrunk by ``dropped``, or reset to
-    ``new_ctx`` after a simulated compaction), and ``ctx`` alone can
-    cross a model's long-context pricing threshold -- so only the
-    turn-independent resolve step is cached, never a priced result."""
+    ``observed`` is :func:`_observed_prices` for ``priced_turns``,
+    worked out here when not given."""
     if not priced_turns:
         return _ReplayResult()
+    rates_by_turn, observed_costs = observed if observed is not None else _observed_prices(priced_turns, lookup)
     starting_ctx = float(priced_turns[0].ctx)
     new_ctx = starting_ctx + shape.summary_tokens
     cached_prefix = starting_ctx * shape.cached_prefix_share
@@ -636,11 +675,8 @@ def _replay_transcript(
     cost = 0.0
     compactions = 0
     ctx_sum = 0.0
-    resolved: dict[str, RatesArg] = {}
     for i, turn in enumerate(priced_turns):
-        if turn.model not in resolved:
-            resolved[turn.model] = lookup(turn.model)
-        rates = resolved[turn.model]
+        rates = rates_by_turn[i]
         real_count = real_after.get(i, 0)
         if real_count:
             # A real compact_boundary event already reset context here --
@@ -650,7 +686,7 @@ def _replay_transcript(
             # is superseded.
             dropped = 0.0
             compactions += real_count
-            cost += price_turn(turn, rates).total
+            cost += observed_costs[i]
             sim_ctx = float(turn.ctx)
         else:
             sim_ctx = max(0.0, turn.ctx - dropped)
@@ -660,6 +696,8 @@ def _replay_transcript(
                 compactions += 1
                 dropped = turn.ctx - new_ctx
                 sim_ctx = new_ctx
+            elif dropped <= 0:
+                cost += observed_costs[i]
             else:
                 cost += _shrunk_cost(turn, rates, dropped)
         ctx_sum += sim_ctx
@@ -742,12 +780,17 @@ class CompactionSimTypeStats:
     def saving_usd(self) -> float:
         return max(0.0, -self.delta_usd)
 
-    def recommendation(self, th: CompactionSimThresholds, units: "Units | None" = None) -> str:
+    def recommendation(
+        self, th: CompactionSimThresholds, units: "Units | None" = None, *, subagent: bool = False
+    ) -> str:
         """Mirrors ``TtlTypeStats.recommendation``'s switch-gating
         shape: a switch is only worth stating when it clears both
         ``switch_pct`` and ``switch_usd``. ``units`` (UX-2) phrases the
         saving for the report's billing mode; a bare "$" number without
-        it, for a caller that hasn't been given one."""
+        it, for a caller that hasn't been given one. A ``subagent`` row
+        names its cheapest window without telling you to set it: the
+        window is one setting for the whole session, which only the
+        main session's sweep (``compaction-window``) decides."""
         if self.observed_cost <= 0:
             return "no material difference"
         pct_ok = self.best_cost < th.switch_pct * self.observed_cost
@@ -756,6 +799,11 @@ class CompactionSimTypeStats:
             return "no material difference"
         if pct_ok and usd_ok:
             saving_text = units.money_text(self.saving_usd) if units is not None else f"${self.saving_usd:.2f}"
+            if subagent:
+                return (
+                    f"Cheapest at {self.best_window:,} tokens (saves {saving_text}), but the window is one setting "
+                    "for the whole session: choose it from the main session row"
+                )
             return f"Set the auto-compact window to {self.best_window:,} tokens (saves {saving_text})"
         return "no material difference"
 
@@ -807,6 +855,9 @@ class CompactionSimStats:
         #: by reported task instead of agent-type key, main sessions only.
         self._task_acc: dict[tuple[str, int | None], _WindowAccumulator] = {}
         self._sessions_by_task: dict[str, int] = {}
+        #: Main sessions a scheduled task started with no message of yours
+        #: (``model.scheduled_main_session``), not replayed.
+        self.scheduled_sessions = 0
 
     def add_transcript(
         self,
@@ -818,6 +869,11 @@ class CompactionSimStats:
         priced_turns = _priced_turns(tr.turns)
         if not priced_turns:
             return
+        if scheduled_main_session(tr):
+            # A scheduled check never compacts; replaying it would dilute
+            # the simulated compactions per session the rule gates on.
+            self.scheduled_sessions += 1
+            return
         key = "top-level" if tr.meta.kind == "top-level" else (tr.meta.agent_type or "unknown")
         real_after = _real_compaction_turn_indices(tr, priced_turns, th)
         self._sessions_by_key[key] = self._sessions_by_key.get(key, 0) + 1
@@ -827,9 +883,10 @@ class CompactionSimStats:
         if task is not None:
             self._sessions_by_task[task] = self._sessions_by_task.get(task, 0) + 1
 
+        observed = _observed_prices(priced_turns, lookup)
         results_by_window: dict[int | None, _ReplayResult] = {}
         for window in CANDIDATE_WINDOWS:
-            result = _replay_transcript(priced_turns, lookup, window, self.shape, real_after)
+            result = _replay_transcript(priced_turns, lookup, window, self.shape, real_after, observed)
             results_by_window[window] = result
             acc = self._acc.setdefault((key, window), _WindowAccumulator())
             acc.compactions += result.compactions
@@ -847,7 +904,9 @@ class CompactionSimStats:
             observed_cost = results_by_window[None].cost
             sim_result = results_by_window.get(snapshot_window)
             if sim_result is None:
-                sim_result = _replay_transcript(priced_turns, lookup, snapshot_window, self.shape, real_after)
+                sim_result = _replay_transcript(
+                    priced_turns, lookup, snapshot_window, self.shape, real_after, observed
+                )
             self._fidelity_rows.append(
                 CompactionSimFidelityRow(
                     session_id=tr.meta.session_id,
@@ -989,6 +1048,32 @@ def simulate_compaction_windows(
     return stats
 
 
+def replay_cost(
+    results: list[TranscriptResult],
+    rates: "RatesArg | RatesLookup",
+    window: int | None,
+    thresholds: CompactionSimThresholds | None = None,
+) -> float:
+    """What ``results`` would have cost with ``window`` as the
+    ``autoCompactWindow``: each transcript replayed the way
+    :meth:`CompactionSimStats.add_transcript` replays it, with the
+    summary size, trigger reserve and cached prefix measured from
+    ``results`` themselves, and each real compaction kept.
+    ``window=None`` gives the cost as it ran. Used by
+    ``counterfactual.py`` for a change that raised the window."""
+    th = thresholds or _DEFAULT_THRESHOLDS
+    lookup = _as_lookup(rates)
+    summary, _ = _corpus_summary_tokens(results, th)
+    reserve, _ = _corpus_trigger_reserve(results, {}, th)
+    share, _ = _corpus_cached_prefix_share(results, th)
+    shape = _Shape(summary, reserve, share)
+    total = 0.0
+    for tr in results:
+        priced = _priced_turns(tr.turns)
+        total += _replay_transcript(priced, lookup, window, shape, _real_compaction_turn_indices(tr, priced, th)).cost
+    return total
+
+
 # -- report section -----------------------------------------------------
 
 
@@ -1068,7 +1153,7 @@ def build_section(
                 row.best_cost,
                 row.saving_usd,
                 row.delta_pct,
-                row.recommendation(th, units),
+                row.recommendation(th, units, subagent=key != "top-level"),
             ]
             for key, row in sorted(by_key.items())
         ],
@@ -1182,6 +1267,12 @@ def build_section(
         " The sweep's own costs leave it out."
     )
     notes.append(allowance_note)
+    if stats.scheduled_sessions:
+        notes.append(
+            f"{stats.scheduled_sessions} main session{'s' if stats.scheduled_sessions != 1 else ''} a scheduled "
+            "task started, with no message of yours, are not replayed. They never summarise, so they would lower "
+            "the summaries per session."
+        )
     notes.extend(th.describe())
 
     flagged = [row for row in fidelity_rows if (row.fidelity_pct or 0.0) > th.fidelity_warn_pct]
@@ -1486,6 +1577,7 @@ __all__ = [
     "CompactionSimFidelityRow",
     "CompactionSimStats",
     "simulate_compaction_windows",
+    "replay_cost",
     "build_section",
     "RULES",
 ]

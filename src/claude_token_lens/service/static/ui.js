@@ -135,13 +135,15 @@ var COPY_FAILED = "Couldn't copy. Select the text and copy it yourself.";
 // about: what it is for ("revixo-reviewer"). The button shows "Copy"
 // and is named "Copy prompt for revixo-reviewer", so a page of them
 // reads as a list of different things.
-export function codeBlockWithCopy(text, what, about) {
+// onCopy, when given, runs after a successful copy.
+export function codeBlockWithCopy(text, what, about, onCopy) {
   var wrap = el("div", { class: "code-block" });
   var pre = el("pre", { text: text || "" });
   var kind = what ? what.charAt(0).toLowerCase() + what.slice(1) : "text";
   var button = el("button", { type: "button", class: "copy-button", text: "Copy", "aria-label": "Copy " + kind + (about ? " for " + about : "") });
   button.addEventListener("click", function () {
     copyToClipboard(text || "").then(function (ok) {
+      if (ok && onCopy) onCopy();
       button.textContent = ok ? "Copied" : "Couldn't copy";
       toast(ok ? (what || "Text") + " copied to the clipboard." : COPY_FAILED, { tone: ok ? "success" : "warning" });
       setTimeout(function () {
@@ -510,11 +512,12 @@ export function skeleton(kind, count) {
   return node;
 }
 
-// While a view's data is on its way: a skeleton, with the words a
-// screen reader hears.
+// While a view's data is on its way: what is loading, in words, over a
+// skeleton in its shape. The words stay when reduced motion stops the
+// shimmer.
 export function loadingNode(label, kind) {
   var node = el("div", { class: "loading", role: "status", "aria-busy": "true" });
-  node.appendChild(el("span", { class: "visually-hidden", text: label || "Loading" }));
+  node.appendChild(el("p", { class: "loading-label", text: (label || "Loading") + "\u2026" }));
   node.appendChild(skeleton(kind || "lines"));
   return node;
 }
@@ -601,7 +604,7 @@ export function commandBlock(fix, opts) {
     tabs.push({
       label: "Prompt for Claude",
       icon: "prompt",
-      body: [el("p", { class: "command-hint", text: "Paste this into Claude Code. It shows you the change before saving it." }), codeBlockWithCopy(fix.prompt, "Prompt", fixSubject(fix))],
+      body: [el("p", { class: "command-hint", text: "Paste this into Claude Code. It shows you the change before saving it." }), codeBlockWithCopy(fix.prompt, "Prompt", fixSubject(fix), opts.onCopy)],
     });
   }
   if (fix.command) {
@@ -611,7 +614,7 @@ export function commandBlock(fix, opts) {
       body: [
         el("p", { class: "command-hint", text: "It shows the change without writing anything. Run it again without --dry-run to make the change; the output tells you how to undo it." }),
         fix.command_warning ? callout({ tone: "warning", text: fix.command_warning, class: "fix-warning" }) : null,
-        codeBlockWithCopy(fix.command, "Command", fixSubject(fix)),
+        codeBlockWithCopy(fix.command, "Command", fixSubject(fix), opts.onCopy),
       ],
     });
   }

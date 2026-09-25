@@ -9,7 +9,7 @@ import { loadInto, loadReport, withWindow } from "./api.js";
 import { codeBlockWithCopy, errorNotice, loadingNode, prose } from "./ui.js";
 import { headRow, renderMappedSections, renderTable } from "./grid.js";
 import { viewIntro } from "./links.js";
-import { renderHealth } from "./shell.js";
+import { renderHealth, renderSetupList } from "./shell.js";
 
 // ======================================================================
 // Data quality (unmapped sections + the parse-quality counters)
@@ -18,6 +18,15 @@ import { renderHealth } from "./shell.js";
 export function renderDataQuality(panel) {
   clear(panel);
   viewIntro(panel, "data");
+  // Whether each part works: the checklist 'claude-token-lens status'
+  // prints, and the Overview's Setup card lists the parts still to do.
+  var statusBlock = el("section", { class: "report-section", id: "data-setup-status" });
+  statusBlock.appendChild(el("h2", { class: "section-title", text: "Your setup" }));
+  var statusContainer = el("div");
+  statusBlock.appendChild(statusContainer);
+  panel.appendChild(statusBlock);
+  loadInto(statusContainer, "/api/setup/status", renderSetupList, { skeleton: "lines" });
+
   var setupBlock = el("section", { class: "report-section" });
   setupBlock.appendChild(el("h2", { class: "section-title", text: "What this tool installed, and what to expect" }));
   var setupContainer = el("div", { id: "diagnostics-setup" });

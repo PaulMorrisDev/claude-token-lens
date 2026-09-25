@@ -26,12 +26,14 @@ from claude_token_lens.compaction_sim import (
     CompactionSimThresholds,
     _rediscovery_allowance_usd_used,
     _replay_transcript,
+    _shrunk_cost,
+    _summary_request_cost,
     _Shape,
     build_section,
     simulate_compaction_windows,
 )
 from claude_token_lens.model import Event, EventKind, ReportModel, ReportMeta, TranscriptMeta, TranscriptResult
-from claude_token_lens.pricing import load_pricing
+from claude_token_lens.pricing import load_pricing, price_turn
 from claude_token_lens.units import Units
 
 from helpers import assert_privacy, elasticity_with_slope
@@ -171,6 +173,32 @@ def test_replay_transcript_caches_model_resolution_by_string():
     assert len(calls) == 2  # one resolve per distinct model, not per turn
     assert result == reference
     assert result.cost > 0
+
+
+@pytest.mark.parametrize("model_id", sorted(PRICING.models))
+@pytest.mark.parametrize("dropped", [0.0, 50_000.0, 250_000.0])
+def test_shrunk_turns_price_the_same_as_a_replaced_turn(model_id, dropped):
+    """The replay prices changed turns through a light stand-in rather
+    than ``dataclasses.replace``. Fast mode, the long-context rule, a
+    data-residency geo and web searches must all price exactly as on a
+    real ``Turn`` with the same changes."""
+    rates = PRICING.resolve_model(model_id)
+    turn = _turn(
+        model=model_id, speed="fast", inference_geo="us", web_search_requests=3,
+        input_tokens=900, output_tokens=4_000, thinking_tokens=1_000,
+        ctx=400_000, cache_read_tokens=200_000, cache_creation_tokens=199_100, cc_5m=150_000, cc_1h=49_100,
+    )
+    ctx = max(0, int(round(turn.ctx - dropped)))
+    read = max(0, int(round(turn.cache_read_tokens - dropped)))
+    keep = max(0.0, (turn.cache_creation_tokens - max(0.0, dropped - turn.cache_read_tokens)) / turn.cache_creation_tokens)
+    shrunk = replace(
+        turn, ctx=ctx, cache_read_tokens=read, cc_5m=int(round(turn.cc_5m * keep)), cc_1h=int(round(turn.cc_1h * keep))
+    )
+
+    assert _shrunk_cost(turn, rates, dropped) == price_turn(shrunk, rates).total
+    assert _summary_request_cost(turn, rates, dropped, 20_000.4) == price_turn(
+        replace(shrunk, output_tokens=20_000, thinking_tokens=0), rates
+    ).total
 
 
 def test_window_none_has_zero_synthetic_compactions_and_matches_true_observed_cost():
@@ -401,6 +429,47 @@ def test_build_section_tables_and_notes():
         assert note in section.notes
 
     assert_privacy(section)
+
+
+def test_only_the_main_session_row_says_to_set_the_window(monkeypatch):
+    """The window is one setting for the whole session: a subagent type
+    whose own replay is cheapest at a smaller window says so without
+    telling you to set it, so it never contradicts the main session's
+    row or the compaction-window rule."""
+    from claude_token_lens.compaction_sim import CompactionSimTypeStats
+
+    stats = simulate_compaction_windows([], SONNET_RATES, {})
+    monkeypatch.setattr(stats, "by_key", lambda: {
+        "top-level": CompactionSimTypeStats("top-level", 30, 300.0, 250_000, 250.0),
+        "general-purpose": CompactionSimTypeStats("general-purpose", 25, 400.0, 200_000, 327.1),
+    })
+    by_type = next(t for t in build_section(stats).tables if t.name == "compaction_sim_by_agent_type")
+    col = [c.key for c in by_type.columns].index("recommendation")
+    advice = {row[0]: row[col] for row in by_type.rows}
+    assert advice["top-level"] == "Set the auto-compact window to 250,000 tokens (saves $50.00)"
+    assert advice["general-purpose"] == (
+        "Cheapest at 200,000 tokens (saves $72.90), but the window is one setting for the whole session: "
+        "choose it from the main session row"
+    )
+
+
+def test_a_scheduled_main_session_is_not_replayed():
+    """Scheduled checks never summarise, so replaying them would lower the
+    simulated compactions per session the compaction-window rule gates on."""
+    real = _top_level_transcript("sess-real", _synthetic_20_turn_transcript())
+    check = _top_level_transcript(
+        "sess-check", [_turn()], events=[Event(kind=EventKind.SCHEDULED_TASK, subkind=None, ts=_ts(0))]
+    )
+    alone = simulate_compaction_windows([real], SONNET_RATES, {})
+    stats = simulate_compaction_windows([real] + [check] * 3, SONNET_RATES, {})
+    assert stats.scheduled_sessions == 3
+    assert stats.by_key()["top-level"].sessions == 1
+    assert [r.compactions_per_session for r in stats.by_window("top-level")] == [
+        r.compactions_per_session for r in alone.by_window("top-level")
+    ]
+    notes = build_section(stats).notes
+    assert any(note.startswith("3 main sessions a scheduled task started") for note in notes)
+    assert any("raising the window can't be tested" in note for note in notes)
 
 
 def test_build_section_notes_flag_every_default():

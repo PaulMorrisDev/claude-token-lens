@@ -6,8 +6,8 @@
  * so a link from anywhere can open it directly.
  */
 
-import { clear, el, onParams, state } from "./core.js";
-import { fetchJson, findSection, groupedTitle, loadInto, loadQuickActions, loadRecommendations, loadReport, withWindow } from "./api.js";
+import { clear, el, goTo, onParams, renderedViews, state } from "./core.js";
+import { fetchJson, findSection, groupedTitle, loadInto, loadQuickActions, loadRecommendations, loadReport, postJson, withWindow } from "./api.js";
 import {
   AGENT_LABELS,
   basisChip,
@@ -35,7 +35,7 @@ import {
   toast,
 } from "./ui.js";
 import { dataGrid, simpleTable } from "./grid.js";
-import { modelName, modelNames } from "./format.js";
+import { modelName, modelNames, projectName } from "./format.js";
 import { formatHash, pageLink, replaceParams, scopeParams, viewIntro } from "./links.js";
 import { evidenceList } from "./evidence.js";
 import { modelSentence, priced, pricingFacts } from "./costs.js";
@@ -49,6 +49,7 @@ import { modelSentence, priced, pricingFacts } from "./costs.js";
 // test keeps it in step with every rule id the service can send.
 export var RULE_AREA = {
   "model-tier": "models",
+  "model-tier-main": "models",
   "effort-mismatch": "models",
   "env-subagent-model": "models",
   "env-max-output-tokens": "models",
@@ -63,6 +64,8 @@ export var RULE_AREA = {
   "long-context-share": "context",
   "baseline-bloat": "context",
   "tool-output-carry": "context",
+  "plan-handoff": "context",
+  "hook-context-carry": "context",
   "env-tool-search": "context",
   "saver-tool-roi": "context",
   "unused-skills": "context",
@@ -77,6 +80,7 @@ export var RULE_AREA = {
   "spawn-task-prompt": "agents",
   "subagent-volume": "agents",
   "agent-report-size": "agents",
+  "run-split": "agents",
   "discovery-share": "habits",
   "limit-pressure": "habits",
   "window-budget": "habits",
@@ -84,6 +88,8 @@ export var RULE_AREA = {
   "data-quality": "data",
   "pricing-coverage": "data",
   "env-attribution-deprecated": "data",
+  "hook-failures": "data",
+  "hook-block-resent": "data",
 };
 
 var AREAS = [
@@ -111,6 +117,7 @@ function areaLabel(area) {
 // pattern, a data caveat).
 var RULE_MECHANISM = {
   "model-tier": "model",
+  "model-tier-main": "model",
   "env-subagent-model": "model",
   "effort-mismatch": "thinking",
   "env-max-output-tokens": "output",
@@ -124,6 +131,9 @@ var RULE_MECHANISM = {
   "compaction-window": "summary",
   "long-context-share": "carried",
   "tool-output-carry": "carried",
+  "plan-handoff": "carried",
+  "hook-context-carry": "carried",
+  "run-split": "carried",
   "baseline-bloat": "carried",
   "env-tool-search": "carried",
   "saver-tool-roi": "carried",
@@ -201,10 +211,14 @@ function savingBasis(rec) {
 // The inbox's items: a rule that fires once per agent type, at one
 // severity, is one item for all of them. The Overview and the sidebar's
 // count read the same items, so every page counts what this list shows.
-export function groupRecommendations(recs) {
+// Recommendations you ignored are left out; opts.ignored asks for only
+// those instead (the Actions list's Ignored filter).
+export function groupRecommendations(recs, opts) {
+  var wantIgnored = !!(opts && opts.ignored);
   var groups = [];
   var shared = {};
   recs.forEach(function (rec) {
+    if (!!rec.ignored !== wantIgnored) return;
     var slot = rec.id + "|" + rec.severity;
     if (rec.agent_type && shared[slot]) {
       shared[slot].members.push(rec);
@@ -311,7 +325,8 @@ function filterRow(label, options, current, choose) {
 // spec: viewKey, label (the list's name), items [{key, ...}], matches
 // (item, filters) -> bool, filters {name: value}, drawFilters(host,
 // filters, redraw), itemContent(item) -> nodes, renderDetail(item, pane,
-// memberKey), empty (text when a filter leaves nothing).
+// memberKey), empty (text, or filters -> text, when a filter leaves
+// nothing), resetFilters(item) (show the item a link names).
 function inbox(container, spec) {
   var root = el("div", { class: "inbox" });
   var listPane = el("div", { class: "inbox-list-pane" });
@@ -344,7 +359,7 @@ function inbox(container, spec) {
     shownItems = spec.items.filter(function (item) {
       return spec.matches(item, spec.filters);
     });
-    if (!shownItems.length) list.appendChild(el("li", { class: "inbox-none", text: spec.empty }));
+    if (!shownItems.length) list.appendChild(el("li", { class: "inbox-none", text: typeof spec.empty === "function" ? spec.empty(spec.filters) : spec.empty }));
     shownItems.forEach(function (item) {
       var link = el("a", { class: "inbox-item", href: formatHash(spec.viewKey, Object.assign(scopeParams(), { id: item.key })), "data-key": item.key }, spec.itemContent(item));
       if (item === selected) link.setAttribute("aria-current", "true");
@@ -391,7 +406,7 @@ function inbox(container, spec) {
     var item = spec.find(key);
     if (!item) return false;
     if (!spec.matches(item, spec.filters)) {
-      spec.resetFilters();
+      spec.resetFilters(item);
       draw();
     }
     select(item, key !== item.key ? key : null, opts);
@@ -415,7 +430,7 @@ function missingNote(detail, what) {
 // Actions, Recommendations
 // ======================================================================
 
-var recFilters = { severity: "all", area: "all" };
+var recFilters = { show: "todo", severity: "all", area: "all" };
 
 export function renderRecommendations(panel) {
   clear(panel);
@@ -458,6 +473,11 @@ export function renderRecommendations(panel) {
   });
 
   var checksLoad = loadQuickActions();
+  // Ignores are kept per profile: the detail says which.
+  var profileLoad = fetchJson("/api/profiles").then(function (result) {
+    var data = result.body && result.body.ok === true ? result.body.data : null;
+    return data ? data.active_profile_name || null : null;
+  });
   Promise.all([loadRecommendations(), loadReport()]).then(function (results) {
     // A newer render (the window changed) has replaced this one; drawing
     // it would select a stale item and rewrite the address.
@@ -470,12 +490,20 @@ export function renderRecommendations(panel) {
     }
     var recs = Array.isArray(body.data) ? body.data : [];
     var report = results[1].report || null;
+    // Before any filter: a list you ignored all of still shows, with
+    // the filter that brings them back.
     if (!recs.length) {
       container.appendChild(emptyState("Nothing to change in this window: no setting or habit stood out.", null, "Pick a longer window to check more sessions."));
       return;
     }
-    var ctx = { report: report, facts: pricingFacts(report), checks: checksLoad };
-    box = recommendationInbox(container, groupRecommendations(recs), ctx);
+    var ctx = { report: report, facts: pricingFacts(report), checks: checksLoad, profile: profileLoad };
+    var groups = groupRecommendations(recs).concat(
+      groupRecommendations(recs, { ignored: true }).map(function (group) {
+        group.ignored = true;
+        return group;
+      })
+    );
+    box = recommendationInbox(container, groups, ctx);
     var opened = wanted && box.selectKey(wanted, { focus: true, address: false });
     if (!opened) {
       var first = box.first();
@@ -485,24 +513,64 @@ export function renderRecommendations(panel) {
   });
 }
 
-function recommendationInbox(container, groups, ctx) {
+function recommendationInbox(container, allGroups, ctx) {
+  var ignoredCount = allGroups.filter(function (g) {
+    return g.ignored;
+  }).length;
+  // Nothing ignored any more: the list is the to-do list.
+  if (!ignoredCount) recFilters.show = "todo";
   return inbox(container, {
     viewKey: "actions/recommendations",
     label: "Recommendations",
-    items: groups,
+    items: allGroups,
     filters: recFilters,
-    empty: "Nothing matches these filters.",
+    empty: function (filters) {
+      var shown = allGroups.filter(function (g) {
+        return !!g.ignored === (filters.show === "ignored");
+      });
+      if (shown.length) return "Nothing matches these filters.";
+      return filters.show === "ignored"
+        ? "Nothing ignored in this window."
+        : "Nothing left to do: you've ignored every recommendation in this window. Ignored shows them.";
+    },
     find: function (key) {
-      return findGroup(groups, key);
+      return findGroup(allGroups, key);
     },
     matches: function (group, filters) {
-      return (filters.severity === "all" || group.severity === filters.severity) && (filters.area === "all" || group.area === filters.area);
+      return (
+        !!group.ignored === (filters.show === "ignored") &&
+        (filters.severity === "all" || group.severity === filters.severity) &&
+        (filters.area === "all" || group.area === filters.area)
+      );
     },
-    resetFilters: function () {
+    resetFilters: function (item) {
+      recFilters.show = item && item.ignored ? "ignored" : "todo";
       recFilters.severity = "all";
       recFilters.area = "all";
     },
     drawFilters: function (host, filters, redraw) {
+      if (ignoredCount) {
+        host.appendChild(
+          filterRow(
+            "Show",
+            [
+              { value: "todo", label: "To do", count: allGroups.length - ignoredCount },
+              { value: "ignored", label: "Ignored", count: ignoredCount },
+            ],
+            filters.show,
+            function (value) {
+              filters.show = value;
+              filters.severity = "all";
+              filters.area = "all";
+              redraw();
+            }
+          )
+        );
+      }
+      // The other filters count what the Show filter leaves.
+      var groups = allGroups.filter(function (g) {
+        return !!g.ignored === (filters.show === "ignored");
+      });
       var severities = SEVERITY_ORDER.filter(function (s) {
         return groups.some(function (g) {
           return g.severity === s;
@@ -788,6 +856,8 @@ function renderRecommendationDetail(pane, group, memberKey, focusMember, ctx) {
     article.appendChild(detailSection("The numbers behind this", [evidenceList(ctx.report, focus.evidence)], "detail-evidence"));
   }
 
+  article.appendChild(ignoreSection(group, ctx));
+
   var related = el("div", { class: "detail-related" });
   article.appendChild(related);
   ctx.checks.then(function (result) {
@@ -807,6 +877,98 @@ function renderRecommendationDetail(pane, group, memberKey, focusMember, ctx) {
   });
 
   pane.appendChild(article);
+}
+
+// ======================================================================
+// Ignoring a recommendation (ignores.py, POST /api/recommendations/ignore)
+// ======================================================================
+
+function dateText(iso) {
+  var date = iso ? new Date(iso) : null;
+  if (!date || isNaN(date.getTime())) return "an earlier date";
+  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+// Where an ignore applies: the project on screen, or every project.
+function ignoreScopeText(everywhere) {
+  return everywhere || !state.project ? "in every project" : "in " + projectName(state.project);
+}
+
+// Why a recommendation you ignored shows again: it now suggests
+// something else. One clause per change whose value moved.
+function shownAgainText(rec) {
+  var before = rec.ignored_before;
+  if (!before) return "";
+  var clauses = [];
+  (rec.changes || []).forEach(function (change) {
+    var old = (before.changes || []).filter(function (c) {
+      return c.key === change.key && (c.agent || null) === (change.agent || null);
+    })[0];
+    if (old && valueText(old.value) !== valueText(change.value)) {
+      clauses.push("it now suggests " + valueText(change.value) + " (you ignored " + valueText(old.value) + ")");
+    }
+  });
+  var when = dateText(before.ignored_at);
+  if (!clauses.length) return "You ignored this on " + when + ". It shows again because it has changed since.";
+  return "You ignored this on " + when + ". It shows again because " + clauses.join(", and ") + ".";
+}
+
+function ignoreSection(group, ctx) {
+  var members = group.members;
+  var ignored = !!group.ignored;
+  var first = members[0];
+  var everywhere = ignored && first.ignored_in === "all";
+  var nodes = [];
+  var note = el("p", { class: "notes" });
+  nodes.push(note);
+  var again = shownAgainText(
+    members.filter(function (rec) {
+      return rec.ignored_before;
+    })[0] || {}
+  );
+  if (again) nodes.unshift(el("p", { text: again }));
+  ctx.profile.then(function (profileName) {
+    note.textContent = ignored
+      ? "Ignored on " + dateText(first.ignored_at) + " " + ignoreScopeText(everywhere) + " while " + (profileName ? profileName + " was active" : "no profile was applied") +
+        ". It shows again if it starts suggesting something else, or under another profile."
+      : "Ignoring hides it " + ignoreScopeText(false) + " while " + (profileName ? profileName + " is active" : "no profile is applied") +
+        ", until it suggests something else. The Overview's available saving still counts it.";
+  });
+  var label = ignored ? (everywhere && state.project ? "Stop ignoring in every project" : "Stop ignoring") : "Ignore this recommendation";
+  var status = el("p", { class: "notes", role: "status" });
+  nodes.push(
+    button(label, {
+      variant: ignored ? "primary" : null,
+      action: function (event) {
+        var pressed = event && event.currentTarget;
+        if (pressed) pressed.disabled = true;
+        status.textContent = "";
+        var keys = members.map(function (rec) {
+          return rec.key || rec.id;
+        });
+        postJson(withWindow("/api/recommendations/ignore"), { keys: keys, ignored: !ignored }).then(function (result) {
+          if (!result.body || result.body.ok !== true) {
+            if (pressed) pressed.disabled = false;
+            status.textContent = "Couldn't save that: " + ((result.body && result.body.error && result.body.error.message) || "the dashboard didn't answer") + ".";
+            return;
+          }
+          toast(ignored ? "Shown again in To do." : "Ignored. Ignored shows it.", { tone: "success" });
+          // Every list built from the recommendations counts it
+          // differently now: the badge, the Overview, search, checks.
+          state.recommendationPromises = {};
+          state.quickActionPromises = {};
+          state.searchPromises = {};
+          Object.keys(renderedViews).forEach(function (key) {
+            delete renderedViews[key];
+          });
+          recFilters.show = "todo";
+          goTo("actions/recommendations", { force: true, params: ignored ? { id: group.key } : {} });
+        });
+      },
+    })
+  );
+  nodes.push(status);
+  return detailSection(ignored ? "Ignored" : "Not for you?", nodes, "detail-ignore");
 }
 
 // ======================================================================

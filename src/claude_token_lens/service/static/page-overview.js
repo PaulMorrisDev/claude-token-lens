@@ -7,7 +7,7 @@
  */
 
 import { clear, el, goTo, state, WINDOW_OPTIONS } from "./core.js";
-import { formatCell, fraction, money, moneyParts, projectName, thousands } from "./format.js";
+import { formatCell, fraction, money, moneyParts, projectName, shortTs, thousands } from "./format.js";
 import { fetchJson, findSection, loadRecommendations, loadReport, prefetchActions, withProject, withWindow } from "./api.js";
 import {
   button,
@@ -26,7 +26,7 @@ import {
 } from "./ui.js";
 import { renderTable } from "./grid.js";
 import { pageLink, viewIntro } from "./links.js";
-import { renderLogonNotice } from "./shell.js";
+import { renderSetupCard } from "./shell.js";
 import { chartError, holdChart, setChartHeight } from "./charts.js";
 import { dailyChanges, meter, renderChart, savingsLevers, sparkline, windowDays } from "./charts-types.js";
 import { groupRecommendations, groupSavingUsd, groupTitle, listSaving } from "./page-actions.js";
@@ -48,6 +48,23 @@ var shownFigures = null;
 // -- the period before -----------------------------------------------------------
 
 var DAY_MS = 24 * 3600 * 1000;
+
+// The "Since my last change" window's counterfactual (counterfactual.py):
+// the newest change /api/impact judges is the one the window starts at.
+// Nothing when too few sessions have started since it to say.
+function lastChangeLine(impactBody) {
+  var first = impactBody && impactBody.ok === true && impactBody.data && (impactBody.data.changes || [])[0];
+  var without = first && first.without;
+  if (!without || !without.since_text) return null;
+  var change = first.change || {};
+  var when = [shortTs(change.ts)];
+  if (change.project) when.push("in " + (change.project_name ? projectName(change.project_name) : "one project") + " only");
+  return el("p", { class: "notes last-change-without" }, [
+    el("span", { text: "Without your last change (" }),
+    pageLink("setup/settings", change.label || "a settings change", { day: String(change.ts || "").slice(0, 10) }),
+    el("span", { text: ", " + when.join(", ") + "), " + without.since_text }),
+  ]);
+}
 
 // The period of the same length just before this window, for the
 // deltas: its bounds, and how the sentence names it. None for "all" and
@@ -192,7 +209,14 @@ function moneyTile(label, usd, opts) {
 }
 
 // Actions whose saving a Savings lever already counts.
-var LEVER_RULES = { "model-tier": "model_swap" };
+// A fresh session after a plan, or a fresh subagent run, saves the same
+// carried context the auto-compact lever counts, so it isn't added on top.
+var LEVER_RULES = {
+  "model-tier": "model_swap",
+  "model-tier-main": "model_swap",
+  "plan-handoff": "compaction_sim",
+  "run-split": "compaction_sim",
+};
 
 // The most the ways to save could come to: the four Savings levers, plus
 // any priced action no lever counts (lower effort, say). An action is an
@@ -220,7 +244,10 @@ function renderTiles(container, facts, meta, dailyRows) {
   // by the day they were sent, and says so beside this figure.
   var spend = moneyTile("Spend", facts.cost, {
     delta: hasPrevious ? deltaChip(facts.cost, facts.previousCost, { period: period }) : null,
-    note: "Every session with a reply in this window, earlier replies included.",
+    note:
+      state.window === "change"
+        ? "Every session started since your last change, so all of it ran on the new settings."
+        : "Every session with a reply in this window, earlier replies included.",
     class: "overview-spend",
   });
   var available = saving > 0
@@ -544,6 +571,7 @@ export function renderOverview(panel) {
   // sets the billing mode every amount is written in.
   var reportLoad = loadReport();
   var healthLoad = fetchJson("/api/health");
+  var setupLoad = fetchJson("/api/setup/status");
   var summaryLoad = fetchJson(withWindow("/api/summary"));
   var previous = previousPeriod(state.window, Date.now());
   var previousLoad = previous
@@ -567,10 +595,9 @@ export function renderOverview(panel) {
     setChartHeight("daily-spend", { slot: "overview" }, chartHeight);
   }
 
-  healthLoad.then(function (result) {
+  setupLoad.then(function (result) {
     if (!current()) return;
-    var health = result.body && result.body.ok ? result.body.data : null;
-    renderLogonNotice(health, notices);
+    renderSetupCard(result.body && result.body.ok ? result.body.data : null, notices);
   });
 
   var figuresDrawn = Promise.all([reportLoad, summaryLoad, previousLoad, recsLoad, healthLoad, dailyLoad]).then(function (loaded) {
@@ -708,6 +735,15 @@ export function renderOverview(panel) {
     );
     chartDrawn = true;
     fitChart();
+  });
+
+  // "Since my last change": what the sessions started since would have
+  // cost without it, under the headline. All projects only: the figure
+  // isn't split by project.
+  Promise.all([impactLoad, figuresDone]).then(function (loaded) {
+    if (!current() || body.hidden || state.window !== "change" || state.project) return;
+    var line = lastChangeLine(loaded[0].body);
+    if (line) sentence.appendChild(line);
   });
 
   // Once the page has settled, Actions' figures load while it is idle.

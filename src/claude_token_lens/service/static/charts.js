@@ -40,7 +40,7 @@ export var CHART_SPECS = {
     summary: "Replies sent {span} cost {total}. The busiest day was {peakDay}, at {peak}.",
     alt: {
       sessions: "Replies sent {span} cost {total}. With their earlier replies, the window's sessions cost {sessionsTotal}. The busiest day was {peakDay}, at {peak}.",
-      firstDay: "Replies sent {span} cost {total}. The first day began before this window, whose sessions cost {sessionsTotal}. The busiest day was {peakDay}, at {peak}.",
+      firstDay: "Replies sent {span} cost {total}. That counts all of the first day, from midnight UTC; the sessions in this window cost {sessionsTotal}. The busiest day was {peakDay}, at {peak}.",
     },
   },
   "savings-levers": {

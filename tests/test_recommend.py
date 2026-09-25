@@ -136,6 +136,37 @@ def test_a_recommendation_with_no_agent_type_keeps_id_as_its_key():
     assert rec.key == "cache-read-dominance"
 
 
+def test_repeated_keys_get_a_suffix_from_their_first_evidence_row():
+    """``spawn-shared-claude-md`` fires once per CLAUDE.md source with no
+    agent type, so the ids repeat; every card of the group gets its own
+    key, and a lone card keeps its id."""
+    from claude_token_lens.model import Recommendation
+    from claude_token_lens.recommend import _unique_keys
+
+    def rec(row, key="spawn-shared-claude-md"):
+        r = Recommendation(
+            id="spawn-shared-claude-md",
+            severity="advice",
+            category="settings",
+            title="t",
+            evidence=[("Size per spawn", 1, "agent_startup.agent_startup_shared", row)],
+        )
+        r.key = key
+        return r
+
+    recs = [rec("Project CLAUDE.md"), rec("User CLAUDE.md"), rec("Project CLAUDE.md"), rec("x", key="other")]
+    _unique_keys(recs)
+    assert [r.key for r in recs] == [
+        "spawn-shared-claude-md:project-claude.md",
+        "spawn-shared-claude-md:user-claude.md",
+        "spawn-shared-claude-md:project-claude.md-2",
+        "other",
+    ]
+    lone = [rec("User CLAUDE.md")]
+    _unique_keys(lone)
+    assert lone[0].key == "spawn-shared-claude-md"
+
+
 # -- ttl-switch ---------------------------------------------------------
 
 
@@ -300,6 +331,88 @@ def test_ttl_switch_unmanaged_key_has_user_scope():
     assert rec.lever == "promptCacheTtl"
     assert rec.scope == "user"
     assert "administrator" not in rec.action
+
+
+def _subagent_ttl_report(agent_type: str, lever: str):
+    r = _base_report()
+    return _add_section(
+        r,
+        Section(
+            key="ttl",
+            title="TTL",
+            tables=[_ttl_by_agent_type_table([[agent_type, 10.0, 0.0, "switch to 1h", lever]])],
+        ),
+    )
+
+
+_AGENT_FILE_LEVER = "experimental.cacheTtl in claude-planner.md (or subagentPromptCacheTtl for all subagents)"
+
+
+def test_ttl_switch_names_the_agent_file_when_subagent_setting_is_unset():
+    snapshot = Snapshot(path=Path("snap.json"), ts="20260918T000000Z", data={"effective": {}})
+    recs = recommend_fn(
+        _subagent_ttl_report("claude-planner", _AGENT_FILE_LEVER), config=_config(), archetype=None, snapshot=snapshot
+    )
+    rec = next(rec for rec in recs if rec.id == "ttl-switch")
+    assert rec.lever == _AGENT_FILE_LEVER
+    assert [(c.target, c.key, c.agent, c.value) for c in rec.changes] == [
+        ("agent", "experimental.cacheTtl", "claude-planner", "1h")
+    ]
+
+
+def test_ttl_switch_names_the_subagent_setting_when_it_already_outranks_agent_files():
+    """Claude Code reads subagentPromptCacheTtl before an agent file's
+    cacheTtl, so once it is set an agent-file edit does nothing: the
+    card must change the setting and say it reaches every subagent."""
+    snapshot = Snapshot(
+        path=Path("snap.json"),
+        ts="20260918T000000Z",
+        data={
+            "effective": {"subagentPromptCacheTtl": "5m"},
+            "effective_provenance": {"subagentPromptCacheTtl": "project_shared"},
+        },
+    )
+    recs = recommend_fn(
+        _subagent_ttl_report("claude-planner", _AGENT_FILE_LEVER), config=_config(), archetype=None, snapshot=snapshot
+    )
+    rec = next(rec for rec in recs if rec.id == "ttl-switch")
+    assert rec.lever == "subagentPromptCacheTtl"
+    assert rec.scope == "repo"
+    [change] = rec.changes
+    assert (change.target, change.key, change.value, change.current) == (
+        "settings",
+        "subagentPromptCacheTtl",
+        "1h",
+        "5m",
+    )
+    assert "every subagent" in change.note
+    assert "every subagent" in rec.action
+
+
+def test_ttl_switch_for_subagents_with_no_recorded_type_changes_the_setting():
+    snapshot = Snapshot(path=Path("snap.json"), ts="20260918T000000Z", data={"effective": {}})
+    recs = recommend_fn(
+        _subagent_ttl_report("unknown", "subagentPromptCacheTtl"), config=_config(), archetype=None, snapshot=snapshot
+    )
+    rec = next(rec for rec in recs if rec.id == "ttl-switch")
+    assert rec.lever == "subagentPromptCacheTtl"
+    [change] = rec.changes
+    assert (change.target, change.key, change.value, change.current, change.note) == (
+        "settings",
+        "subagentPromptCacheTtl",
+        "1h",
+        None,
+        "",
+    )
+
+
+def test_ttl_switch_fires_for_subagents_under_subscription_billing():
+    """Subscription billing no longer suppresses a subagent's TTL advice
+    (see ttl.build_section): within plan usage the 1h lifetime works."""
+    config = _config()
+    config.billing = "subscription"
+    recs = recommend_fn(_subagent_ttl_report("claude-planner", _AGENT_FILE_LEVER), config=config, archetype=None)
+    assert any(rec.id == "ttl-switch" and rec.agent_type == "claude-planner" for rec in recs)
 
 
 # -- R3: per-row minimum-sample gate -----------------------------------
@@ -2175,6 +2288,22 @@ def test_render_patch_set_top_level_prompt_cache_ttl_lever():
     assert ".claude/agents/" not in text
 
 
+def test_render_patch_set_subagent_setting_lever_is_a_settings_stanza():
+    """A per-agent-type row whose lever is subagentPromptCacheTtl (the
+    setting outranks the agent file) renders as a settings key, not as a
+    key inside that agent's frontmatter."""
+    rec = dataclasses.replace(
+        _make_recommendation(),
+        lever="subagentPromptCacheTtl",
+        agent_type="claude-implementer",
+        action="Switch claude-implementer's prompt cache TTL to 1h.",
+    )
+    text = render_patch_set([rec])
+    assert "--- settings (user)" in text
+    assert "+subagentPromptCacheTtl: 1h" in text
+    assert ".claude/agents/" not in text
+
+
 def test_render_patch_set_managed_lever_gets_reference_only_comment():
     rec = dataclasses.replace(_make_recommendation(), lever="autoCompactWindow", scope="managed", action="Raise it.")
     text = render_patch_set([rec])
@@ -2496,7 +2625,9 @@ def test_v4_module_rules_fire_via_recommend_and_evidence_resolves(tmp_path: Path
     recs = recommend_fn(report_model, config=config, archetype=None)
 
     found_ids = {rec.id for rec in recs}
-    for expected_id in ("tool-output-carry", "compaction-window", "model-tier", "wasted-turns"):
+    # The fixture's model swap is the main session's, which advice gives
+    # a card of its own.
+    for expected_id in ("tool-output-carry", "compaction-window", "model-tier-main", "wasted-turns"):
         assert expected_id in found_ids, f"expected {expected_id!r} to fire; got {sorted(found_ids)}"
 
     for rec in recs:

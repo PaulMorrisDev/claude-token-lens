@@ -80,7 +80,7 @@ export var PAGES = [
     label: "Agents & context",
     icon: "agents",
     segments: [
-      { id: "subagents", label: "Subagents", intro: "What your subagents cost, and what each one is given when it starts." },
+      { id: "subagents", label: "Subagents", intro: "What your subagents cost, what each one is given when it starts, and whether long runs should be split." },
       { id: "quality", label: "Quality", intro: "How subagent work went: runs that were retried, workflows, and how you split the work." },
       {
         id: "context",
@@ -88,6 +88,7 @@ export var PAGES = [
         intro:
           "What Claude reads at the start of every session and subagent: your CLAUDE.md files and the skills list. How often each is sent, what it costs, and how to trim it.",
       },
+      { id: "hooks", label: "Hooks", intro: "Whether each hook you set up works, and what it costs in kept context, blocked calls and waiting." },
     ],
   },
   {
@@ -267,6 +268,7 @@ export var SECTION_PAGE_MAP = {
   // Data quality when the whole report is walked.
   carry: "spend/savings",
   compaction_sim: "spend/savings",
+  plan_handoff: "spend/savings",
   model_swap: "spend/savings",
   waste: "spend/savings",
   sessions: "spend/sessions",
@@ -282,10 +284,12 @@ export var SECTION_PAGE_MAP = {
   // Agents & context.
   agent_startup: "agents/subagents",
   agents: "agents/subagents",
+  run_split: "agents/subagents",
   quality: "agents/quality",
   workflows: "agents/quality",
   workstyle: "agents/quality",
   context_budget: "agents/context",
+  hooks: "agents/hooks",
   habits: "habits",
   // Setup. Settings draws the config section's tables once, from
   // /api/config-diff?auto_keys=1, and skips the section itself.
@@ -392,7 +396,7 @@ export var GLOSSARY = [
   ["Cache read", "Re-reading context from the prompt cache. About a tenth of the normal input price."],
   ["Cache write", "Putting context into the prompt cache. Costs more than normal input: 1.25 times for a 5-minute lifetime, 2 times for 1 hour."],
   ["Cache rebuild", "Writing context to the cache again because the cached copy expired or something early in the conversation changed."],
-  ["Cache lifetime (TTL)", "How long the prompt cache stays warm after a reply: 5 minutes by default, or 1 hour. A pause longer than this means a rebuild."],
+  ["Cache lifetime (TTL)", "How long the prompt cache stays warm after a reply: 5 minutes or 1 hour. On a Pro or Max plan within its usage limits, the main session gets 1 hour by default. Otherwise, and for subagents, the default is 5 minutes. A pause longer than this means a rebuild."],
   ["Conversation summary", "When the context gets too large, Claude Code replaces the conversation so far with a summary. Also called compaction."],
   ["List price", "Anthropic's published price per token. On a Pro or Max plan you don't pay this; it is shown to compare costs."],
   ["Usage limits", "On a Pro or Max plan, the share of your five-hour and weekly allowance you have used."],
@@ -404,7 +408,7 @@ export var GLOSSARY = [
   ["Scope", "Where a change is written: your user settings (every project), this project on your machine only, or this project for everyone."],
   ["Managed setting", "A setting your organisation's policy controls. Only your administrator can change it."],
   ["Snapshot", "A record of your Claude Code settings at one moment, taken so changes can be compared over time."],
-  ["Window", "The stretch of time the numbers cover, picked at the top of the dashboard. It can be the last hour, today, the last 24 hours, 7, 30 or 90 days, all time, or since your last change. A session counts, in full, when it was last active in the window."],
+  ["Window", "The stretch of time the numbers cover, picked at the top of the dashboard. It can be the last hour, today, the last 24 hours, 7, 30 or 90 days, all time, or since your last change. A session counts, in full, when it was last active in the window; since your last change, when it started after the change."],
   ["Change point", "A moment your settings changed: an apply, its undo, or a change the settings snapshot saw. The dashboard compares the sessions before it with those after it."],
   ["Quick action", "One question about a way to spend less, answered from your own sessions with the evidence and a fix you can copy. The dashboard lists them on the Actions page, under Checks."],
   ["What-if estimate", "What a change would have saved over the window, worked out from your own sessions. It is an estimate: cheaper settings can change how Claude works, which the estimate can't see."],

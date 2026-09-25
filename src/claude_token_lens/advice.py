@@ -5,12 +5,20 @@ cells that prove it. This module decides *how it is said* and what to
 change, in one place, so every card reads the same way:
 
 - **Consolidation.** Rules that look at the same setting from different
-  angles can disagree. ``compaction-window`` (a modelled sweep that
-  weighs both sides) replaces ``compaction-churn`` ("summaries happen too
-  often") and takes the setting away from ``long-context-share`` ("the
-  context is too large"), which then keeps only its workflow advice.
-  ``model-tier`` fires once per agent type; its cards are merged into one
-  with a change per agent type, largest saving first.
+  angles can disagree. Once the compaction replay has a verdict on
+  ``autoCompactWindow`` (``compaction_sim_by_window`` priced your main
+  sessions at the candidate windows), that verdict is the one answer on
+  the setting, whether it is ``compaction-window`` (a modelled sweep that
+  weighs both sides) or no window worth setting: ``compaction-churn``
+  ("summaries happen too often", raise it) is dropped and
+  ``long-context-share`` ("the context is too large", lower it) keeps
+  only its workflow advice. Without a replay, ``compaction-churn`` keeps
+  the setting and ``long-context-share`` still gives it up, so the two
+  never point it opposite ways.
+  ``model-tier`` fires once per agent type; its subagent cards are merged
+  into one with a change per agent type, largest saving first. The main
+  session's gets a card of its own, ``model-tier-main``, ranked last among
+  its severity: its model is a quality trade that's yours to make.
 - **Plain words.** Each recommendation gets a plain title, an action, a
   ``why`` sentence and, where a setting is involved, ``changes``
   (:class:`~claude_token_lens.model.SettingChange`) with the current
@@ -210,7 +218,10 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
     # model. A veto only: a "smaller would do" never adds a suggestion.
     worse, retried, _unfit = model_gate.raw(tables)
     unfit = model_gate.unfit_kinds(tables)
-    left_out: list[tuple[str, str]] = []
+    # The main session's model is a quality trade that's yours to make, so
+    # it gets a card of its own, ranked after every other advice card
+    # (finish's sort); subagents share the merged card.
+    left_out: dict[bool, list[tuple[str, str]]] = {True: [], False: []}
     rows = []
     for rec in tier:
         agent = rec.agent_type or "top-level"
@@ -226,46 +237,91 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
             # Already on the cheaper model; the saving is from before the change.
             continue
         family = _family_alias(alt)
+        main = agent == "top-level"
         if agent in unfit:
             kind, figure = unfit[agent]
             detail = f"{figure:.0f}%" if kind == "hard" else f"{figure} run{'s' if figure != 1 else ''}"
-            left_out.append((kind, f"{_who(agent)} ({detail})"))
+            left_out[main].append((kind, f"{_who(agent)} ({detail})"))
             continue
         if (agent, family) in worse:
             # The quality section found this agent did worse on that model.
-            left_out.append(("worse", f"{_who(agent)} ({family.capitalize()})"))
+            left_out[main].append(("worse", f"{_who(agent)} ({family.capitalize()})"))
             continue
         if (agent, family) in retried:
             # Its runs on that model were often retried on a larger one.
             row = retried[(agent, family)]
-            left_out.append(
+            left_out[main].append(
                 ("retried", f"{_who(agent)} ({row.get('retried') or 0} of {row.get('runs') or 0} "
                  f"{family.capitalize()} runs)")
             )
             continue
         rows.append((rec, agent, alt, saving if isinstance(saving, (int, float)) else 0.0, observed))
-    if not rows:
-        return rest
     rows.sort(key=lambda r: -r[3])
+    main_rows = [r for r in rows if r[1] == "top-level"]
+    agent_rows = [r for r in rows if r[1] != "top-level"]
+    out = list(rest)
+    if agent_rows:
+        out.append(_agent_tier_card(agent_rows, left_out[False], tier, ctx))
+    if main_rows:
+        out.append(_main_tier_card(main_rows[0], left_out[True], ctx))
+    return out
+
+
+_TIER_BASIS = (
+    "Worked out by pricing the same tokens at the cheaper model's list price. A smaller model may "
+    "need more replies or fail some tasks, so this is a ceiling, not a forecast."
+)
+
+
+def _main_tier_card(row: tuple, left_out: list[tuple[str, str]], ctx: _Context) -> Recommendation:
+    """The main session's model, one tier down. ``model_swap`` never
+    suggests Haiku here (its ``main_floor`` verdict), so this is only ever
+    Opus to Sonnet or Fable to Opus."""
+    rec, _agent, alt, saving, observed = row
+    family = _family_alias(alt).capitalize()
+    current = ctx.setting_now("model")
+    change = SettingChange(
+        target="settings",
+        key="model",
+        value=_family_alias(alt),
+        current=current if current not in (None, _UNKNOWN) else f"not set (used {observed or 'unknown'})",
+        note="This changes the model for your main session in every project.",
+        scope=_advice_scope(rec.scope),
+        saving=ctx.money(saving, prefix="At most "),
+    )
+    return Recommendation(
+        id="model-tier-main",
+        severity="advice",
+        category="settings",
+        title=f"Your main session could run on {family}",
+        why=(
+            f"Your main session ran on {_model_prose(observed) if observed else 'a larger model'}, and the same "
+            f"work priced at {family} would cost {_percent(saving, rec)}. It's a quality trade, so it's yours "
+            "to make."
+        )
+        + _left_out_note(left_out),
+        action=(
+            f"Try {family} for a session or two of routine work (/model {_family_alias(alt)}) and compare the "
+            "results before making it your default."
+        ),
+        lever="model",
+        scope=rec.scope,
+        evidence=list(rec.evidence),
+        changes=[change],
+        estimated_saving=ctx.money(saving, prefix="At most "),
+        saving_basis=ctx.basis(_TIER_BASIS),
+        saving_usd=saving,
+    )
+
+
+def _agent_tier_card(
+    rows: list[tuple], left_out: list[tuple[str, str]], tier: list[Recommendation], ctx: _Context
+) -> Recommendation:
     changes = []
     evidence = []
     for rec, agent, alt, saving, observed in rows:
         evidence.extend(rec.evidence)
         now = observed or "unknown"
-        if agent == "top-level":
-            current = ctx.setting_now("model")
-            changes.append(
-                SettingChange(
-                    target="settings",
-                    key="model",
-                    value=_family_alias(alt),
-                    current=current if current not in (None, _UNKNOWN) else f"not set (used {now})",
-                    note="This changes the model for your main session in every project.",
-                    scope=_advice_scope(rec.scope),
-                    saving=ctx.money(saving, prefix="At most "),
-                )
-            )
-            continue
         scope, has_file = ctx.agent_scope(agent)
         current = ctx.agent_now(agent, "model")
         changes.append(
@@ -294,7 +350,7 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
         )
     total = sum(r[3] for r in rows)
     top = rows[0]
-    merged = Recommendation(
+    return Recommendation(
         id="model-tier",
         severity="advice",
         category="settings",
@@ -319,16 +375,21 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
         evidence=evidence,
         changes=changes,
         estimated_saving=ctx.money(total, prefix="At most "),
-        saving_basis=ctx.basis(
-            "Worked out by pricing the same tokens at the cheaper model's list price. A smaller model may "
-            "need more replies or fail some tasks, so this is a ceiling, not a forecast."
-        ),
+        saving_basis=ctx.basis(_TIER_BASIS),
         saving_usd=total,
     )
-    return rest + [merged]
+
+
+def _compaction_replayed(ctx: _Context) -> bool:
+    """The compaction replay priced the main sessions as they ran, and
+    so every candidate window beside them: it has a verdict on
+    ``autoCompactWindow``, whether or not ``compaction-window`` fired."""
+    observed = ctx.cell("compaction_sim", "compaction_sim_by_window", "none", "cost")
+    return isinstance(observed, (int, float)) and observed > 0
 
 
 def _consolidate_compaction(recs: list[Recommendation], ctx: _Context) -> list[Recommendation]:
+    replayed = _compaction_replayed(ctx)
     window = next((r for r in recs if r.id == "compaction-window"), None)
     if window is not None:
         floor = window.title.rsplit(" ", 1)[-1].replace(",", "")
@@ -337,13 +398,15 @@ def _consolidate_compaction(recs: list[Recommendation], ctx: _Context) -> list[R
             # Already summarising at or below the modelled window.
             recs = [r for r in recs if r is not window]
             window = None
-    churn = next((r for r in recs if r.id == "compaction-churn"), None)
-    if window is not None:
+    if window is not None or replayed:
+        # The replay weighed both sides, so its verdict (a window, or none
+        # worth setting) stands over "summaries happen too often".
         recs = [r for r in recs if r.id != "compaction-churn"]
-        churn = None
+    churn = next((r for r in recs if r.id == "compaction-churn"), None)
     for rec in recs:
-        if rec.id == "long-context-share" and (window is not None or churn is not None):
-            # The setting belongs to the rule that weighs both sides.
+        if rec.id == "long-context-share" and (replayed or window is not None or churn is not None):
+            # The setting belongs to the replay, else to churn: never
+            # "raise it" on one card and "lower it" on another.
             rec.lever = None
             rec.category = "workflow"
     return recs
@@ -483,16 +546,33 @@ def _explain_ttl_switch(rec: Recommendation, ctx: _Context) -> None:
     verdict = _evidence_value(rec, "TTL recommendation")
     target = "1h" if isinstance(verdict, str) and verdict.endswith("1h") else "5m"
     saving = ctx.cell("ttl", "ttl_by_agent_type", agent, "saving_usd")
-    who = "your main session" if agent == "top-level" else agent
+    who = {"top-level": "your main session", "unknown": "subagents with no recorded type"}.get(agent, agent)
     lifetime = "1 hour" if target == "1h" else "5 minutes"
     rec.title = f"A {'1-hour' if target == '1h' else '5-minute'} cache lifetime would suit {who} better"
     rec.why = (
-        f"At the pauses {who} actually takes between replies, a {lifetime} cache would have cost less than "
-        "the one it used."
+        f"At the actual pauses between replies from {who}, a {lifetime} cache would have cost less than "
+        "the one used."
     )
     rec.action = f"Set {who}'s cache lifetime to {lifetime} ({target})."
     if agent == "top-level":
         change = SettingChange(target="settings", key="promptCacheTtl", value=target, current=ctx.setting_now("promptCacheTtl"))
+    elif rec.lever == "subagentPromptCacheTtl":
+        # recommend._ttl_row_lever: no agent file to edit ("unknown"),
+        # or the setting is already set and outranks every agent file.
+        current = ctx.setting_now("subagentPromptCacheTtl")
+        change = SettingChange(
+            target="settings",
+            key="subagentPromptCacheTtl",
+            value=target,
+            current=current,
+            note=(
+                "This setting is already set, and Claude Code uses it before any agent file's cacheTtl, so "
+                "changing it changes every subagent's cache lifetime, not just this one's."
+                if current not in (None, _UNKNOWN)
+                else ""
+            ),
+        )
+        rec.action = f"Set every subagent's cache lifetime to {lifetime} ({target})."
     else:
         scope, has_file = ctx.agent_scope(agent)
         change = SettingChange(
@@ -561,6 +641,37 @@ def _explain_effort_mismatch_reported(rec: Recommendation, ctx: _Context) -> Non
     ]
     rec.estimated_saving = ctx.money(rec.saving_usd, prefix="About ")
     rec.saving_basis = ctx.basis("Half the thinking on those messages, at list price. Not measured.")
+
+
+def _explain_plan_handoff(rec: Recommendation, ctx: _Context) -> None:
+    rec.estimated_saving = ctx.money(rec.saving_usd, prefix="At most ")
+    rec.saving_basis = ctx.basis(
+        "The replies after each big approved plan, priced without the planning context, less one cache write "
+        "of the plan and an allowance for re-reading files. At list price."
+    )
+
+
+def _explain_run_split(rec: Recommendation, ctx: _Context) -> None:
+    rec.estimated_saving = ctx.money(rec.saving_usd, prefix="At most ")
+    rec.saving_basis = ctx.basis(
+        "This agent's long runs repriced as fresh runs at the interval that saves most, less each split's note, "
+        "cache write and an allowance for re-reading files. At list price."
+    )
+
+
+def _explain_hook_block_resent(rec: Recommendation, ctx: _Context) -> None:
+    rec.estimated_saving = ctx.money(rec.saving_usd, prefix="About ")
+    rec.saving_basis = ctx.basis(
+        "The replies that read these blocks, each block taking its share of the reply after it. At list price."
+    )
+
+
+def _explain_hook_context_carry(rec: Recommendation, ctx: _Context) -> None:
+    rec.estimated_saving = ctx.money(rec.saving_usd, prefix="At most ")
+    rec.saving_basis = ctx.basis(
+        "What keeping this hook's context cost across the replies after it, at list price. A shorter message "
+        "saves part of that."
+    )
 
 
 def _explain_baseline_bloat(rec: Recommendation, ctx: _Context) -> None:
@@ -717,6 +828,10 @@ _EXPLAIN: dict[str, Callable[[Recommendation, _Context], None]] = {
     "long-context-share": _explain_long_context_share,
     "ttl-switch": _explain_ttl_switch,
     "effort-mismatch": _explain_effort_mismatch,
+    "plan-handoff": _explain_plan_handoff,
+    "run-split": _explain_run_split,
+    "hook-block-resent": _explain_hook_block_resent,
+    "hook-context-carry": _explain_hook_context_carry,
     "baseline-bloat": _explain_baseline_bloat,
     "spawn-cost": _explain_spawn_cost,
     "agent-report-size": _explain_agent_report_size,
@@ -746,6 +861,9 @@ _EXPLAIN: dict[str, Callable[[Recommendation, _Context], None]] = {
 
 _SEVERITY_ORDER = {"action": 0, "advice": 1, "info": 2}
 
+#: Sorted after every other card of the same severity.
+_LAST_IN_GROUP = frozenset({"model-tier-main"})
+
 
 def finish(
     recs: list[Recommendation], report: ReportModel, snapshot: Snapshot | None, units: Units | None
@@ -765,7 +883,15 @@ def finish(
             rec.action += " Your organisation's managed settings set this, so only your administrator can change it."
     recs = _drop_applied(recs)
     # Most important first: severity, then the largest estimated saving.
-    recs.sort(key=lambda r: (_SEVERITY_ORDER.get(r.severity, 3), -(r.saving_usd or 0.0)))
+    # The main session's model goes last in its group: a quality trade
+    # ranks below the tips that keep the same model (compaction, say).
+    recs.sort(
+        key=lambda r: (
+            _SEVERITY_ORDER.get(r.severity, 3),
+            r.id in _LAST_IN_GROUP,
+            -(r.saving_usd or 0.0),
+        )
+    )
     return recs
 
 

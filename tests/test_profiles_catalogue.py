@@ -1,4 +1,4 @@
-"""Tests for ``profiles/catalogue.py``: the seven shipped starting-point
+"""Tests for ``profiles/catalogue.py``: the eight shipped starting-point
 profiles and :func:`suggest`'s deterministic archetype/purpose mapping.
 """
 
@@ -26,14 +26,15 @@ EXPECTED_IDS = (
     "overseer-fanout",
     "overnight-batch",
     "workflow-ultracode",
+    "plan-then-build",
 )
 
 
-def test_catalogue_ids_are_exactly_the_seven_the_plan_names():
+def test_catalogue_ids_are_the_seven_the_plan_names_then_plan_then_build():
     assert CATALOGUE_IDS == EXPECTED_IDS
 
 
-def test_list_profiles_returns_all_seven_in_order():
+def test_list_profiles_returns_all_eight_in_order():
     profiles = list_profiles()
     assert [p.id for p in profiles] == list(EXPECTED_IDS)
 
@@ -167,7 +168,9 @@ def test_tasks_for_normalises_catalogue_words_and_keeps_task_words():
 def test_every_task_has_a_catalogue_profile():
     # PROF-11/F11: "ops" used to be the one task word no catalogue
     # profile covered; workflow-ultracode's own "ops" for-word closes
-    # that gap (see its notes for why that profile, of the seven).
+    # that gap (see its notes for why that profile, of the catalogue).
+    # plan-then-build's "plan-then-build" for-word is a way of working,
+    # so it covers no task and changes nothing here.
     covered = {task: catalogue_mod.task_profile(task) for task in capture_catalogue.TAG_VOCAB["task"]}
     assert covered == {
         "feature": "implementation-heavy",
@@ -183,6 +186,16 @@ def test_every_task_has_a_catalogue_profile():
         "chat": "interactive-chat",
     }
     assert None not in covered.values()
+
+
+def test_a_plan_then_build_shape_beats_the_tasks_but_not_a_structural_purpose():
+    assert suggest("single-model", ["general-dev"], ["feature"], "plan-then-build") == "plan-then-build"
+    assert suggest("single-model", ["general-dev"], (), "plan-then-build") == "plan-then-build"
+    assert suggest("single-model", ["workflow-run"], ["feature"], "plan-then-build") == "workflow-ultracode"
+    assert suggest("single-model", ["general-dev"], ["feature"], "not-a-shape") == "implementation-heavy"
+    profile = catalogue_mod.get("plan-then-build")
+    assert profile.archetype == "single-model" and catalogue_mod.tasks_for(profile) == ()
+    assert "model" not in profile.settings and "/clear" in profile.notes
 
 
 def test_tasks_for_reads_the_profiles_for_list():

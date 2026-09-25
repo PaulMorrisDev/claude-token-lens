@@ -24,7 +24,9 @@ from helpers import attachment_line, turn_line, user_str_line, write_jsonl
 #: Real costs are measured from transcripts; these stop a note growing
 #: unnoticed.
 _BUDGETS = {
-    "essentials": (190, 95),
+    # Essentials carries size too, since the before-and-after comparison
+    # splits by it: about 10 tokens more.
+    "essentials": (205, 95),
     "standard": (350, 205),
     "deep": (420, 205),
 }
@@ -96,6 +98,19 @@ def test_only_deep_brings_the_feedback_survey_and_its_reminders(level):
     extra = cat.DEEP_FEEDBACK_IDS if level == "deep" else ()
     assert cat.level_includes(level) == cat.level_metrics(level) + extra
     assert set(cat.DEEP_FEEDBACK_IDS) == set(cat.FEEDBACK_IDS) - {"dashboard_rating"}
+
+
+def test_essentials_tags_what_a_change_is_judged_like_for_like_on():
+    """task, level and size stratify the before-and-after comparison
+    (impact.stratum), so Essentials carries all three and says why."""
+    essentials = cat.level_metrics("essentials")
+    for metric_id in ("task", "level", "size"):
+        assert metric_id in essentials
+        assert "measuring" in next(m for m in cat.METRICS if m.id == metric_id).powers
+    assert "size" not in set(cat.level_metrics("standard")) - set(essentials)
+    assert cat.THEMES["measuring"] == "Measuring your changes"
+    assert "how big" in cat.LEVEL_SUMMARIES["essentials"]
+    assert "size" not in cat.LEVEL_SUMMARIES["standard"]
 
 
 def test_a_subset_is_custom_and_a_subagent_extra_brings_result():
@@ -288,7 +303,7 @@ def test_the_session_note_is_recognised_in_a_transcript(tmp_path):
         turn_line(content=[{"type": "text", "text": "Fixed.\n[tl: task=bugfix brief=clear level=easy]"}]),
     ])
     result = parse_transcript(path, TranscriptMeta(path=str(path)))
-    assert result.meta.cap_metrics == ("task", "brief", "level", "shift", "retry")
+    assert result.meta.cap_metrics == ("task", "brief", "level", "shift", "size", "retry")
     assert result.turns[0].cap_note_chars == len(wrapped)
     assert result.turns[0].cap.task == "bugfix"
 

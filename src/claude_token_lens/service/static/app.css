@@ -1550,6 +1550,32 @@ details.disclosure[open] > summary {
   margin: 0 0 var(--space-6);
 }
 
+/* The setup checklist (shell.js): a label and its state, what it means,
+   then the command that fixes it. */
+.setup-list {
+  display: grid;
+  gap: var(--space-5);
+  max-width: 72ch;
+  margin: var(--space-3) 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-item > p {
+  margin: 0 0 var(--space-2);
+}
+
+.setup-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.setup-item-head .severity-badge {
+  margin-right: 0;
+}
+
 .metric-tiles.overview-tiles {
   margin-top: 0;
 }
@@ -3276,6 +3302,15 @@ th .unit {
   font-size: var(--text-md);
 }
 
+.loading-label {
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-sm);
+}
+
+.loading-label + .skeleton {
+  margin-top: var(--space-3);
+}
+
 .skeleton {
   display: grid;
   gap: var(--space-3);
@@ -3330,11 +3365,35 @@ th .unit {
   }
 }
 
-/* Refetching keeps the last figures in place, dimmed; a failed refetch
-   while the service is away marks them stale. */
+/* Refetching keeps the last figures in place, dimmed, under an
+   "Updating" label; a failed refetch while the service is away marks
+   them stale. */
 .is-refreshing {
+  position: relative;
+}
+
+.is-refreshing > * {
   opacity: 0.55;
   transition: opacity var(--dur-base) var(--ease-out);
+}
+
+.is-refreshing::after {
+  content: "Updating\2026";
+  position: absolute;
+  /* Over the middle of the dimmed figures, clear of a header's buttons,
+     and no lower than 240px, so a long table still shows it. */
+  top: min(50%, 240px);
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+  padding: 2px var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  background: var(--surface-panel);
+  box-shadow: var(--elev-1);
+  color: var(--ink-2);
+  font-size: var(--text-xs);
+  pointer-events: none;
 }
 
 .is-stale,
@@ -4379,11 +4438,6 @@ td.nowrap,
   background: var(--surface-panel);
   box-shadow: var(--elev-1);
   transition: opacity var(--dur-base) var(--ease-out);
-}
-
-/* New figures are on their way: the last chart stays, dimmed. */
-.chart.is-refreshing {
-  opacity: 0.55;
 }
 
 .chart-head {

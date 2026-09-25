@@ -46,17 +46,41 @@ tokens as the denominator for exactly this reason — see
 Claude Code's prompt cache works on **prefixes**: the system prompt,
 `CLAUDE.md`, tool schemas, skill listings and the growing conversation
 history form a layered prefix, and a cache write is billed once per
-layer per TTL entry. A cache entry has a time-to-live: **5 minutes by
-default**, with a documented **1-hour opt-in** available at three levels:
+layer per TTL entry. A cache entry has a time-to-live of **5 minutes
+or 1 hour**. Claude Code picks it per request, from two buckets
+([prompt-caching docs](https://code.claude.com/docs/en/prompt-caching#which-ttl-each-request-gets)):
 
-- `promptCacheTtl` in `settings.json` — the main conversation.
-- `subagentPromptCacheTtl` in `settings.json` — the default for every
-  spawned subagent that doesn't set its own.
-- `experimental.cacheTtl` in an individual agent's frontmatter (e.g.
-  `.claude/agents/verification-runner.md`) — overrides the subagent
-  default for that one agent type.
-- The equivalent environment variables `CLAUDE_CODE_PROMPT_CACHE_TTL`
-  and `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`.
+| Request bucket | Pro or Max plan, within plan usage | Usage credits, API key or cloud provider |
+|---|---|---|
+| Main conversation | 1 hour | 5 minutes |
+| Everything else (subagents, workflows, teammates, forks, compaction, session titles) | 5 minutes | 5 minutes |
+
+"Usage credits" means a Pro or Max plan that has gone over its usage
+limit and is drawing on
+[extra usage](https://support.claude.com/en/articles/12429409-extra-usage-for-paid-claude-plans).
+It does not mean every subscription. Claude Code then drops the main
+conversation to 5 minutes, because that usage is billed.
+
+To choose the TTL yourself, Claude Code takes the first of these that
+is set:
+
+1. `FORCE_PROMPT_CACHING_5M=1` — 5 minutes for both buckets.
+2. The bucket's environment variable: `CLAUDE_CODE_PROMPT_CACHE_TTL`
+   (main) or `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` (everything else).
+3. The bucket's setting in `settings.json`: `promptCacheTtl` (main) or
+   `subagentPromptCacheTtl` (everything else).
+4. For a subagent, `experimental.cacheTtl` in its agent file's
+   frontmatter (e.g. `.claude/agents/verification-runner.md`). Claude
+   Code ignores a `1h` here while the plan is on usage credits.
+5. `ENABLE_PROMPT_CACHING_1H=1` — 1 hour for both buckets.
+6. The bucket's default, from the table above.
+
+Items 2 and 3 need Claude Code v2.1.242 or later; item 4 needs v2.1.248
+or later. Because item 3 comes before item 4, `subagentPromptCacheTtl`
+outranks every agent file's `cacheTtl`: once it is set, an agent file
+can't pick a different lifetime. `recommend.py`'s `ttl-switch` rule names
+`subagentPromptCacheTtl` as the lever in that case, and for subagents
+whose type wasn't recorded (they have no agent file).
 
 A cached prefix survives as long as nothing upstream of it changes and
 the entry hasn't expired. What invalidates it, as observed and encoded
@@ -79,10 +103,17 @@ measures this as each agent type's mean first-turn `cache_creation`.
 
 Two practical consequences worth designing around:
 
-- A 1-hour TTL is **ignored while the account is on usage credits**
-  (subscription billing) rather than an API key — per Claude Code's own
-  documentation. Recommending a 1h switch for a subscription account's
-  subagents would recommend a lever that does nothing.
+- On a Pro or Max plan, a subagent's 1-hour TTL **works within plan
+  usage**, from either lever. Only while the plan is on usage credits
+  does Claude Code ignore an agent file's `cacheTtl: 1h`;
+  `subagentPromptCacheTtl` and `promptCacheTtl` still apply then. So
+  `ttl.py` gives subscription accounts the same switch advice as
+  pay-per-token ones, with a note stating this caveat. The tool can't
+  tell which replies ran on usage credits: `five_hour`/`seven_day`
+  readings stop at 100%, which says the plan ran out but not whether
+  extra usage was switched on; the statusline that logs them doesn't
+  run in the desktop app; and no transcript line it parses marks the
+  switch.
 - TTL should be chosen **per spawned agent type**, not globally.
   `ttl.py`'s `TtlStats` is keyed by agent type for exactly this reason:
   a long-wait agent (one that sits idle while you read a build or test
@@ -206,8 +237,15 @@ size. No text is kept (`context_files.py`).
   change straight away; they hold few sessions, so read them as a quick
   signal, not a verdict.
 - **Since my last change**: starts at the latest change point: an
-  `apply`, its undo, a settings change the snapshot hook saw, or a
-  change to metrics capture (`change_points.py`).
+  `apply`, its undo, a settings change the snapshot hook saw, a change
+  to metrics capture, or a model, effort or CLAUDE.md size change your
+  sessions show (`change_points.py`). Unlike the other windows, it
+  counts the sessions that *started* after the change, so every figure
+  on the page, the daily spend chart included, is work done wholly on
+  the new settings. A session already running at the change isn't
+  counted, however long it ran on. With at least 3 sessions started
+  since, the Overview adds what those sessions would have cost without
+  it (see "Without this change" below).
 - **What-if estimate** (`whatif.py`): what a change would have saved
   over the window, looked up in the report's own simulations rather
   than computed afresh: the model-swap repricing for a model change, the
@@ -225,10 +263,22 @@ size. No text is kept (`context_files.py`).
   that change should move (cost per reply for a model or effort change,
   cost per spawn for a change to one agent, summaries per session for
   `autoCompactWindow`, cache rebuild share for a TTL change, and so on).
-  Nothing is said until each side has at least 3 sessions, and the
-  result always notes that other things (the work itself, Claude Code
-  updates) change too. [Profiles](profiles.md#on-the-dashboard) has the
-  full rules.
+  The sessions after it are weighted to the mix of work before it: the
+  kind of task, and how hard and how big it was once at least half the
+  sessions carry capture's `level` and `size` tags. Nothing is said
+  until each side has at least 3 sessions, and the result always notes
+  that other things (the work itself, Claude Code updates) change too.
+  [Profiles](profiles.md#on-the-dashboard) has the full rules.
+- **Without this change** (`counterfactual.py`): the sessions after a
+  change, priced as if it hadn't been made. A model or fast mode change
+  is repriced reply by reply; a cache lifetime change, or a compaction
+  window the change raised, is replayed under the old setting; context
+  a change took off or added (CLAUDE.md, MCP servers, plugins, skills)
+  is priced as carried on every reply. Anything else, and a change to
+  several settings at once, uses the sessions before it: their cost per
+  reply for each kind of work, times the replies after. Repricing keeps
+  the replies Claude actually wrote, so read it as the price of the same
+  work. [The API reference](api.md#get-apiimpact) has each method.
 
 ## 7. Quality signals
 
@@ -368,9 +418,14 @@ well?" section has every signal per agent type, then per model and
 effort, with each setup compared against the one that agent used most
 (across the whole window, so a setup used for other work or in another
 week can differ for that reason), then each agent and model whose runs
-were retried on a larger model. Setup › Settings' "Your changes and what
+were retried on a larger model. Main sessions a scheduled or looped task
+started, with no message of yours, are left out of that comparison: a
+check that runs a command and stops is a different job from the work
+you steer. A setup whose runs averaged more than 5 times as many replies
+as the one it would be compared with, or under a fifth, is **Not
+comparable** rather than tested. Setup › Settings' "Your changes and what
 they did" compares the runs of the agent a change touched (or the main
-session) before and after it. The check "Is any agent struggling?" on
+session) before and after it, also without scheduled main sessions. The check "Is any agent struggling?" on
 Actions › Checks turns both into fixes.
 
 **Privacy.** Only counts and flags are kept. Whether a message looks

@@ -966,6 +966,36 @@ def test_sessions_listing_keeps_only_sessions_with_a_reply_in_the_window(store: 
     assert store.summary(since="2026-09-18T13:30:00Z")["sessions"] == 0
 
 
+def test_first_reply_windows_count_only_the_sessions_started_in_them(store: Store) -> None:
+    """The "since my last change" rule: session-a (12:00 to 13:00 on
+    2026-09-18) was already running at 12:30, so it is left out whole,
+    and only session-b's rows are counted, on every read."""
+    _seed(store)
+    _seed_second_project(store)  # session-b, 12:00 to 13:00 on 2026-09-19
+    since = "2026-09-18T12:30:00Z"
+    assert store.summary(since=since)["sessions"] == 2
+    started = store.summary(since=since, window_by="first-reply")
+    assert started["sessions"] == 1
+    assert started["total_cost"] == pytest.approx(5.0)
+    assert [s["id"] for s in store.sessions(since=since, window_by="first-reply")] == ["session-b"]
+    assert {row["day"] for row in store.daily_usage(since=since)} == {"2026-09-18", "2026-09-19"}
+    days = store.daily_usage(since=since, window_by="first-reply")
+    assert {row["day"] for row in days} == {"2026-09-19"}
+    assert sum(row["cost"] for row in days) == pytest.approx(started["total_cost"])
+    assert store.cache_read_tokens_by_model(since=since, window_by="first-reply") == {"claude-sonnet-5": 100}
+    assert len(store.compactions(since=since)) == 2
+    assert [row["ts"] for row in store.compactions(since=since, window_by="first-reply")] == ["2026-09-19T12:30:00Z"]
+    # Nothing started in the window: every read is empty.
+    later = "2026-09-20T00:00:00Z"
+    assert store.summary(since=later, window_by="first-reply")["sessions"] == 0
+    assert store.daily_usage(since=later, window_by="first-reply") == []
+    assert store.compactions(since=later, window_by="first-reply") == []
+    # With no bound there is nothing to window by.
+    assert store.daily_usage(days=None, window_by="first-reply") == store.daily_usage(days=None)
+    with pytest.raises(ValueError):
+        store.summary(since=since, window_by="mtime")
+
+
 def test_summary_accepts_an_until_bound(store: Store) -> None:
     _seed(store)  # session-a's last reply is 2026-09-18T13:00:00Z
     assert store.summary(since="2026-09-17T00:00:00Z", until="2026-09-18T12:30:00Z")["sessions"] == 0
@@ -1148,6 +1178,28 @@ def test_change_token_changes_when_a_transcript_is_added_or_reparsed(store: Stor
 def test_change_token_stable_when_nothing_changed(store: Store) -> None:
     _seed(store)
     assert store.change_token() == store.change_token()
+
+
+def test_rewriting_an_unchanged_workflow_run_keeps_the_change_token(store: Store, monkeypatch) -> None:
+    """The watcher re-reads every workflow file each tick. Writing the
+    same values again must not touch the row, or the token would move
+    every tick and every kept report would be rebuilt for nothing."""
+    from claude_token_lens.service import store as store_mod
+
+    _seed(store)
+    run = dict(session_id="session-a", run_id="wf_1", agent_count=2, phase_titles=["Build"], cost=1.5, status="done")
+    monkeypatch.setattr(store_mod, "_now", lambda: "2026-09-18T10:00:00Z")
+    store.upsert_workflow_run(**run)
+    before = store.change_token()
+
+    monkeypatch.setattr(store_mod, "_now", lambda: "2026-09-18T10:05:00Z")
+    store.upsert_workflow_run(**run)
+    assert store.change_token() == before
+
+    store.upsert_workflow_run(**{**run, "status": "failed"})
+    assert store.change_token() != before
+    row = store._connection().execute("SELECT status, updated_at FROM workflow_runs").fetchone()
+    assert (row["status"], row["updated_at"]) == ("failed", "2026-09-18T10:05:00Z")
 
 
 # -- turns_for_session ---------------------------------------------------

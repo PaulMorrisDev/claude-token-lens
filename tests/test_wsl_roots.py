@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import cli, discovery, installer, onboarding
+from claude_token_lens import cli, discovery, installer, onboarding, setup_flow
 from claude_token_lens.config import ConfigError, load_config
 
 # conftest replaces this with a stub for every test; keep the real one.
@@ -120,24 +120,27 @@ def test_config_rejects_a_non_list_extra_projects_roots(tmp_path):
 # -- init ----------------------------------------------------------------------
 
 
-def _init(tmp_path, monkeypatch, *, wsl_root, stdin_text="", non_interactive=False, answers=None):
+def _init(tmp_path, monkeypatch, *, wsl_root, stdin_text="", non_interactive=False, answers=None, advanced=False):
+    import dataclasses
+
     real_project = tmp_path / "repo"
     real_project.mkdir()
     monkeypatch.chdir(real_project)
-    stdout = io.StringIO()
-    answers_path = None
+    argv = ["init", "--config-dir", str(tmp_path / "config"), "--projects-root", str(tmp_path / "projects")]
+    argv += ["--no-install", "--no-service"]
+    if non_interactive:
+        argv.append("--non-interactive")
+    if advanced:
+        argv.append("--advanced")
     if answers is not None:
         answers_path = tmp_path / "answers.json"
         answers_path.write_text(answers, encoding="utf-8")
-    rc = onboarding.run_init(
-        config_dir=tmp_path / "config",
-        projects_root_path=tmp_path / "projects",
-        find_wsl_roots=lambda: [wsl_root],
-        answers_path=answers_path,
-        non_interactive=non_interactive,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
+        argv += ["--answers", str(answers_path)]
+    options, tools = cli._setup_flow_inputs(cli._make_parser().parse_args(argv))
+    stdout = io.StringIO()
+    rc = setup_flow.run(
+        options,
+        dataclasses.replace(tools, find_wsl_roots=lambda: [wsl_root]),
         stdin=io.StringIO(stdin_text),
         stdout=stdout,
     )
@@ -145,26 +148,39 @@ def _init(tmp_path, monkeypatch, *, wsl_root, stdin_text="", non_interactive=Fal
     return load_config(tmp_path / "config"), stdout.getvalue()
 
 
-def test_init_offers_a_found_wsl_folder_and_yes_is_the_default(tmp_path, monkeypatch):
+def test_init_adds_a_found_wsl_folder_without_asking_and_names_it(tmp_path, monkeypatch):
     wsl_root = tmp_path / "wsl-projects"
     (wsl_root / "-home-alice-repo").mkdir(parents=True)
-    # Enter for every question, taking each default.
-    config, out = _init(tmp_path, monkeypatch, wsl_root=wsl_root, stdin_text="\n" * 20)
+    # A plan; then Enter for every other question.
+    config, out = _init(tmp_path, monkeypatch, wsl_root=wsl_root, stdin_text="1\n" + "\n" * 5)
+    assert config.extra_projects_roots == [str(wsl_root)]
+    assert "Include those sessions" not in out
+    assert "Found Claude Code history in " in out and "No Claude Code history yet" not in out
+
+
+def test_init_advanced_offers_a_found_wsl_folder_and_yes_is_the_default(tmp_path, monkeypatch):
+    wsl_root = tmp_path / "wsl-projects"
+    (wsl_root / "-home-alice-repo").mkdir(parents=True)
+    # A plan; then Enter for every other question, taking each default.
+    config, out = _init(tmp_path, monkeypatch, wsl_root=wsl_root, stdin_text="1\n" + "\n" * 20, advanced=True)
     assert config.extra_projects_roots == [str(wsl_root)]
     assert "Include those sessions" in out
 
 
-def test_init_leaves_out_a_wsl_folder_on_no(tmp_path, monkeypatch):
+def test_init_advanced_leaves_out_a_wsl_folder_on_no(tmp_path, monkeypatch):
     wsl_root = tmp_path / "wsl-projects"
     wsl_root.mkdir()
-    config, _ = _init(tmp_path, monkeypatch, wsl_root=wsl_root, stdin_text="\n" * 7 + "n\n")
+    # A plan; six more settings; no to the WSL folder; then the defaults.
+    config, _ = _init(
+        tmp_path, monkeypatch, wsl_root=wsl_root, stdin_text="1\n" + "\n" * 6 + "n\n" + "\n" * 5, advanced=True
+    )
     assert config.extra_projects_roots == []
 
 
 def test_init_non_interactive_adds_found_wsl_folders_and_says_so(tmp_path, monkeypatch):
     wsl_root = tmp_path / "wsl-projects"
     wsl_root.mkdir()
-    config, out = _init(tmp_path, monkeypatch, wsl_root=wsl_root, non_interactive=True)
+    config, out = _init(tmp_path, monkeypatch, wsl_root=wsl_root, non_interactive=True, advanced=True)
     assert config.extra_projects_roots == [str(wsl_root)]
     assert "(derived) extra_projects_roots" in out
 

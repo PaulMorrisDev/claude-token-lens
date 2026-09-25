@@ -20,7 +20,9 @@ Each :meth:`FileWatcher.run_once` tick:
    new/changed/live/stale-parser decision table).
 3. Folds every parsed (or previously-stored, for an unchanged file)
    transcript into the store via ``Store.upsert_transcript``, and every
-   session's classification/cost totals via ``Store.upsert_session``.
+   session's classification/cost totals via ``Store.upsert_session``. A
+   session with nothing changed since the tick that last folded it is
+   skipped (see ``FileWatcher._session_fingerprint``).
 4. Removes rows for files no longer on disk (``Store.remove_missing``),
    prunes old sessions when ``options.retention_days`` is set, and always
    prunes old capture signal files (``signals.prune``), old
@@ -368,6 +370,25 @@ class FileWatcher:
         #: single poll regardless.
         self._snapshot_file_mtimes: dict[str, int] = {}
 
+        #: ``{session_id: fingerprint}`` for each session as of the tick
+        #: that last folded it (see :meth:`_session_fingerprint`). A
+        #: session whose fingerprint still matches, with every one of its
+        #: files unchanged in the store, is skipped outright: decoding
+        #: every stored digest and re-folding every session each tick took
+        #: seconds of CPU every 30 seconds with nothing new to read.
+        #: In-memory only, so a restart folds every session once again.
+        self._folded: dict[str, tuple] = {}
+        #: What :meth:`_fold_session` reads besides the session's own
+        #: files and tags (snapshot ids, profile marks), refreshed each
+        #: tick by :meth:`_scan_snapshots`.
+        self._fold_context: tuple = ()
+        #: ``{(project_dir, session_id): [(subagent path, meta or None)]}``
+        #: as :meth:`_collect_parse_candidates` listed them this tick, so
+        #: :meth:`_scan_session` doesn't list and read them all again.
+        #: A ``None`` meta failed to load and is read again there, where
+        #: its error is recorded.
+        self._listed_subagents: dict[tuple[str, str], list[tuple[str, TranscriptMeta | None]]] = {}
+
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lifecycle_lock = threading.Lock()
@@ -519,6 +540,7 @@ class FileWatcher:
         # no-op (falls through to the loop's existing sequential
         # behaviour) whenever there's no cache configured or too little
         # pending work to justify a pool.
+        self._listed_subagents = {}
         self._prewarm_cache(project_dirs, known, stats)
 
         # Finding 7/S1-perf item 6: real-time tag overrides -- a POST
@@ -541,6 +563,9 @@ class FileWatcher:
                 self._scan_session(project_dir, slug, top_path, known, seen_paths, stats, all_tags)
                 self._advance_progress()
         self._set_progress(None)
+        self._listed_subagents = {}
+        seen_sessions = {top_path.stem for _, top_paths in sessions_by_dir for top_path in top_paths}
+        self._folded = {sid: fingerprint for sid, fingerprint in self._folded.items() if sid in seen_sessions}
 
         if not project_dirs:
             # Finding 3 (second failure mode): an empty project_dirs list
@@ -640,17 +665,14 @@ class FileWatcher:
         :meth:`_prewarm_cache` bulk-parses in a process pool when it's
         large enough to be worth the pool start-up cost.
 
-        Walks the same ``discovery.find_sessions``/``find_subagents``
-        shapes the main per-session loop walks again afterwards (a
-        second, redundant filesystem walk) -- cheap relative to a full
-        ``parse_transcript`` call, and far simpler than threading a
-        shared discovery result through both this prewarm pass and the
-        loop's own per-file error-handling/session-folding, which needs
-        the untouched per-session traversal :meth:`_scan_session` already
-        implements. Never raises -- an ``OSError``/other failure walking
-        one project directory's sessions or subagents is silently
-        skipped here (the main loop's own try/except around the
-        identical calls records it properly-scoped).
+        Walks the same ``discovery.find_sessions``/``find_subagent_paths``
+        shapes the main per-session loop walks afterwards, keeping each
+        session's subagent listing in ``_listed_subagents`` for that loop
+        to reuse rather than list and read every ``.meta.json`` again.
+        Never raises -- an ``OSError``/other failure walking one project
+        directory's sessions or subagents is silently skipped here (the
+        main loop's own try/except around the identical calls records it
+        properly-scoped).
         """
         candidates: list[tuple[str, TranscriptMeta]] = []
         for project_dir in project_dirs:
@@ -666,18 +688,22 @@ class FileWatcher:
                 if self._needs_parse_this_tick(str(top_path), top_meta, known):
                     candidates.append((str(top_path), top_meta))
                 try:
-                    subagent_entries = discovery.find_subagents(project_dir, session_id)
+                    subagent_paths = discovery.find_subagent_paths(project_dir, session_id)
                 except OSError:
                     continue
-                for jsonl_path, _raw_meta in subagent_entries:
+                listed: list[tuple[str, TranscriptMeta | None]] = []
+                for jsonl_path in subagent_paths:
                     self._advance_progress()
                     sub_path_str = str(jsonl_path)
                     try:
                         sub_meta = discovery.load_meta(jsonl_path.with_name(jsonl_path.stem + ".meta.json"))
                     except Exception:
+                        listed.append((sub_path_str, None))
                         continue
+                    listed.append((sub_path_str, sub_meta))
                     if self._needs_parse_this_tick(sub_path_str, sub_meta, known):
                         candidates.append((sub_path_str, sub_meta))
+                self._listed_subagents[(str(project_dir), session_id)] = listed
         return candidates
 
     def _prewarm_cache(
@@ -777,6 +803,59 @@ class FileWatcher:
 
         try:
             top_meta = _build_top_meta(top_path, session_id, slug)
+        except Exception as exc:
+            stats.errors += 1
+            stats.error_messages = stats.error_messages + (f"top-level parse error: {_error_summary(exc)}",)
+            return
+
+        subagent_error: BaseException | None = None
+        sub_metas = self._listed_subagents.pop((str(project_dir), session_id), None)
+        try:
+            # nit 26: find_subagent_paths/find_workflows are generators that
+            # walk the filesystem lazily -- an OSError raised mid-walk
+            # (a directory removed/permission-denied between discovery
+            # and this iteration) previously escaped the surrounding
+            # try/except entirely, because the generator itself, not the
+            # loop body, is where the exception would actually surface.
+            # Materializing the listing up front brings that failure
+            # under the same per-session error handling as everything
+            # else in this method.
+            if sub_metas is None:
+                sub_metas = []
+                for jsonl_path in self._time_discovery(
+                    stats, lambda: discovery.find_subagent_paths(project_dir, session_id)
+                ):
+                    try:
+                        sub_meta = discovery.load_meta(jsonl_path.with_name(jsonl_path.stem + ".meta.json"))
+                    except Exception:
+                        sub_meta = None  # read again below, where its error is recorded
+                    sub_metas.append((str(jsonl_path), sub_meta))
+        except OSError as exc:
+            subagent_error = exc
+            sub_metas = []
+        workflow_error: BaseException | None = None
+        try:
+            workflow_paths = self._time_discovery(
+                stats, lambda: list(discovery.find_workflows(project_dir, session_id))
+            )
+        except OSError as exc:
+            workflow_error = exc
+            workflow_paths = []
+
+        fingerprint = None
+        if subagent_error is None and workflow_error is None:
+            fingerprint = self._session_fingerprint(
+                session_id, top_path_str, top_meta, sub_metas, workflow_paths, known, all_tags
+            )
+        if fingerprint is not None and self._folded.get(session_id) == fingerprint:
+            # Nothing this session is folded from has changed since the
+            # tick that last folded it.
+            stats.files_scanned += len(sub_metas) + len(workflow_paths)
+            seen_paths.update(path_str for path_str, _meta in sub_metas)
+            return
+        self._folded.pop(session_id, None)
+
+        try:
             top_result, top_was_parsed = self._resolve(top_path_str, top_meta, known, stats)
         except Exception as exc:
             stats.errors += 1
@@ -805,29 +884,17 @@ class FileWatcher:
             self._upsert_transcript_row(session_id, top_path_str, top_meta, top_result, stats)
 
         subs: list[TranscriptResult] = []
-        try:
-            # nit 26: find_subagents/find_workflows are generators that
-            # walk the filesystem lazily -- an OSError raised mid-walk
-            # (a directory removed/permission-denied between discovery
-            # and this iteration) previously escaped the surrounding
-            # try/except entirely, because the generator itself, not the
-            # loop body, is where the exception would actually surface.
-            # Materializing the listing up front brings that failure
-            # under the same per-session error handling as everything
-            # else in this method.
-            subagent_entries = self._time_discovery(
-                stats, lambda: list(discovery.find_subagents(project_dir, session_id))
-            )
-        except OSError as exc:
+        if subagent_error is not None:
             stats.errors += 1
-            stats.error_messages = stats.error_messages + (f"subagent discovery error: {_error_summary(exc)}",)
-            subagent_entries = []
-        for jsonl_path, _raw_meta in subagent_entries:
+            stats.error_messages = stats.error_messages + (
+                f"subagent discovery error: {_error_summary(subagent_error)}",
+            )
+        for sub_path_str, sub_meta in sub_metas:
             stats.files_scanned += 1
-            sub_path_str = str(jsonl_path)
             seen_paths.add(sub_path_str)
             try:
-                sub_meta = discovery.load_meta(jsonl_path.with_name(jsonl_path.stem + ".meta.json"))
+                if sub_meta is None:
+                    sub_meta = discovery.load_meta(Path(sub_path_str).with_name(Path(sub_path_str).stem + ".meta.json"))
                 sub_result, sub_was_parsed = self._resolve(sub_path_str, sub_meta, known, stats)
                 if sub_was_parsed:
                     self._upsert_transcript_row(session_id, sub_path_str, sub_meta, sub_result, stats)
@@ -844,14 +911,11 @@ class FileWatcher:
         # discovery.find_subagents's own docstring), and persisted so
         # service/rebuild.py can read them back into
         # SessionBundle.workflows.
-        try:
-            workflow_paths = self._time_discovery(
-                stats, lambda: list(discovery.find_workflows(project_dir, session_id))
-            )
-        except OSError as exc:
+        if workflow_error is not None:
             stats.errors += 1
-            stats.error_messages = stats.error_messages + (f"workflow discovery error: {_error_summary(exc)}",)
-            workflow_paths = []
+            stats.error_messages = stats.error_messages + (
+                f"workflow discovery error: {_error_summary(workflow_error)}",
+            )
         for workflow_path in workflow_paths:
             stats.files_scanned += 1
             try:
@@ -878,6 +942,47 @@ class FileWatcher:
         except Exception as exc:
             stats.errors += 1
             stats.error_messages = stats.error_messages + (f"session fold error: {_error_summary(exc)}",)
+            return
+        if fingerprint is not None:
+            self._folded[session_id] = fingerprint
+
+    def _session_fingerprint(
+        self,
+        session_id: str,
+        top_path_str: str,
+        top_meta: TranscriptMeta,
+        sub_metas: list[tuple[str, TranscriptMeta | None]],
+        workflow_paths: list[Path],
+        known: dict[str, tuple[int, int, int]],
+        all_tags: dict[str, dict[str, str]],
+    ) -> tuple | None:
+        """Everything :meth:`_fold_session` reads for one session: each
+        transcript's and workflow file's ``(path, mtime_ns, size_bytes)``,
+        the session's tags and :attr:`_fold_context`. ``None`` when any
+        transcript isn't already stored as it is on disk (new, changed,
+        live, awaiting its stable re-parse, from an older parser, or its
+        meta unreadable) -- such a session is always processed in full."""
+        files = []
+        for path_str, meta in [(top_path_str, top_meta), *sub_metas]:
+            if meta is None:
+                return None
+            prior = known.get(path_str)
+            if (
+                prior is None
+                or (meta.mtime_ns, meta.size_bytes) != prior[:2]
+                or (prior[2] or 0) < PARSER_VERSION
+                or path_str in self._pending_stabilize
+            ):
+                return None
+            files.append((path_str, meta.mtime_ns, meta.size_bytes))
+        for workflow_path in workflow_paths:
+            try:
+                stat = workflow_path.stat()
+            except OSError:
+                return None
+            files.append((str(workflow_path), stat.st_mtime_ns, stat.st_size))
+        tags = tuple(sorted(all_tags.get(session_id, {}).items()))
+        return (tuple(files), tags, self._fold_context)
 
     def _resolve(
         self,
@@ -1153,6 +1258,10 @@ class FileWatcher:
         self._snapshot_ids_by_ts = ids_by_ts
         self._snapshot_file_mtimes = fresh_mtimes
         self._profile_marks = snapshots_mod.load_profile_marks(self.options.config_dir)
+        self._fold_context = (
+            tuple(sorted(ids_by_ts.items())),
+            tuple((mark.ts.isoformat(), mark.profile_id, mark.session_id) for mark in self._profile_marks),
+        )
 
     # -- v0.3 baseline / profile ingestion -----------------------------------
 

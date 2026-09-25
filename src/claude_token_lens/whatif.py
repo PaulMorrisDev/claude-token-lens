@@ -145,6 +145,25 @@ def _model(tables: _Tables, agent: str, value, key: str, label: str | None) -> d
     )
 
 
+def _opusplan(tables: _Tables, value, key: str) -> dict:
+    """``model = "opusplan"``: Opus while planning, Sonnet otherwise.
+    Priced from the replies after each approved plan, as they ran and at
+    Sonnet's prices (``plan_handoff_summary``)."""
+    row = next(iter(tables.rows("plan_handoff", "plan_handoff_summary")), None) or {}
+    build, sonnet = _num(row.get("build_usd")), _num(row.get("build_usd_sonnet"))
+    if not build or sonnet is None:
+        return _row(key, None, value, None, "none", "No approved plans in this window, so there is no build to reprice.")
+    return _row(
+        key,
+        None,
+        value,
+        build - sonnet,
+        "ceiling",
+        "Worked out by repricing the main session's replies after each approved plan at Sonnet's prices. "
+        "With opusplan, sessions without a plan run on Sonnet too; their saving isn't counted here.",
+    )
+
+
 def _ttl(tables: _Tables, agents: list[str], value, key: str, label: str | None) -> dict:
     column = {"5m": "cost_all_5m", "1h": "cost_all_1h"}.get(str(value))
     if column is None:
@@ -343,7 +362,9 @@ def estimate(
     subagents = [r.get("agent_type") for r in tables.rows("ttl", "ttl_by_agent_type") if r.get("agent_type") != TOP]
     rows: list[dict] = []
     for key, value in (settings or {}).items():
-        if key == "model":
+        if key == "model" and str(value).strip().lower() == "opusplan":
+            rows.append(_opusplan(tables, value, key))
+        elif key == "model":
             rows.append(_model(tables, TOP, value, key, None))
         elif key == "promptCacheTtl":
             rows.append(_ttl(tables, [TOP], value, key, None))

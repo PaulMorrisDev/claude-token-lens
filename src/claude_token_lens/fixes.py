@@ -87,12 +87,15 @@ SETTING_TEXT: dict[str, tuple[str, str, str]] = {
     "promptCacheTtl": (
         "How long the main session's cache is kept between replies: 5 minutes or 1 hour.",
         "A 1-hour cache costs more to write, so it only pays off when you often pause for more than 5 minutes.",
-        "A 1-hour lifetime is ignored while a Pro or Max plan is using extra usage credits.",
+        "Needs Claude Code 2.1.242 or later. Left unset, a Pro or Max plan gets 1 hour within plan usage and "
+        "5 minutes once it draws on extra usage credits; a value set here applies either way.",
     ),
     "subagentPromptCacheTtl": (
-        "How long every subagent's cache is kept between replies: 5 minutes or 1 hour.",
+        "How long every subagent's cache is kept between replies: 5 minutes or 1 hour. It also covers "
+        "workflow agents, teammates and compaction.",
         "A 1-hour cache costs more to write, so it only pays off when subagents often wait more than 5 minutes.",
-        "A 1-hour lifetime is ignored while a Pro or Max plan is using extra usage credits.",
+        "Needs Claude Code 2.1.242 or later. Claude Code uses it before any agent file's cacheTtl, and it "
+        "still applies while a Pro or Max plan draws on extra usage credits.",
     ),
     "experimental.cacheTtl": (
         "How long this agent's cache is kept between replies: 5 minutes or 1 hour.",
@@ -304,7 +307,8 @@ _WORKFLOW_PROMPTS = {
         "My prompt-cache TTL doesn't fit how {agent} actually runs: {title_lower}. Please check the "
         "current TTL setting for {agent} (promptCacheTtl for the main session, subagentPromptCacheTtl or "
         "experimental.cacheTtl for a named agent) in ~/.claude/settings.json or its agent file, and switch "
-        "it to what this finding recommends. Show me the diff before saving. Claude Code will ask my "
+        "it to what this finding recommends. If subagentPromptCacheTtl is set, Claude Code uses it before "
+        "the agent file. Show me the diff before saving. Claude Code will ask my "
         "permission before editing files under .claude."
     ),
     "long-tool-waits": (
@@ -333,10 +337,47 @@ _WORKFLOW_PROMPTS = {
         "it to a value that fits this finding. Show me the diff before saving. Claude Code will ask my "
         "permission before editing files under .claude."
     ),
+    # Workflow only: this form is used once the auto-compact window has
+    # been left to the compaction replay or to compaction-churn (see
+    # advice._consolidate_compaction), so it never proposes the setting.
     "long-context-share": (
-        "My top-level context is running large: {title_lower}. Please check the current autoCompactWindow "
-        "and propose either lowering it so we compact sooner, or moving exploration-heavy work into a "
-        "subagent whose context is discarded when it finishes. Show me the change before making it."
+        "My top-level context is running large: {title_lower}. From now on, send searches and "
+        "exploration-heavy work to a subagent, whose context is discarded when it finishes, and when I switch "
+        "to an unrelated task, suggest starting a fresh session instead of carrying this one on."
+    ),
+    "plan-handoff": (
+        "After I approve a big plan, the planning stays in context for the whole build: {title_lower}. Please "
+        "add a short instruction to my ~/.claude/CLAUDE.md: when I approve a plan that took a lot of exploring, "
+        "remind me to run /clear and start the build from the saved plan file, one phase per session. Show me "
+        "the diff before saving. Claude Code will ask my permission before editing files under .claude."
+    ),
+    "run-split": (
+        "My {agent} runs get long, and every later reply reads again all the run has read. Please add a short "
+        "instruction to my ~/.claude/CLAUDE.md: when a task for {agent} "
+        "is large, give it one part per run, and start a fresh {agent} for the next part with a short note of "
+        "what's done, what's left and the files involved, rather than one long run. If {agent} has an agent file "
+        "(~/.claude/agents/{agent}.md or .claude/agents/{agent}.md), propose a line asking it to end each run with "
+        "that note. Show me the diff before saving. Claude Code will ask my permission before editing files under "
+        ".claude."
+    ),
+    "hook-failures": (
+        "Some of my Claude Code hooks keep failing: {title_lower}. Please find these hooks in ~/.claude/settings.json, "
+        "this project's .claude/settings.json and .claude/settings.local.json, and any plugin I have enabled. For "
+        "each one, work out why it fails: a script named by a relative path (start it with ${{CLAUDE_PROJECT_DIR}} "
+        "instead), a file that isn't there, or an error in the script itself. Propose a fix for each and show me the "
+        "diff before saving. Claude Code will ask my permission before editing files under .claude."
+    ),
+    "hook-block-resent": (
+        "My {title_lower}. Please read that hook's script and its entry in my settings.json files. Propose changing it "
+        "to let the call through and pass its message as hookSpecificOutput.additionalContext, or to rewrite the "
+        "call with updatedInput, where that keeps what the hook is for. Keep any block that stops something harmful. "
+        "Show me the diff before saving. Claude Code will ask my permission before editing files under .claude."
+    ),
+    "hook-context-carry": (
+        "The {title_lower}. Please find that hook in my settings.json files or my enabled plugins and read its script. "
+        "Propose making its message shorter, or having it add context only when there's something to act on. If it "
+        "comes from a plugin, tell me how to turn it off for projects that don't need it instead. Show me the diff "
+        "before saving. Claude Code will ask my permission before editing files under .claude."
     ),
     "spawn-task-prompt": (
         "The instructions I write when spawning {agent} are long: {title_lower}. From now on, when I'm "
@@ -416,12 +457,12 @@ _WORKFLOW_PROMPTS = {
 #: informational card with nothing to ask Claude to do).
 _WORKFLOW_EXPLAINER: dict[str, tuple[str, str, str]] = {
     "ttl-switch": (
-        "settings.json's promptCacheTtl (the main session) or an agent file's subagentPromptCacheTtl / "
-        "experimental.cacheTtl frontmatter (a named agent type) -- whichever key this finding names, at "
-        "user or project scope depending on where it is already set.",
-        "A 1-hour cache costs more to write than the 5-minute default, so it only pays off when replies "
-        "are often more than 5 minutes apart; the 1-hour lifetime is also ignored while a Pro or Max plan "
-        "is drawing on extra usage credits.",
+        "settings.json's promptCacheTtl (the main session) or subagentPromptCacheTtl (every subagent), or an "
+        "agent file's experimental.cacheTtl frontmatter (a named agent type) -- whichever key this finding "
+        "names, at user or project scope depending on where it is already set.",
+        "A 1-hour cache costs more to write than a 5-minute one, so it only pays off when replies "
+        "are often more than 5 minutes apart; a 1-hour lifetime in an agent file is also ignored while a "
+        "Pro or Max plan is drawing on extra usage credits.",
         "Set the TTL key back to its previous value (Claude Code shows the change before saving it, and "
         "claude-token-lens apply --revert undoes a change made with apply).",
     ),
@@ -461,13 +502,44 @@ _WORKFLOW_EXPLAINER: dict[str, tuple[str, str, str]] = {
         "Set autoCompactWindow back to its previous value (Claude Code shows the change before saving it).",
     ),
     "long-context-share": (
-        "settings.json's autoCompactWindow (compacting sooner), or nowhere in the config at all if you "
-        "instead move exploration into a subagent whose context is discarded when it finishes.",
-        "Compacting sooner drops detail the same way raising the window avoids; moving exploration into a "
-        "subagent means its findings only reach the main session through its final report, which can lose "
-        "nuance.",
-        "Set autoCompactWindow back to its previous value, or go back to exploring directly in the main "
-        "session.",
+        "Nowhere in the config: how you work in the main session. The auto-compact window is left to the "
+        "compaction check, so this card doesn't change it.",
+        "Moving exploration into a subagent means its findings only reach the main session through its final "
+        "report, which can lose nuance; a fresh session starts without what the old one knew.",
+        "Go back to exploring directly in the main session and carrying one session across tasks.",
+    ),
+    "plan-handoff": (
+        "Nowhere in Claude Code's config: how you move from planning to building in the main session. The "
+        "prompt adds a reminder to your CLAUDE.md.",
+        "A fresh session knows only the plan and what it reads again, so a thin plan can mean re-reading "
+        "files or asking again about decisions made while planning.",
+        "Remove the reminder from your CLAUDE.md and keep building in the planning session.",
+    ),
+    "run-split": (
+        "Nowhere in Claude Code's config: how the main session hands work to this agent. The prompt adds an "
+        "instruction to your CLAUDE.md, and a line to the agent's file if it has one.",
+        "Each fresh run knows only its task and the note, so it may read some files again, and a thin note can "
+        "miss a decision the last run made.",
+        "Remove the instruction from your CLAUDE.md, and the line from the agent's file.",
+    ),
+    "hook-failures": (
+        "The hooks entries in your settings.json files (user, project or local) or a plugin's hooks, for every "
+        "session that runs them.",
+        "A hook that starts working again does its job again: a guard that was failing will start blocking the "
+        "calls it was written to block.",
+        "Put the hook's command back as it was (Claude Code shows the change before saving it).",
+    ),
+    "hook-block-resent": (
+        "The hook's script, and its entry in your settings.json files, for every session that runs it.",
+        "Letting a call through with a note trusts Claude to act on the note; a block makes sure the call "
+        "doesn't run as sent.",
+        "Put the hook's script back as it was.",
+    ),
+    "hook-context-carry": (
+        "The hook's script or its plugin's settings, for every session that runs it.",
+        "A shorter message, or one sent less often, gives Claude less to go on when the hook has something "
+        "to say.",
+        "Put the hook's script back as it was, or turn the plugin's hook back on.",
     ),
     "cache-read-dominance": (
         "Nothing to change here -- this card is informational.",
@@ -646,6 +718,9 @@ def _shown(value) -> str:
 
 
 def _model_family(model_id: str) -> str:
+    # Opus while planning, Sonnet otherwise: not the same as "opus".
+    if model_id.startswith("opusplan"):
+        return "opusplan"
     for family in ("haiku", "sonnet", "opus", "fable"):
         if family in model_id:
             return family

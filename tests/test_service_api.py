@@ -169,7 +169,7 @@ def _install_fake_rebuild(monkeypatch, corpus: corpus_mod.Corpus) -> None:
 
     fake = types.ModuleType("claude_token_lens.service.rebuild")
 
-    def corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+    def corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         # project_slugs (additive, project-filter work): the one argument
         # this fake does *not* ignore -- api.py's own project filter
         # (_project_query/_build_report_model) is what a test in this
@@ -1300,7 +1300,7 @@ def test_ttl_route(server):
     assert_privacy(body)
 
 
-@pytest.mark.parametrize("route", ["/api/carry", "/api/compaction-sim", "/api/model-swap", "/api/waste"])
+@pytest.mark.parametrize("route", ["/api/carry", "/api/compaction-sim", "/api/plan-handoff", "/api/model-swap", "/api/waste"])
 def test_v4_report_backed_routes_return_ok(server, route):
     """Mirrors test_ttl_route for the v4 wiring round's four new
     report-backed routes -- each just reads its own like-named section
@@ -1331,7 +1331,7 @@ def test_report_backed_routes_carry_lead_columns(server):
 
 
 def test_v4_report_backed_routes_accept_since_until(server):
-    for route in ("/api/carry", "/api/compaction-sim", "/api/model-swap", "/api/waste"):
+    for route in ("/api/carry", "/api/compaction-sim", "/api/plan-handoff", "/api/model-swap", "/api/waste"):
         resp, body = server.get_json(f"{route}?since=2026-08-01T00:00:00%2B00:00&until=2026-08-31T00:00:00%2B00:00")
         assert resp.status == 200
         assert body["ok"] is True
@@ -1348,13 +1348,99 @@ def test_recommendations_route(server):
     assert_privacy(body)
 
 
+def _start_recommending_server(tmp_path, monkeypatch) -> _ServerHandle:
+    """The default ``server`` fixture's 3-turn corpus never clears
+    recommend()'s minimum sample, so this builds a bigger,
+    cache-read-heavy one (same shape as test_recommend_contract.py's),
+    which does."""
+    project_dir = tmp_path / "projects" / "proj-b"
+    project_dir.mkdir(parents=True)
+    write_jsonl(
+        project_dir / "session-b.jsonl",
+        [
+            turn_line(
+                timestamp=f"2026-09-{10 + (i % 15):02d}T12:00:00.000Z",
+                input_tokens=100,
+                output_tokens=50,
+                ephemeral_5m_input_tokens=1000,
+                cache_read_input_tokens=5000,
+            )
+            for i in range(220)
+        ],
+    )
+    return _start_server(tmp_path, monkeypatch, corpus=corpus_mod.load_corpus([project_dir]))
+
+
+def test_ignoring_a_recommendation_marks_its_row_and_can_be_undone(tmp_path, monkeypatch):
+    handle = _start_recommending_server(tmp_path, monkeypatch)
+    try:
+        _resp, body = handle.get_json("/api/recommendations")
+        rows = body["data"]
+        assert rows and all(row["ignored"] is False and row["ignored_before"] is None for row in rows)
+        key = rows[0]["key"]
+
+        resp, body = handle.post_json("/api/recommendations/ignore", {"keys": [key], "ignored": True})
+        assert resp.status == 200
+        assert body["data"] == {"keys": [key], "ignored": True, "active_profile_id": None}
+        _resp, body = handle.get_json("/api/recommendations")
+        row = next(r for r in body["data"] if r["key"] == key)
+        assert row["ignored"] is True and row["ignored_in"] == "all" and row["ignored_at"]
+        assert sum(r["ignored"] for r in body["data"]) == 1
+        # The report itself stays complete.
+        _resp, raw = handle.request("GET", "/api/report.json")
+        assert key in raw.decode("utf-8")
+
+        # Kept under the profile apply last marked active.
+        (handle.options.config_dir / "active-profile").write_text("interactive-chat", encoding="utf-8")
+        _resp, body = handle.get_json("/api/recommendations")
+        assert not any(r["ignored"] for r in body["data"])
+        _resp, body = handle.get_json("/api/profiles")
+        assert body["data"]["active_profile_id"] == "interactive-chat"
+        assert body["data"]["active_profile_name"]
+        (handle.options.config_dir / "active-profile").unlink()
+        _resp, body = handle.get_json("/api/profiles")
+        assert body["data"]["active_profile_id"] is None and body["data"]["active_profile_name"] is None
+
+        resp, body = handle.post_json("/api/recommendations/ignore", {"keys": [key], "ignored": False})
+        assert resp.status == 200
+        _resp, body = handle.get_json("/api/recommendations")
+        assert not any(r["ignored"] for r in body["data"])
+    finally:
+        handle.close()
+
+
+def test_ignore_checks_what_it_is_sent(tmp_path, monkeypatch):
+    handle = _start_recommending_server(tmp_path, monkeypatch)
+    try:
+        _resp, body = handle.get_json("/api/recommendations")
+        key = body["data"][0]["key"]
+        for bad in (
+            [],
+            {"keys": key, "ignored": True},
+            {"keys": [], "ignored": True},
+            {"keys": ["../etc/passwd"], "ignored": True},
+            {"keys": [key], "ignored": "yes"},
+            {"keys": [key] * 101, "ignored": True},
+        ):
+            resp, body = handle.post_json("/api/recommendations/ignore", bad)
+            assert resp.status == 400, bad
+        resp, body = handle.post_json("/api/recommendations/ignore", {"keys": ["no-such-rule"], "ignored": True})
+        assert resp.status == 404
+        resp, _raw = handle.request(
+            "POST",
+            "/api/recommendations/ignore",
+            body={"keys": [key], "ignored": True},
+            headers={"Sec-Fetch-Site": "cross-site"},
+        )
+        assert resp.status == 403
+        assert not (handle.options.config_dir / "ignored-recommendations.json").exists()
+    finally:
+        handle.close()
+
+
 def test_recommendations_carry_a_key_and_saving_usd(tmp_path, monkeypatch):
     """Additive (Task Group B): every recommendation gets a deterministic
-    key and its saving as a plain number, alongside the existing fields.
-    The default ``server`` fixture's 3-turn corpus never clears
-    recommend()'s minimum sample, so this builds its own bigger,
-    cache-read-heavy one (same shape as
-    test_recommend_contract.py's), which does."""
+    key and its saving as a plain number, alongside the existing fields."""
     project_dir = tmp_path / "projects" / "proj-b"
     project_dir.mkdir(parents=True)
     write_jsonl(
@@ -1551,7 +1637,7 @@ def test_report_json_forwards_since_until_to_rebuild_and_ignores_default_window(
     calls = []
     real_corpus = server.corpus
 
-    def recording_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+    def recording_corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         calls.append({"days": days, "since": since, "until": until, "window_by": window_by})
         return real_corpus
 
@@ -1571,7 +1657,7 @@ def test_report_json_forwards_since_until_to_rebuild_and_ignores_default_window(
             "days": None,
             "since": "2026-08-01T00:00:00+00:00",
             "until": "2026-08-31T00:00:00+00:00",
-            "window_by": "mtime",
+            "window_by": "last-reply",
         }
     ]
     body = json.loads(raw)
@@ -1582,7 +1668,7 @@ def test_report_json_since_until_is_a_separate_cache_key_from_window_days(server
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -1604,7 +1690,7 @@ def test_report_json_is_memoized_per_window(server, monkeypatch):
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -1634,7 +1720,7 @@ def test_requests_for_a_window_already_being_built_share_that_build(server, monk
     started, release = threading.Event(), threading.Event()
     real_corpus = server.corpus
 
-    def slow_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+    def slow_corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         calls["n"] += 1
         started.set()
         release.wait(10)
@@ -1674,7 +1760,7 @@ def test_report_json_cache_invalidates_when_store_change_token_changes(server, m
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -1714,7 +1800,7 @@ def _count_builds(server, monkeypatch) -> dict:
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -1776,7 +1862,7 @@ def test_a_named_window_serves_its_last_report_when_its_start_moves_on(server, m
     the tab waits."""
     calls = _count_builds(server, monkeypatch)
     start = {"since": "2026-09-23T10:00:00Z"}
-    monkeypatch.setattr(service_api, "_named_window_since", lambda name, config_dir, now=None: (start["since"], ""))
+    monkeypatch.setattr(service_api, "_named_window_since", lambda name, config_dir, now=None, **_kw: (start["since"], ""))
 
     server.request("GET", "/api/report.json?window=1h")
     assert calls["n"] == 1
@@ -2181,7 +2267,7 @@ def test_all_time_window_has_no_limit(server):
     resp, payload = server.get_json("/api/quick-actions?window=all")
     assert resp.status == 200
     assert payload["data"]["period"] == "over all time"
-    assert service_api._window_query({"window": "all"}) == ((None, None, None), None)
+    assert service_api._window_query({"window": "all"}) == ((None, None, None, "last-reply"), None)
     resp, payload = server.get_json("/api/summary?window=all")
     assert resp.status == 200
     assert "sessions" in payload["data"]
@@ -2193,6 +2279,32 @@ def test_since_last_change_window_needs_a_change(server):
     assert "No change recorded yet" in payload["error"]["message"]
     resp, payload = server.get_json("/api/summary?window=fortnight")
     assert resp.status == 400
+
+
+def test_the_change_window_counts_the_sessions_started_since(server, monkeypatch):
+    """"Since my last change" counts sessions by their first reply, on
+    every store read, so its figures match the "Without this change"
+    line; the other windows keep counting sessions by their last."""
+    monkeypatch.setattr(
+        service_api, "_named_window_since", lambda name, config_dir, now=None, *, latest=None: ("2026-09-18T12:30:00Z", "")
+    )
+    assert service_api._window_query({"window": "change"}) == ((None, "2026-09-18T12:30:00Z", None, "first-reply"), None)
+    assert service_api._window_query({"window": "today"}) == ((None, "2026-09-18T12:30:00Z", None, "last-reply"), None)
+    seen = {}
+    for name in ("summary", "sessions", "daily_usage", "compactions", "cache_read_tokens_by_model"):
+        real = getattr(server.store, name)
+
+        def spy(*args, _name=name, _real=real, **kwargs):
+            seen[_name] = kwargs.get("window_by")
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(server.store, name, spy)
+    for route in ("summary", "sessions", "daily-usage", "compactions"):
+        resp, payload = server.get_json(f"/api/{route}?window=change")
+        assert resp.status == 200, payload
+    assert seen == dict.fromkeys(seen, "first-reply") and len(seen) == 5
+    server.get_json("/api/summary?window=today")
+    assert seen["summary"] == "last-reply"
 
 
 def test_named_window_since_is_rounded_to_the_minute():
@@ -2231,8 +2343,44 @@ def test_impact_is_empty_without_changes_and_lists_an_apply(server):
     from claude_token_lens import impact as impact_mod
 
     assert change["gate"] == {"reason": "min_sessions", "have": 0, "need": impact_mod.MIN_SESSIONS}
+    # Too few sessions since the change to say what it would have cost without it.
+    assert change["without"] is None
     resp, payload = server.get_json("/api/summary?window=change")
     assert resp.status == 200
+
+
+def test_impact_and_the_last_change_window_see_a_change_only_sessions_show(tmp_path, monkeypatch):
+    """A model change no apply or snapshot recorded (EST-P9) reaches the
+    impact card and starts the "since my last change" window."""
+    from datetime import datetime, timedelta, timezone
+
+    from claude_token_lens.snapshots import snapshot_project_key
+
+    project_dir = tmp_path / "projects" / "proj-a"
+    project_dir.mkdir(parents=True)
+    now = datetime.now(timezone.utc)
+    for name, days, model in (("s1", 3, "claude-sonnet-5"), ("s2", 1, "claude-opus-5-5")):
+        start = now - timedelta(days=days)
+        write_jsonl(
+            project_dir / f"{name}.jsonl",
+            [
+                turn_line(timestamp=(start + timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%S.000Z"), model=model)
+                for s in (0, 5)
+            ],
+        )
+    handle = _start_server(tmp_path, monkeypatch, corpus=corpus_mod.load_corpus([project_dir]))
+    try:
+        resp, payload = handle.get_json("/api/summary?window=change")
+        assert resp.status == 200, payload
+        resp, payload = handle.get_json("/api/impact")
+        [change] = payload["data"]["changes"]
+        assert change["change"]["source"] == "transcript"
+        assert change["change"]["summary"] == "model: claude-sonnet-5 → claude-opus-5-5"
+        assert change["change"]["project"] == snapshot_project_key("proj-a")
+        assert change["change"]["project_name"] == "proj-a"
+    finally:
+        handle.close()
+        handle.store.close()
 
 
 def test_impact_gate_is_null_once_both_sides_have_enough_sessions(server):
@@ -2496,6 +2644,34 @@ def test_setup_lists_the_footprint_expectations_and_uninstall(server):
     assert all(set(item) >= {"title", "status", "token_cost", "undo"} for item in data["items"])
     assert data["expectations"][0]["title"] == "It never uses your Claude tokens"
     assert data["uninstall_command"].endswith("--dry-run")
+
+
+@pytest.mark.parametrize("registered", [True, False, None])
+def test_setup_status_says_what_works_and_names_no_path(tmp_path, monkeypatch, registered):
+    handle = _start_server(tmp_path, monkeypatch, service_registered=lambda: registered)
+    try:
+        resp, raw = handle.request("GET", "/api/setup/status")
+        assert resp.status == 200
+        _assert_no_leak(raw)
+        data = json.loads(raw)["data"]
+        items = {item["key"]: item for item in data["items"]}
+        assert list(items) == ["billing", "hook", "service", "capture", "skill", "statusline"]
+        assert all(set(item) == {"key", "label", "state", "word", "detail", "fix", "essential"} for item in data["items"])
+        # Nothing chosen and nothing connected in a fresh config folder.
+        assert items["billing"]["state"] == "problem" and items["hook"]["state"] == "problem"
+        assert data["done"] is False and data["needs_attention"] >= 2
+        assert data["verdict"].endswith("need attention.")
+        # This dashboard answering is proof it runs: only the logon task
+        # is in question, and an unknown answer is never a problem.
+        service = items["service"]
+        assert service["state"] == {True: "ok", False: "off", None: "ok"}[registered]
+        assert "http://" not in service["detail"]
+        if registered is False:
+            assert "cleanupPeriodDays" in service["detail"]
+            assert service["fix"] == "claude-token-lens install-service"
+    finally:
+        handle.close()
+        handle.store.close()
 
 
 # -- metrics capture (/api/health's capture block, /api/capture) -----------
@@ -3067,6 +3243,7 @@ def test_report_cache_does_not_leak_across_project_filters(two_project_server):
         "/api/ttl",
         "/api/carry",
         "/api/compaction-sim",
+        "/api/plan-handoff",
         "/api/model-swap",
         "/api/waste",
         "/api/config-diff?auto_keys=1",

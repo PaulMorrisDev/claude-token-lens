@@ -37,6 +37,9 @@ class Context:
     config_dir: Path
     effective: dict
     effective_agents: dict
+    #: Recommendations ignored on the dashboard (``ignores.py``): the
+    #: drafted fixes leave their changes out.
+    skip_keys: frozenset = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +156,13 @@ def _merge_fixes(*groups: list[dict]) -> list[dict]:
 
 def _goal(ctx: Context, goal_id: str) -> dict:
     return goals.draft(
-        goal_id, ctx.model, ctx.units, effective=ctx.effective, effective_agents=ctx.effective_agents, period=ctx.period
+        goal_id,
+        ctx.model,
+        ctx.units,
+        effective=ctx.effective,
+        effective_agents=ctx.effective_agents,
+        period=ctx.period,
+        skip_keys=ctx.skip_keys,
     )
 
 
@@ -266,6 +275,13 @@ def _effort(ctx: Context) -> dict:
     )
 
 
+#: The replay keeps every real summary, so it can only test smaller windows.
+_LARGER_WINDOW = (
+    "A larger window can't be tested: the replay keeps every real summary, so points above yours cost what your "
+    "sessions did."
+)
+
+
 def _compaction(ctx: Context) -> dict:
     tables = whatif._Tables(ctx.model)
     rows = tables.rows("compaction_sim", "compaction_sim_by_window")
@@ -279,21 +295,38 @@ def _compaction(ctx: Context) -> dict:
     )
     draft = _goal(ctx, "compaction")
     fixes = _goal_fixes(ctx, draft, lambda c: f"Summarise at {c['value']:,} tokens")
+    limit = CompactionSimThresholds().max_compactions_per_session
+    if not fixes and not any(
+        str(r.get("window")) != "none" and (whatif._num(r.get("compactions_per_session")) or 0.0) <= limit
+        for r in rows
+    ):
+        # Real summaries are kept under every window, so when they alone
+        # pass the limit no window replayed can meet it.
+        observed = next((r for r in rows if str(r.get("window")) == "none"), {})
+        return _result(
+            "ok",
+            f"Your sessions summarised about {whatif._num(observed.get('compactions_per_session')) or 0:.1f} times "
+            f"each as they ran, more than the {limit:g} a session a suggested point may reach, so no smaller window "
+            f"is suggested. {_LARGER_WINDOW}",
+            table=table,
+        )
     if not fixes:
         current = (ctx.effective or {}).get("autoCompactWindow")
         if current and any(str(r.get("window")).replace(",", "") == str(current) for r in rows):
             # The last column is against the sessions as they ran, most
             # perhaps before this setting, so its own row can read cheaper.
-            limit = CompactionSimThresholds().max_compactions_per_session
             return _result(
                 "ok",
                 f"You already summarise at {int(current):,} tokens, within a few percent of the cheapest point "
                 f"replayed that summarises at most {limit:g} times a session. The last column compares each point "
-                "with your sessions as they ran, not with that setting.",
+                f"with your sessions as they ran, not with that setting. {_LARGER_WINDOW}",
                 table=table,
             )
-        return _result("ok", "Your current summary point is within a few percent of the cheapest one replayed.",
-                       table=table)
+        return _result(
+            "ok",
+            f"Your current summary point is within a few percent of the cheapest one replayed. {_LARGER_WINDOW}",
+            table=table,
+        )
     [candidate] = draft["candidates"]
     return _result(
         "act",
@@ -582,6 +615,40 @@ def _tool_output(ctx: Context) -> dict:
         fixes=fixes,
         tips=tips,
     )
+
+
+_HOOK_RECS = {"hook-failures", "hook-block-resent", "hook-context-carry"}
+
+
+def _hooks(ctx: Context) -> dict:
+    tables = whatif._Tables(ctx.model)
+    rows = tables.rows("hooks", "hooks_by_script")
+    if not rows:
+        return _result("no_data", "No hook of yours left a record in this window.")
+
+    def count(row, key) -> int:
+        return int(whatif._num(row.get(key)) or 0)
+
+    table = _table(
+        [("hook", "Hook"), ("failed", "Failed runs"), ("cause", "Why it failed"), ("blocks", "Calls blocked"),
+         ("resent", "Sent again unchanged"), ("context", "Context added"), ("cost", "Cost of its context and blocks")],
+        [[r.get("hook"), f"{count(r, 'failed'):,}", str(r.get("cause") or "")[:1].upper() + str(r.get("cause") or "")[1:],
+          f"{count(r, 'blocks'):,}", f"{count(r, 'resent'):,}", f"{count(r, 'context_tokens'):,} tokens",
+          _money(ctx, (whatif._num(r.get("carry_usd")) or 0) + (whatif._num(r.get("block_usd")) or 0))]
+         for r in rows[:10]],
+    )
+    recs = _recommendations(ctx, _HOOK_RECS)
+    if not recs:
+        return _result("ok", "Your hooks work, and none costs much in kept context or blocked calls.", table=table)
+    failing = [r for r in rows if count(r, "failed")]
+    if any(rec.id == "hook-failures" for rec in recs):
+        summary = (
+            f"{len(failing)} of your hooks failed {sum(count(r, 'failed') for r in failing):,} times, so they didn't "
+            "do their job."
+        )
+    else:
+        summary = "Some of your hooks cost more than they need to, in kept context or in replies spent on blocks."
+    return _result("act", summary, table=table, fixes=_rec_fixes(recs))
 
 
 _HABIT_RECS = {
@@ -959,7 +1026,9 @@ def _quality(ctx: Context) -> dict:
                 "text": "Ask for the result in parts, or write long output to a file instead of the reply.",
             })
     if not struggling and not worse and not retried:
-        tested = [r for r in setups if r.get("setup_verdict") not in ("only", "baseline", "too_little_data")]
+        tested = [
+            r for r in setups if r.get("setup_verdict") not in ("only", "baseline", "too_little_data", "not_comparable")
+        ]
         return _result(
             "ok",
             "No agent stands out: none fails often, no model or effort did clearly worse than the one it is "
@@ -995,12 +1064,12 @@ def _quality(ctx: Context) -> dict:
 CHECKS: tuple[Check, ...] = (
     Check("models", "Is each agent on the cheapest model that does the job?",
           "Every reply is priced by its model; a cheaper model for routine agents is usually the largest saving.",
-          _models, ("model-tier",)),
+          _models, ("model-tier", "model-tier-main")),
     Check("effort", "Is anything thinking more than the work needs?",
           "Thinking is billed as output, the most expensive kind of token.", _effort, ("effort-mismatch",)),
     Check("compaction", "When should conversations be summarised?",
           "Every reply re-reads the whole conversation, so the point it's summarised at sets the cost of each reply.",
-          _compaction, ("compaction-window", "compaction-churn")),
+          _compaction, ("compaction-window", "compaction-churn", "plan-handoff", "run-split")),
     Check("cache", "Which cache lifetime is cheaper for you?",
           "A 5-minute cache is cheaper to write; a 1-hour one survives longer pauses without rebuilding.", _cache,
           ("ttl-switch",)),
@@ -1015,6 +1084,9 @@ CHECKS: tuple[Check, ...] = (
     Check("tool-output", "Do tool results fill your context?",
           "A tool's output stays in the conversation and is re-read on every later reply.", _tool_output,
           ("tool-output-carry",)),
+    Check("hooks", "Do your hooks work, and what do they cost?",
+          "A failing hook doesn't do its job, and context a hook adds is re-read on every later reply.", _hooks,
+          tuple(sorted(_HOOK_RECS))),
     Check("habits", "Do any habits cost tokens?",
           "Pauses, retries and long reports cost tokens that no setting can save.", _habits, tuple(sorted(_HABIT_RECS))),
     Check("quality", "Is any agent struggling?",

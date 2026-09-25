@@ -47,6 +47,7 @@ from . import classify
 from . import model_gate
 from . import quality
 from .context_files import _parse_ts
+from .handoff import plan_carried, plan_shape, starting_context
 from .model import PROMPT_FLAGS, Column, EventKind, Feedback, Recommendation, Section, Table, Turn
 from .pricing import Pricing, effective_rates, price_turn
 from .topology import agent_key
@@ -583,6 +584,22 @@ class Piece:
     slow: tuple[str, ...]
     helped: tuple[str, ...]
     source: str
+    #: ``handoff.plan_shape`` of the messages it covers.
+    shape: str = "no_plan"
+    worth: str | None = None
+    #: The /tl-feedback handoff answer, asked after an approved plan.
+    handoff: str | None = None
+
+
+@dataclass(slots=True)
+class SessionShape:
+    """Whether you planned and built in one main session."""
+
+    #: ``handoff.plan_shape``: "plan_build", "plan_only" or "no_plan".
+    shape: str
+    cost: float
+    #: ``handoff.plan_carried``: tokens, or ``None`` without a plan.
+    carried: int | None
 
 
 @dataclass(slots=True)
@@ -592,6 +609,8 @@ class Habits:
     cycles: list[CycleFact] = field(default_factory=list)
     agents: list[AgentFact] = field(default_factory=list)
     pieces: list[Piece] = field(default_factory=list)
+    #: One per main session with a message of yours.
+    shapes: list[SessionShape] = field(default_factory=list)
     #: (session_id, day, project, start-up premium USD) of sessions that
     #: were one small ask; ``reported`` when a size tag said so.
     small_sessions: list = field(default_factory=list)
@@ -681,7 +700,7 @@ def _session(bundle, rates: _Rates, out: Habits, rating) -> None:
     cycles = capture_mod.prompt_cycles(top, bundle.subs)
     carry = _CarryCost(turns, rates)
     first_turn = turns[0]
-    baseline = max(0, first_turn.ctx - (first_turn.human_prompt_chars or 0) // capture_mod.CHARS_PER_TOKEN)
+    baseline = starting_context(turns)
 
     rated: dict[int, Feedback] = {}
     for span in capture_mod.feedback_spans(cycles):
@@ -693,6 +712,14 @@ def _session(bundle, rates: _Rates, out: Habits, rating) -> None:
     work = [c for c in cycles if not capture_mod.is_feedback_run(c)]
     if session_rating is not None and work:
         out.pieces.append(_piece(session_rating, work, rates, "dashboard rating"))
+    if work:
+        out.shapes.append(
+            SessionShape(
+                shape=plan_shape(turns),
+                cost=sum(capture_mod._cycle_cost(c, rates.pricing) for c in cycles),
+                carried=plan_carried(turns),
+            )
+        )
 
     index_of = {id(t): i for i, t in enumerate(turns)}
     denied = _denials(top, turns)
@@ -752,6 +779,9 @@ def _piece(fb: Feedback, cycles, rates: _Rates, source: str) -> Piece:
         slow=tuple(w for w in fb.slow if w != "none"),
         helped=tuple(w for w in fb.helped if w != "none"),
         source=source,
+        shape=plan_shape([t for c in cycles for t in c.turns]),
+        worth=fb.worth,
+        handoff=fb.handoff,
     )
 
 
@@ -2520,6 +2550,64 @@ def _outcomes_table(h: Habits) -> Table:
     )
 
 
+#: ``habits_by_shape`` rows, in order.
+SHAPE_LABELS = {
+    "plan_build": "Planned and built in one session",
+    "plan_only": "Planned, then built elsewhere",
+    "no_plan": "No plan",
+}
+
+
+def _by_shape_table(h: Habits) -> Table:
+    """Main sessions by whether you planned and built in them, and what
+    your feedback said about each kind: whether the work met its goal,
+    was worth the tokens, and could have been built from the plan
+    alone."""
+    rows = []
+    total = len(h.shapes)
+    for shape in SHAPE_LABELS:
+        sessions = [s for s in h.shapes if s.shape == shape]
+        if not sessions:
+            continue
+        pieces = [p for p in h.pieces if p.shape == shape]
+        worth = [p for p in pieces if p.worth]
+        carried = [s.carried for s in sessions if s.carried is not None]
+        handoff = Counter(p.handoff for p in pieces if p.handoff)
+        rows.append([
+            shape,
+            len(sessions),
+            _pct(len(sessions), total),
+            _mean(s.cost for s in sessions),
+            round(statistics.median(carried)) if carried else None,
+            len(pieces),
+            _pct(sum(p.outcome == "met" for p in pieces), len(pieces)),
+            _pct(sum(p.worth == "yes" for p in worth), len(worth)),
+            _pct(sum(p.worth == "no" for p in worth), len(worth)),
+            handoff["yes"],
+            handoff["partly"],
+            handoff["no"],
+        ])
+    return Table(
+        name="habits_by_shape",
+        title="Planning and building in one session",
+        columns=[
+            Column(key="shape", label="Session", kind="str"),
+            Column(key="sessions", label="Sessions", kind="int"),
+            Column(key="share", label="Share", kind="pct"),
+            Column(key="avg_cost", label="Per session", kind="money"),
+            Column(key="carried_median", label="Planning kept (median)", kind="int"),
+            Column(key="pieces", label="Pieces rated", kind="int"),
+            Column(key="met_pct", label="Met the goal", kind="pct"),
+            Column(key="worth_pct", label="Worth it", kind="pct"),
+            Column(key="costly_pct", label="Too costly", kind="pct"),
+            Column(key="handoff_yes", label="Plan was enough", kind="int"),
+            Column(key="handoff_partly", label="Plan was partly enough", kind="int"),
+            Column(key="handoff_no", label="Needed the discussion", kind="int"),
+        ],
+        rows=rows,
+    )
+
+
 def _self_report_row(kind: str, word: str, cycles: list[CycleFact]) -> list | None:
     if not cycles:
         return None
@@ -2688,6 +2776,7 @@ def section_from(h: Habits, *, model_swap=None) -> Section:
             _setups_table(h),
             _agents_by_task_table(h, model_swap),
             _outcomes_table(h),
+            _by_shape_table(h),
             _self_report_table(h),
             _prompt_flags_table(h),
             _skills_table(h),

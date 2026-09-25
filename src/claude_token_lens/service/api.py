@@ -31,7 +31,7 @@ Two kinds of route:
   :func:`~claude_token_lens.report.build_report`/
   :func:`~claude_token_lens.recommend.recommend` pipeline the CLI's
   ``report`` subcommand uses, then a renderer. Rebuilt once per
-  ``(window_days, since, until, store-change-token)`` key and cached in-process (see
+  ``(window_days, since, until, window_by, project, store-change-token)`` key and cached in-process (see
   ``_ReportCache``) so switching UI tabs (``docs/ui.md``) never re-parses
   the whole store for the same window.
 
@@ -90,7 +90,6 @@ project's convention -- see e.g. ``report.py``'s own module docstring):
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import html
 import ipaddress
@@ -112,7 +111,7 @@ from zoneinfo import ZoneInfo
 
 from .. import __version__ as _TOOL_VERSION
 from .. import baseline as baseline_mod
-from .. import capture_catalogue, helptext, hook_health, invocation
+from .. import capture_catalogue, helptext, hook_health, ignores, invocation
 from .. import snapshots as snapshots_mod
 from ..config import CAPTURE_SAMPLES, ConfigError, load_config, load_session_overrides, set_capture
 from ..pricing import PricingError, cache_read_savings_usd, load_pricing
@@ -176,6 +175,9 @@ _REPORT_CACHE_SIZE = 8
 #: than served while a rebuild runs (a tab reopened after a long idle
 #: shouldn't show figures from hours ago, even briefly).
 _STALE_REPORT_MAX_AGE_S = 600.0
+#: How long the "since my last change" window's newest change is kept
+#: while sessions keep arriving (each would otherwise re-read them).
+_LATEST_CHANGE_MAX_AGE_S = 120.0
 
 _RESTART_ADVICE = "Restart the dashboard: claude-token-lens install-service, or stop and start serve."
 
@@ -355,6 +357,12 @@ _PROFILE_RE = re.compile(r"^/api/profiles/([^/]+)$")
 _SESSION_EXPLAIN_RE = re.compile(r"^/api/session/([^/]+)/explain$")
 _CLAUDE_MD_RE = re.compile(r"^/api/claude-md/([0-9a-f]{16})$")
 _QUICK_ACTION_RE = re.compile(r"^/api/quick-actions/([a-z0-9-]+)$")
+#: A recommendation's key (``Recommendation.key``), as the ignore route
+#: accepts it.
+_REC_KEY_RE = re.compile(r"^[a-z0-9._:-]{1,200}$")
+#: At most this many keys in one ignore request (a rule for many agent
+#: types is one item on the dashboard, and one request).
+_MAX_IGNORE_KEYS = 100
 
 #: ``profiles.diff``'s own ``_VALID_SCOPES`` -- duplicated rather than
 #: imported (that name is private) so a scope query param can be
@@ -477,10 +485,14 @@ WINDOW_NAMES = {
 }
 
 
-def _named_window_since(name: str, config_dir: Path | None, now: datetime | None = None) -> tuple[str | None, str]:
+def _named_window_since(
+    name: str, config_dir: Path | None, now: datetime | None = None, *, latest=None
+) -> tuple[str | None, str]:
     """``(since, "")`` for a named window as an ISO timestamp, rounded
     down to the minute so repeat requests share one cached report, or
-    ``(None, reason)`` when it can't be worked out."""
+    ``(None, reason)`` when it can't be worked out. ``latest``, when
+    given, returns the newest change point for the "change" window (the
+    service passes one that counts changes only your sessions show)."""
     now = now or datetime.now(timezone.utc)
     if name == "1h":
         start = now - timedelta(hours=1)
@@ -499,12 +511,15 @@ def _named_window_since(name: str, config_dir: Path | None, now: datetime | None
     elif name == "change":
         from .. import change_points
 
-        point = change_points.latest(config_dir) if config_dir is not None else None
+        if latest is not None:
+            point = latest()
+        else:
+            point = change_points.latest(config_dir) if config_dir is not None else None
         if point is None:
             return None, (
                 "No change recorded yet. This window starts at your latest `apply` (a profile or a "
-                "one-off change), its undo, a settings change the config hook saw, or a change to metrics "
-                "capture."
+                "one-off change), its undo, a settings change the config hook saw, a change to metrics "
+                "capture, or a model, effort or CLAUDE.md size change your sessions show."
             )
         start = point.ts
     else:
@@ -516,6 +531,7 @@ def _window_query(
     query: dict[str, str],
     *,
     config_dir: Path | None = None,
+    latest=None,
 ) -> tuple[tuple[int | None, str | None, str | None], tuple[int, dict] | None]:
     """Parse the report-backed routes' windowing query params: ``window``
     (a named short window, :data:`WINDOW_NAMES`, resolved to ``since``), or
@@ -527,17 +543,20 @@ def _window_query(
     routes' usual 30-day default (docs/api.md's "byte-equivalent to the
     CLI" parity requirement for ``/api/report.*``).
 
-    Returns ``((window_days, since, until), None)`` on success, or
-    ``(None, error)`` -- an already-built ``400 bad_request`` response.
+    Returns ``((window_days, since, until, window_by), None)`` on
+    success, or ``(None, error)`` -- an already-built ``400 bad_request``
+    response. ``window_by`` is ``"first-reply"`` for "since your last
+    change", whose sessions are the ones that started on the new
+    settings, and ``"last-reply"`` otherwise.
     """
     name = _str_query(query, "window")
     if name == "all":
-        return (None, None, None), None
+        return (None, None, None, "last-reply"), None
     if name is not None:
-        since, reason = _named_window_since(name, config_dir)
+        since, reason = _named_window_since(name, config_dir, latest=latest)
         if since is None:
             return None, _bad_request(reason)
-        return (None, since, None), None
+        return (None, since, None, "first-reply" if name == "change" else "last-reply"), None
     since = _str_query(query, "since")
     until = _str_query(query, "until")
     for label, value in (("since", since), ("until", until)):
@@ -548,10 +567,12 @@ def _window_query(
     window_days, err = _int_query(query, "window_days", default_days, minimum=1)
     if err is not None:
         return None, err
-    return (window_days, since, until), None
+    return (window_days, since, until, "last-reply"), None
 
 
-def _period_text(window_days: int | None, since: str | None, until: str | None, *, name: str | None = None) -> str:
+def _period_text(
+    window_days: int | None, since: str | None, until: str | None, window_by: str = "last-reply", *, name: str | None = None
+) -> str:
     """The window as a phrase that follows an amount: "over the last 30
     days", "in the last hour", "since 2026-09-20T10:00:00Z", "over all
     time"."""
@@ -727,10 +748,44 @@ def make_handler(
     #: header (see Handler._write_headers).
     request_ctx = threading.local()
 
+    #: The newest change, counting the ones only sessions show, for the
+    #: "since my last change" window: {"key", "point", "at" (monotonic)}.
+    latest_change_cache: dict = {"key": None, "point": None, "at": 0.0}
+
+    def _latest_change():
+        """The newest change point, counting a model, effort or CLAUDE.md
+        size change only your sessions show (``change_points``' EST-P9),
+        so the "since my last change" window starts where the impact
+        card's newest change does. Reads the sessions from the newest
+        recorded change (less impact's lookback, for the session before
+        it). While sessions keep arriving, the answer is kept for
+        ``_LATEST_CHANGE_MAX_AGE_S`` rather than worked out per request."""
+        from .. import change_points
+        from .. import impact as impact_mod
+        from . import rebuild
+
+        points = change_points.change_points(options.config_dir)
+        point_key = tuple((p.iso(), p.source, p.backup_ts) for p in points)
+        token = store.change_token()
+        now = time.monotonic()
+        with report_lock:
+            kept_key = latest_change_cache["key"]
+            if kept_key is not None and kept_key[1] == point_key and (
+                kept_key[0] == token or now - latest_change_cache["at"] <= _LATEST_CHANGE_MAX_AGE_S
+            ):
+                return latest_change_cache["point"]
+        newest = points[-1].ts if points else datetime.now(timezone.utc) - timedelta(days=_DEFAULT_WINDOW_DAYS)
+        since = newest - timedelta(days=impact_mod.LOOKBACK_DAYS)
+        corpus = rebuild.corpus_from_store(store, since=since.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        point = change_points.latest(options.config_dir, corpus)
+        with report_lock:
+            latest_change_cache.update(key=(token, point_key), point=point, at=now)
+        return point
+
     def _window_query(query, _parse=globals()["_window_query"]):
         # Named windows ("since your last change", "today") need this
         # service's config dir: its apply backups, snapshots and tz.
-        window, err = _parse(query, config_dir=options.config_dir)
+        window, err = _parse(query, config_dir=options.config_dir, latest=_latest_change)
         name = _str_query(query, "window")
         if err is None and name in WINDOW_NAMES and window[1] is not None:
             with report_lock:
@@ -840,6 +895,7 @@ def make_handler(
         window_days: int | None,
         since: str | None = None,
         until: str | None = None,
+        window_by: str = "last-reply",
         project: tuple[str, ...] | None = None,
     ):
         # Local import: service.rebuild is a sibling work package's
@@ -850,7 +906,12 @@ def make_handler(
         config = load_config(options.config_dir)
         rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
         corpus = rebuild.corpus_from_store(
-            store, days=window_days, since=since, until=until, project_slugs=list(project) if project else None
+            store,
+            days=window_days,
+            since=since,
+            until=until,
+            window_by=window_by,
+            project_slugs=list(project) if project else None,
         )
         snaps = _snapshots_from_store()
         projects = tuple(sorted({bundle.slug for bundle in corpus.sessions if bundle.slug}))
@@ -908,7 +969,7 @@ def make_handler(
     def _slot_for(cache_key):
         """The report cache slot for a key (see ``report_cache``). Call
         with ``report_lock`` held."""
-        window_days, since, until, project = cache_key
+        window_days, since, until, _window_by, project = cache_key
         if window_days is None and until is None and since is not None:
             for name, start in named_window_starts.items():
                 if start == since:
@@ -974,6 +1035,7 @@ def make_handler(
         window_days: int | None,
         since: str | None = None,
         until: str | None = None,
+        window_by: str = "last-reply",
         project: tuple[str, ...] | None = None,
     ):
         """The report for a window, built at most once per store change.
@@ -993,10 +1055,11 @@ def make_handler(
         ``project`` values for the same window never share a report.
         """
         # Cache key widened from a bare window_days to the full
-        # (window_days, since, until, project) tuple so a since/until or
-        # project-filtered request never collides with (or is served
-        # from) an unfiltered entry for the same store change_token.
-        cache_key = (window_days, since, until, project)
+        # (window_days, since, until, window_by, project) tuple so a
+        # since/until or project-filtered request never collides with (or
+        # is served from) an unfiltered entry for the same store
+        # change_token.
+        cache_key = (window_days, since, until, window_by, project)
         token = _cache_token()
         now = time.monotonic()
         with report_lock:
@@ -1415,7 +1478,7 @@ def make_handler(
         window, err = _listing_window(query)
         if err is not None:
             return err
-        window_days, since, until = window
+        window_days, since, until, window_by = window
         project, err = _project_query(query)
         if err is not None:
             return err
@@ -1427,12 +1490,16 @@ def make_handler(
             since = _round_iso_to_minute(since)
         if until is not None:
             until = _round_iso_to_minute(until)
-        result = store.summary(window_days=window_days, since=since, until=until, project_slugs=project)
+        result = store.summary(
+            window_days=window_days, since=since, until=until, project_slugs=project, window_by=window_by
+        )
         # Additive: what cache reads saved against sending the same
         # tokens fresh as input, from turns_agg in the same window.
         config = load_config(options.config_dir)
         rates = _capture_rates(config)
-        by_model = store.cache_read_tokens_by_model(days=window_days, since=since, until=until, project_slugs=project)
+        by_model = store.cache_read_tokens_by_model(
+            days=window_days, since=since, until=until, project_slugs=project, window_by=window_by
+        )
         result["cache_read_tokens"] = sum(by_model.values())
         result["cache_saved"] = (
             cache_read_savings_usd(
@@ -1449,7 +1516,7 @@ def make_handler(
         request names one (``window``, ``window_days``, ``since`` or
         ``until``), then the same one the report uses."""
         if not any(key in query for key in ("window", "window_days", "since", "until")):
-            return (None, None, None), None
+            return (None, None, None, "last-reply"), None
         return _window_query(query)
 
     def route_sessions(store, query, body):
@@ -1462,13 +1529,19 @@ def make_handler(
         window, err = _listing_window(query)
         if err is not None:
             return err
-        window_days, since, until = window
+        window_days, since, until, window_by = window
         project, err = _project_query(query)
         if err is not None:
             return err
         return _ok(
             store.sessions(
-                limit=limit, offset=offset, window_days=window_days, since=since, until=until, project_slugs=project
+                limit=limit,
+                offset=offset,
+                window_days=window_days,
+                since=since,
+                until=until,
+                project_slugs=project,
+                window_by=window_by,
             )
         )
 
@@ -1525,29 +1598,38 @@ def make_handler(
             window, err = _window_query(query)
             if err is not None:
                 return err
-            window_days, since, until = window
+            window_days, since, until, window_by = window
         else:
             window_days, err = _int_query(query, "days", 30, minimum=1)
             if err is not None:
                 return err
             since = until = None
+            window_by = "last-reply"
         split = _str_query(query, "split")
         if split not in (None, "agent", "model"):
             return _bad_request("'split' must be 'agent' or 'model'")
         project, err = _project_query(query)
         if err is not None:
             return err
-        return _ok(store.daily_usage(days=window_days, since=since, until=until, split=split, project_slugs=project))
+        return _ok(
+            store.daily_usage(
+                days=window_days, since=since, until=until, split=split, project_slugs=project, window_by=window_by
+            )
+        )
 
     def route_compactions(store, query, body):
         window, err = _listing_window(query)
         if err is not None:
             return err
-        window_days, since, until = window
+        window_days, since, until, window_by = window
         project, err = _project_query(query)
         if err is not None:
             return err
-        return _ok(store.compactions(window_days=window_days, since=since, until=until, project_slugs=project))
+        return _ok(
+            store.compactions(
+                window_days=window_days, since=since, until=until, project_slugs=project, window_by=window_by
+            )
+        )
 
     def _latest_baseline_row(store) -> dict | None:
         rows = store.baselines()
@@ -1599,10 +1681,19 @@ def make_handler(
             if isinstance(record, dict):
                 suggested_profile_id = record.get("suggested_profile")
 
+        # The profile `apply <profile>` last marked active: ignored
+        # recommendations are kept per profile.
+        active_id = ignores.active_profile(options.config_dir)
+        active_name = None
+        if active_id != ignores.NO_PROFILE:
+            names = {entry["id"]: entry["name"] for entry in catalogue_entries + user_entries}
+            active_name = names.get(active_id, active_id)
         return _ok(
             {
                 "profiles": catalogue_entries + user_entries,
                 "suggested_profile_id": suggested_profile_id,
+                "active_profile_id": None if active_id == ignores.NO_PROFILE else active_id,
+                "active_profile_name": active_name,
             }
         )
 
@@ -1678,18 +1769,18 @@ def make_handler(
 
     def route_set_feedback(store, query, body):
         """Your rating of a session (the /tl-feedback questions as
-        checkboxes): words from ``capture_catalogue.FEEDBACK_VOCAB`` only.
+        checkboxes): words from ``capture_catalogue.RATING_VOCAB`` only.
         Nothing ticked clears it."""
         session_id = query.get("id", "")
         if store.session(session_id) is None:
             return _not_found("session not found")
         if not isinstance(body, dict):
             return _bad_request("request body must be a JSON object")
-        unknown = sorted(set(body) - set(capture_catalogue.FEEDBACK_VOCAB))
+        unknown = sorted(set(body) - set(capture_catalogue.RATING_VOCAB))
         if unknown:
-            return _bad_request(f"unknown field {', '.join(unknown)}; known: {', '.join(capture_catalogue.FEEDBACK_VOCAB)}")
+            return _bad_request(f"unknown field {', '.join(unknown)}; known: {', '.join(capture_catalogue.RATING_VOCAB)}")
         values: dict = {}
-        for key, words in capture_catalogue.FEEDBACK_VOCAB.items():
+        for key, words in capture_catalogue.RATING_VOCAB.items():
             value = body.get(key)
             if key in capture_catalogue.FEEDBACK_LIST_KEYS:
                 value = [] if value is None else value
@@ -2017,6 +2108,17 @@ def make_handler(
         section = _find_section(model, "carry")
         return _ok(to_jsonable(section) if section is not None else None)
 
+    def route_plan_handoff(store, query, body):
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
+        section = _find_section(model, "plan_handoff")
+        return _ok(to_jsonable(section) if section is not None else None)
+
     def route_compaction_sim(store, query, body):
         window, err = _window_query(query)
         if err is not None:
@@ -2206,6 +2308,7 @@ def make_handler(
                 period=_period_text(*window, name=query.get("window")),
                 task=task,
                 effort_level_env_set=effort_level_env_set,
+                skip_keys=_ignored_keys(model, query),
             )
         )
 
@@ -2317,6 +2420,7 @@ def make_handler(
             config_dir=Path(options.config_dir),
             effective=effective,
             effective_agents=effective_agents,
+            skip_keys=_ignored_keys(model, query),
         )
 
     def route_quick_actions(store, query, body):
@@ -2361,15 +2465,41 @@ def make_handler(
             }
         )
 
+    def route_setup_status(store, query, body):
+        """Whether each part of the setup works (``setup_status.py``), for
+        the Overview's Setup card and Data quality's checklist. This
+        dashboard answering is proof it runs, so only whether it starts
+        at logon is asked, through the same cached probe as
+        ``/api/health``."""
+        from .. import setup_status
+
+        items = setup_status.check_setup(
+            options.config_dir,
+            entrypoints=store.entrypoint_counts(),
+            is_registered=_cached_service_registered,
+            running=True,
+            url=None,
+        )
+        return _ok(
+            {
+                "items": [setup_status.to_jsonable(item) for item in items],
+                "done": setup_status.done(items),
+                "needs_attention": len(setup_status.needs_attention(items)),
+                "verdict": setup_status.verdict(items),
+            }
+        )
+
     impact_cache: dict = {"key": None, "data": None, "started": 0.0, "as_of": None, "building": False}
 
     def route_impact(store, query, body):
         """Each change you made (an apply, its undo, a settings change the
-        config hook saw, or a metrics capture change) with the sessions before it against those
-        after it, on the measures that change should move. Cached like
-        the report (see _get_report_model): a store change serves the
-        kept answer and refreshes it in the background, while a new
-        change point (the list itself changing) is worked out at once."""
+        config hook saw, or a metrics capture change), and each model,
+        effort or CLAUDE.md size change your sessions show, with the
+        sessions before it against those after it, on the measures that
+        change should move. Cached like the report (see
+        _get_report_model): a store change serves the kept answer and
+        refreshes it in the background, while a new recorded change point
+        (the list itself changing) is worked out at once."""
         from .. import change_points
 
         points = change_points.change_points(options.config_dir)
@@ -2400,7 +2530,7 @@ def make_handler(
                 def run():
                     try:
                         with background_builds:
-                            _compute_impact(points, key)
+                            _compute_impact(key)
                     except BaseException:  # noqa: BLE001 -- the next request retries
                         pass
                     finally:
@@ -2410,26 +2540,44 @@ def make_handler(
 
                 threading.Thread(target=run, name="claude-token-lens-impact", daemon=True).start()
             return _ok(kept)
-        data = _compute_impact(points, key)
+        data = _compute_impact(key)
         _note_as_of(impact_cache["as_of"] or _now_utc_iso(), False)
         return _ok(data)
 
-    def _compute_impact(points, key):
+    def _compute_impact(key):
+        from .. import change_points, counterfactual
         from .. import impact as impact_mod
+        from ..discovery import redact_slug
+        from ..snapshots import snapshot_project_key
         from . import rebuild
 
         started = time.monotonic()
         as_of = _now_utc_iso()
         changes: list = []
+        recorded = change_points.change_points(options.config_dir)
+        # The corpus reaches back to the oldest recorded change, or this
+        # service's default window when that is newer, so changes only
+        # sessions show (EST-P9) are found over at least that window.
+        oldest = datetime.now(timezone.utc) - timedelta(days=_DEFAULT_WINDOW_DAYS)
+        if recorded and recorded[0].ts < oldest:
+            oldest = recorded[0].ts
+        earliest = oldest - timedelta(days=impact_mod.LOOKBACK_DAYS)
+        corpus = rebuild.corpus_from_store(store, since=earliest.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        points = change_points.change_points(options.config_dir, corpus)
         if points:
             config = load_config(options.config_dir)
             rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
-            earliest = points[0].ts - timedelta(days=impact_mod.LOOKBACK_DAYS)
-            corpus = rebuild.corpus_from_store(store, since=earliest.strftime("%Y-%m-%dT%H:%M:%SZ"))
             sessions = impact_mod.session_facts(corpus, rates)
             units = _report_units(_get_report_model(_DEFAULT_WINDOW_DAYS))
-            changes = impact_mod.impact(points, sessions, units)
+            changes = impact_mod.impact(
+                points, sessions, units, without=counterfactual.for_impact(corpus, rates, units)
+            )
+            # A project change names its project as the dashboard's
+            # project filter does (redacted), never by its snapshot key.
+            names = {snapshot_project_key(b.slug): redact_slug(b.slug) for b in corpus.sessions if b.slug}
             for change in changes:
+                project = change["change"]["project"]
+                change["change"]["project_name"] = names.get(project, "") if project else ""
                 # P4 leftover: a structured gate the dashboard's
                 # emptyState() can key off, alongside the existing prose
                 # verdict -- same "enough" predicate impact.compare
@@ -2509,7 +2657,6 @@ def make_handler(
 
     def _compute_backtest(key):
         from .. import backtest as backtest_mod
-        from .. import change_points
         from . import rebuild
 
         started = time.monotonic()
@@ -2535,6 +2682,12 @@ def make_handler(
                 backtest_cache.update(key=key, data=data, started=started, as_of=as_of)
         return data
 
+    def _ignored_keys(model, query) -> frozenset[str]:
+        """The keys of this report's recommendations ignored in the
+        project asked about (as the dashboard names it), under the active
+        profile."""
+        return ignores.skip_keys(options.config_dir, model.recommendations, _str_query(query, "project"))
+
     def route_recommendations(store, query, body):
         window, err = _window_query(query)
         if err is not None:
@@ -2543,7 +2696,56 @@ def make_handler(
         if err is not None:
             return err
         model = _get_report_model(*window, project)
-        return _ok([to_jsonable(rec) for rec in model.recommendations])
+        rows = [to_jsonable(rec) for rec in model.recommendations]
+        # Each row says whether it's ignored here (ignores.py); the cached
+        # report itself is never changed, so /api/report.json and the CLI
+        # reports stay complete.
+        marks = ignores.annotate(
+            model.recommendations,
+            ignores.load(options.config_dir),
+            ignores.active_profile(options.config_dir),
+            _str_query(query, "project"),
+        )
+        for row, mark in zip(rows, marks):
+            row.update(mark)
+        return _ok(rows)
+
+    def route_recommendations_ignore(store, query, body):
+        """Ignore recommendations, or stop ignoring them: ``{"keys":
+        [...], "ignored": true|false}``. Each key must be a recommendation
+        in this window and project's report; the fingerprint that decides
+        whether it has changed since is worked out here, never taken from
+        the request."""
+        if not isinstance(body, dict):
+            return _bad_request("request body must be a JSON object")
+        keys = body.get("keys")
+        if not isinstance(keys, list) or not keys or len(keys) > _MAX_IGNORE_KEYS:
+            return _bad_request(f"'keys' must be a list of 1 to {_MAX_IGNORE_KEYS} recommendation keys")
+        if not all(isinstance(key, str) and _REC_KEY_RE.match(key) for key in keys):
+            return _bad_request("each key must be a recommendation key: a-z, 0-9, '.', '_', ':' or '-'")
+        ignored = body.get("ignored")
+        if not isinstance(ignored, bool):
+            return _bad_request("'ignored' must be true or false")
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
+        by_key = {rec.key: rec for rec in model.recommendations}
+        missing = [key for key in keys if key not in by_key]
+        if missing:
+            return _not_found("no recommendation with that key in this window")
+        recs = [by_key[key] for key in dict.fromkeys(keys)]
+        profile = ignores.set_ignored(options.config_dir, recs, ignored=ignored, project=_str_query(query, "project"))
+        return _ok(
+            {
+                "keys": [rec.key for rec in recs],
+                "ignored": ignored,
+                "active_profile_id": None if profile == ignores.NO_PROFILE else profile,
+            }
+        )
 
     def _render_report(content_type: str, render: Callable[[object], str]):
         def _route(store, query, body):
@@ -2574,6 +2776,7 @@ def make_handler(
         "/api/ttl": route_ttl,
         "/api/carry": route_carry,
         "/api/compaction-sim": route_compaction_sim,
+        "/api/plan-handoff": route_plan_handoff,
         "/api/model-swap": route_model_swap,
         "/api/waste": route_waste,
         "/api/config-diff": route_config_diff,
@@ -2587,6 +2790,7 @@ def make_handler(
         "/api/profile-goals": route_profile_goals,
         "/api/quick-actions": route_quick_actions,
         "/api/setup": route_setup,
+        "/api/setup/status": route_setup_status,
         "/api/capture": route_capture,
         "/api/report.json": _render_report("application/json", lambda model: render_json(model)),
         # Finding 22: charset was missing on the two text-ish renderers
@@ -2610,6 +2814,7 @@ def make_handler(
         "/api/profiles/from-current": route_profiles_from_current,
         "/api/whatif": route_whatif,
         "/api/predictions/seen": route_predictions_seen,
+        "/api/recommendations/ignore": route_recommendations_ignore,
     }
     post_patterns: tuple[tuple[re.Pattern, Callable], ...] = (
         (_SESSION_TAGS_RE, route_set_tag),

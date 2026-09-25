@@ -132,6 +132,9 @@ class WatcherStats:
     #: not deleted (review finding 3), so this is the *current* total,
     #: not this tick's own delta.
     transcripts_missing: int = 0
+    #: Sessions folded and written this tick. A session with nothing
+    #: changed since the tick that last folded it is skipped and not
+    #: counted, so an idle tick counts 0.
     sessions_upserted: int = 0
     errors: int = 0
     started_at: str | None = None

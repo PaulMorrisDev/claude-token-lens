@@ -56,6 +56,40 @@ def _isolated_claude_config_dir(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_logon_task(monkeypatch):
+    """``init`` asks whether the dashboard's logon task is registered and
+    answering, and registers it after a yes. On a developer machine with
+    the real task set up, a test would otherwise see it, or replace it
+    with one pointing at the test's own throwaway config. Here nothing is
+    registered and nothing answers at the default address, and
+    registering without a ``runner`` fails the test. A call that brings
+    its own ``runner``, or asks another address, still reaches the real
+    function (tests/test_installer.py); a test that wants a registered or
+    running dashboard monkeypatches these itself.
+    """
+    from claude_token_lens import installer
+
+    real_registered, real_health, real_install = installer.is_registered, installer.http_health_ok, installer.install
+
+    def is_registered(platform=None, *, runner=None):
+        return False if runner is None else real_registered(platform, runner=runner)
+
+    def http_health_ok(url):
+        return False if url == installer.DEFAULT_URL else real_health(url)
+
+    def install(plan, *, runner=None, dry_run=False, quiet=False):
+        if runner is None and not dry_run:
+            raise AssertionError("a test tried to register the real logon task: monkeypatch installer.install")
+        return real_install(plan, runner=runner, dry_run=dry_run, quiet=quiet) if runner else real_install(
+            plan, dry_run=dry_run, quiet=quiet
+        )
+
+    monkeypatch.setattr(installer, "is_registered", is_registered)
+    monkeypatch.setattr(installer, "http_health_ok", http_health_ok)
+    monkeypatch.setattr(installer, "install", install)
+
+
+@pytest.fixture(autouse=True)
 def _reset_parse_salt():
     """Capture-improvements addition (A3): ``parse._SALT`` is deliberately
     process-wide state (see ``parse.set_salt``'s docstring on why it's a

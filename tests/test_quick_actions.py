@@ -22,8 +22,8 @@ API_MD = Path(__file__).resolve().parent.parent / "docs" / "api.md"
 SRC = Path(__file__).resolve().parent.parent / "src" / "claude_token_lens"
 #: Every module that can build a ``Recommendation`` -- see recommend.py's
 #: own ``recommend()`` entry point, which folds each of these in.
-_RULE_MODULES = ("recommend.py", "advice.py", "carry.py", "compaction_sim.py", "model_swap.py", "waste.py",
-                  "elasticity.py")
+_RULE_MODULES = ("recommend.py", "advice.py", "carry.py", "compaction_sim.py", "handoff.py", "hook_costs.py",
+                  "run_split.py", "model_swap.py", "waste.py", "elasticity.py")
 
 UNITS = Units(billing_mode="api", currency="USD")
 FIX_KEYS = {"key", "agent", "explainer", "command", "command_warning", "prompt", "title"}
@@ -211,7 +211,24 @@ def test_compaction_says_the_summary_point_is_already_set_when_it_is(tmp_path):
     assert result["status"] == "ok" and result["fixes"] == []
     assert result["summary"].startswith("You already summarise at 300,000 tokens")
     assert "at most 2 times a session" in result["summary"]
+    # The replay keeps real summaries, so it can't say raising helps.
+    assert "A larger window can't be tested" in result["summary"]
     assert qa.run("compaction", _ctx(tmp_path, model=model))["status"] == "act"
+
+
+def test_compaction_says_no_window_is_suggested_when_real_summaries_pass_the_limit(tmp_path):
+    """Real summaries stay in every replayed window, so 6 a session as
+    they ran means no point can meet the 2-a-session limit: not "within a
+    few percent of the cheapest point that summarises at most 2 times"."""
+    model = NS(sections=[NS(key="compaction_sim", tables=[_table("compaction_sim_by_window", [
+        {"window": "200,000", "compactions_per_session": 18.1, "cost": 104.9, "delta_pct": 4.9},
+        {"window": "300,000", "compactions_per_session": 6.4, "cost": 100.2, "delta_pct": 0.2},
+        {"window": "none", "compactions_per_session": 6.25, "cost": 100.0, "delta_pct": 0.0},
+    ])])], context_files={}, recommendations=[])
+    result = qa.run("compaction", _ctx(tmp_path, model=model, effective={"autoCompactWindow": 300000}))
+    assert result["status"] == "ok" and result["fixes"] == []
+    assert result["summary"].startswith("Your sessions summarised about 6.2 times each as they ran, more than the 2")
+    assert "A larger window can't be tested" in result["summary"]
 
 
 def test_habits_are_tips_not_settings(tmp_path):
@@ -258,6 +275,16 @@ def test_quality_is_ok_when_nothing_stands_out(tmp_path):
     calm = {**_AGENT, "unfinished_pct": 3.0, "turn_limit_pct": 0.0}
     result = qa.run("quality", _ctx(tmp_path, model=_quality_model([calm])))
     assert result["status"] == "ok" and not result["fixes"]
+
+
+def test_a_setup_that_is_not_comparable_is_not_counted_as_compared(tmp_path):
+    calm = {**_AGENT, "unfinished_pct": 3.0, "turn_limit_pct": 0.0}
+    far = {**_WORSE, "setup_verdict": "not_comparable",
+           "difference": "Not compared: its runs averaged 495.0 replies against 2.2, more than 5 times apart."}
+    near = {**_WORSE, "effort": "medium", "setup_verdict": "no_clear_difference", "difference": "No clear difference."}
+    result = qa.run("quality", _ctx(tmp_path, model=_quality_model([calm], [far, near])))
+    assert result["status"] == "ok" and not result["fixes"]
+    assert result["summary"].endswith("(1 setups compared).")
 
 
 def test_quality_flags_an_agent_that_runs_out_of_turns_with_a_tip(tmp_path):

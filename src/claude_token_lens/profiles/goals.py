@@ -150,8 +150,13 @@ def _share(saving, base) -> float:
     return 100.0 * saving / base if base > 0 else 0.0
 
 
-def _from_recommendations(draft: _Draft, recommendations, keys: set[str] | None = None, *, subagents_only=False):
+def _from_recommendations(
+    draft: _Draft, recommendations, keys: set[str] | None = None, *, subagents_only=False, skip_keys=frozenset()
+):
     for rec in recommendations or ():
+        # Ignored on the dashboard: left out of any profile drafted from them.
+        if getattr(rec, "key", "") in skip_keys:
+            continue
         for change in getattr(rec, "changes", ()) or ():
             if change.value is None or (keys is not None and change.key not in keys):
                 continue
@@ -188,6 +193,32 @@ def _models(draft: _Draft, tables, *, subagents_only: bool) -> None:
             ticked=agent != TOP and pct >= 20.0,
             evidence=f"{who}'s replies in this window would have cost {pct:.0f}% less on {best}.",
         )
+
+
+def _opusplan(draft: _Draft, tables) -> None:
+    """``model = "opusplan"`` (Opus while planning, Sonnet otherwise),
+    offered unticked when the main session ran on Opus and built after
+    approved plans. The model picker in the desktop app overrides the
+    settings file, so the evidence says to choose it there."""
+    top = tables.row("model_swap", "model_swap_by_agent_type", TOP)
+    if top is None or _alias(str(top.get("observed_model") or "")) != "opus":
+        return
+    row = next(iter(tables.rows("plan_handoff", "plan_handoff_summary")), None) or {}
+    build = row.get("build_usd")
+    pct = _share((whatif._num(build) or 0.0) - (whatif._num(row.get("build_usd_sonnet")) or 0.0), build)
+    if whatif._num(row.get("build_usd_sonnet")) is None or pct < MIN_SHARE_PCT:
+        return
+    draft.add(
+        "model",
+        None,
+        "opusplan",
+        ticked=False,
+        evidence=(
+            f"Plan on Opus, build on Sonnet: the replies after your approved plans would have cost {pct:.0f}% less "
+            "on Sonnet. Sessions without a plan would run on Sonnet too. The model picker overrides this setting, "
+            "so choose opusplan there or run /model opusplan."
+        ),
+    )
 
 
 def _cache(draft: _Draft, tables, *, subagents_only: bool) -> None:
@@ -621,12 +652,15 @@ def draft(
     period: str = "",
     task: str | None = None,
     effort_level_env_set: bool = False,
+    skip_keys: frozenset[str] = frozenset(),
 ) -> dict:
     """The candidate changes for ``goal_id``, each with its what-if row.
     Raises ``KeyError`` for an unknown goal. ``task``: for the ``tasks``
     goal, the kind of task to draft for (the first with a cheaper setup
     when it's missing or not in the data). ``effort_level_env_set``:
-    PROF-03, see ``_Draft``."""
+    PROF-03, see ``_Draft``. ``skip_keys``: the keys of recommendations
+    ignored on the dashboard (``ignores.skip_keys``), whose changes are
+    left out."""
     goal = next(g for g in GOALS if g.id == goal_id) if goal_id in GOAL_IDS else None
     if goal is None:
         raise KeyError(goal_id)
@@ -643,16 +677,19 @@ def draft(
     else:
         task = None
     if goal.id == "recommendations":
-        _from_recommendations(d, recommendations)
+        _from_recommendations(d, recommendations, skip_keys=skip_keys)
     elif goal.id == "subagents":
         _from_recommendations(d, recommendations, {"model", "omitClaudeMd", "effort", "experimental.cacheTtl"},
-                              subagents_only=True)
+                              subagents_only=True, skip_keys=skip_keys)
         _models(d, tables, subagents_only=True)
         _thinking(d, tables, subagents_only=True)
         _cache(d, tables, subagents_only=True)
         _omit_claude_md(d, tables)
     elif goal.id == "models":
-        _from_recommendations(d, recommendations, {"model"})
+        # Before the recommendations: the main session has one model
+        # setting, and opusplan keeps Opus for the planning.
+        _opusplan(d, tables)
+        _from_recommendations(d, recommendations, {"model"}, skip_keys=skip_keys)
         _models(d, tables, subagents_only=False)
     elif goal.id == "cache":
         _cache(d, tables, subagents_only=False)

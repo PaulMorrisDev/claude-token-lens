@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import helptext, hook_health, onboarding
+from claude_token_lens import cli, helptext, hook_health, setup_flow
 from claude_token_lens.model import Diagnostics, Event, EventKind, TranscriptResult
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
@@ -154,20 +154,16 @@ def test_diagnostics_table_leads_with_the_hook_row(tmp_path):
     assert table.value_labels["snapshot_hook"] == "Config snapshot hook"
 
 
-def _run_init(config_dir, tmp_path, *, repair_hook=False, non_interactive=True, answer=""):
-    stdout = io.StringIO()
-    rc = onboarding.run_init(
-        config_dir=config_dir,
-        projects_root_path=tmp_path / "projects",
-        non_interactive=non_interactive,
-        no_install=True,
-        hook_fragment="HOOK",
-        statusline_fragment="STATUSLINE",
-        stdin=io.StringIO(answer),
-        stdout=stdout,
-        now=NOW,
-        repair_hook=repair_hook,
+def _run_init(config_dir, tmp_path, *, repair_hook=False):
+    args = cli._make_parser().parse_args(
+        [
+            "init", "--config-dir", str(config_dir), "--claude-root", str(config_dir.parent),
+            "--projects-root", str(tmp_path / "projects"), "--non-interactive", "--no-install", "--no-service",
+            *(["--repair-hook"] if repair_hook else []),
+        ]
     )
+    stdout = io.StringIO()
+    rc = setup_flow.run(*cli._setup_flow_inputs(args), stdin=io.StringIO(""), stdout=stdout, now=NOW)
     assert rc == 0
     return stdout.getvalue()
 
@@ -181,7 +177,7 @@ def test_init_reports_but_does_not_repair_without_the_flag(tmp_path):
     settings_path.write_text(json.dumps(data), encoding="utf-8")
 
     out = _run_init(config_dir, tmp_path)
-    assert "- config snapshot hook:" in out
+    assert "The snapshot hook in Claude Code's settings.json" in out and "can't run." in out
     assert "init --repair-hook" in out
     assert not list(settings_path.parent.glob("settings.json.bak-*"))
 

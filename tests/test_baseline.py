@@ -627,6 +627,43 @@ def test_dominant_tasks_come_from_the_habits_by_task_table_without_its_all_row()
     assert baseline._dominant_tasks(_model_with_sections()) == []
 
 
+def _shape_model(plan_build: int, no_plan: int, handoff=(0, 0, 0)) -> "ReportModel":
+    total = plan_build + no_plan
+    columns = [Column(key=k, label=k, kind="int") for k in (
+        "shape", "sessions", "share", "handoff_yes", "handoff_partly", "handoff_no"
+    )]
+    rows = [
+        ["plan_build", plan_build, 100.0 * plan_build / total, *handoff],
+        ["no_plan", no_plan, 100.0 * no_plan / total, 0, 0, 0],
+    ]
+    return _model_with_sections(Section(key="habits", tables=[Table(name="habits_by_shape", title="", columns=columns, rows=rows)]))
+
+
+def test_mostly_planning_and_building_in_one_session_suggests_plan_then_build():
+    plan_build = baseline._plan_build(_shape_model(6, 4, handoff=(3, 1, 0)))
+    assert plan_build == {"sessions": 6, "total": 10, "share": 60.0, "yes": 3, "partly": 1, "no": 0}
+    # The shape beats the reported tasks, which would lead to
+    # implementation-heavy (a cheaper model for the build).
+    profile_id, reason = baseline._suggested_profile(
+        {"mixed": 10}, "single-model", ["general-dev"], ["feature"], plan_build
+    )
+    assert profile_id == "plan-then-build"
+    assert reason.startswith("6 of 10 main sessions approved a plan and built it in the same session")
+    assert "the plan alone was enough for 3 of 4 builds" in reason
+    assert reason.endswith("shape='plan-then-build')")
+    # A structural purpose still wins.
+    assert baseline._suggested_profile({"mixed": 10}, "single-model", ["agent-fanout"], [], plan_build)[0] == (
+        "overseer-fanout"
+    )
+
+
+def test_under_half_planning_and_building_leaves_the_suggestion_alone():
+    plan_build = baseline._plan_build(_shape_model(4, 6))
+    profile_id, reason = baseline._suggested_profile({"mixed": 10}, "single-model", ["general-dev"], ["feature"], plan_build)
+    assert profile_id == "implementation-heavy" and "shape" not in reason
+    assert baseline._plan_build(_model_with_sections()) is None
+
+
 def test_the_suggested_profile_follows_the_reported_task_and_says_so():
     profile_id, reason = baseline._suggested_profile({"mixed": 5}, "single-model", ["general-dev"], ["research"])
     assert profile_id == "discovery-scrape"

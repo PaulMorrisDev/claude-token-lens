@@ -14,8 +14,9 @@ optionally :class:`phases.PhaseStats`), and assembles their
 Section order and keys: ``overview``, ``usage``, ``elasticity`` (only
 under subscription billing with usage-log readings, see
 :func:`_report_units`), ``sessions``, ``recache``,
-``ttl``, ``limits``, ``carry``, ``compaction_sim``, ``model_swap``,
-``waste``, ``compactions``, ``agent_startup``, ``agents``, ``quality``,
+``ttl``, ``limits``, ``carry``, ``compaction_sim``, ``plan_handoff``,
+``model_swap``, ``waste``, ``compactions``, ``agent_startup``, ``agents``, ``run_split``,
+``hooks``, ``quality``,
 ``workstyle``,
 ``workflows``, ``phases`` (only when ``phases=True``), ``config`` (only
 when snapshots are supplied), ``context_budget``, ``scorecard``,
@@ -135,11 +136,14 @@ from . import (
     elasticity,
     fixes,
     habits,
+    handoff,
     helptext,
+    hook_costs,
     limits,
     model_swap,
     quality,
     recache,
+    run_split,
     scorecard,
     snapshots as snapshots_mod,
     topology,
@@ -185,11 +189,14 @@ _SECTION_ORDER: tuple[str, ...] = (
     "limits",
     "carry",
     "compaction_sim",
+    "plan_handoff",
     "model_swap",
     "waste",
     "compactions",
     "agent_startup",
     "agents",
+    "run_split",
+    "hooks",
     "quality",
     "workstyle",
     "habits",
@@ -802,7 +809,8 @@ def _effort_mismatch_share_threshold(config: Config) -> float:
 def _merge_diagnostics(acc: Diagnostics, d: Diagnostics) -> None:
     """Fold one transcript's :class:`Diagnostics` into the running
     corpus-wide total: sum every int counter, merge every dict counter
-    key-by-key, OR every bool.
+    key-by-key, OR every bool. The two ``pricing_*`` totals are left
+    alone: :func:`build_report` sets them once after the loop.
     """
     acc.lines += d.lines
     acc.unparsable_lines += d.unparsable_lines
@@ -818,6 +826,9 @@ def _merge_diagnostics(acc: Diagnostics, d: Diagnostics) -> None:
     acc.replayed_lines += d.replayed_lines
     acc.timestamp_parse_failures += d.timestamp_parse_failures
     acc.pre_split_turns += d.pre_split_turns
+    acc.limit_hits += d.limit_hits
+    acc.limit_resumes += d.limit_resumes
+    acc.agents_terminated += d.agents_terminated
     for key, value in d.ignored_line_types.items():
         acc.ignored_line_types[key] = acc.ignored_line_types.get(key, 0) + value
     for key, value in d.agent_settings.items():
@@ -1293,6 +1304,9 @@ def build_report(
     compaction_sim_th = compaction_sim.CompactionSimThresholds.from_config(config.thresholds)
     model_swap_th = model_swap.ModelSwapThresholds.from_config(config.thresholds)
     waste_th = waste.WasteThresholds.from_config(config.thresholds)
+    handoff_th = handoff.HandoffThresholds.from_config(config.thresholds)
+    hooks_th = hook_costs.HookThresholds.from_config(config.thresholds)
+    run_split_th = run_split.RunSplitThresholds.from_config(config.thresholds)
 
     session_overrides = session_overrides or {}
     # Which profile was active at each session's start: the config
@@ -1585,6 +1599,15 @@ def build_report(
     compaction_sim_stats = compaction_sim.simulate_compaction_windows(
         all_results, pricing.resolve_model, snapshot_windows, compaction_sim_th
     )
+    # A fresh start re-reads files the way a summary does: the same
+    # allowance, measured from this corpus's real summaries.
+    handoff_stats = handoff.compute_handoff(
+        all_results, pricing, handoff_th, compaction_sim_stats.rediscovery_allowance_usd
+    )
+    run_split_stats = run_split.compute_run_split(
+        all_results, pricing, run_split_th, compaction_sim_stats.rediscovery_allowance_usd
+    )
+    hook_stats = hook_costs.compute_hook_costs(all_results, pricing, hooks_th)
 
     # How amounts are phrased (billing mode, and under subscription the
     # usage-limit fit). Built before the sections: the elasticity section
@@ -1695,6 +1718,9 @@ def build_report(
     if _want("compaction_sim"):
         sections.append(compaction_sim.build_section(compaction_sim_stats, compaction_sim_th, units=units))
 
+    if _want("plan_handoff"):
+        sections.append(handoff.build_section(handoff_stats, handoff_th))
+
     if _want("model_swap"):
         sections.append(model_swap.build_section(model_swap_stats, model_swap_th, units=units))
 
@@ -1709,6 +1735,12 @@ def build_report(
 
     if _want("agents"):
         sections.append(topology.build_section(tp))
+
+    if _want("run_split"):
+        sections.append(run_split.build_section(run_split_stats, run_split_th))
+
+    if _want("hooks"):
+        sections.append(hook_costs.build_section(hook_stats, hooks_th))
 
     if _want("quality"):
         sections.append(quality.build_section(quality.corpus_runs(corpus, pricing), units=units))
@@ -1833,6 +1865,9 @@ def build_report(
         + list(limits.ASSUMPTIONS)
         + list(carry.ASSUMPTIONS)
         + list(compaction_sim.ASSUMPTIONS)
+        + list(handoff.ASSUMPTIONS)
+        + list(run_split.ASSUMPTIONS)
+        + list(hook_costs.ASSUMPTIONS)
         + list(model_swap.ASSUMPTIONS)
         + list(waste.ASSUMPTIONS)
         + list(quality.ASSUMPTIONS)

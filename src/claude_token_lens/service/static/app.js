@@ -43,7 +43,7 @@ import { renderOverview } from "./page-overview.js";
 import { groupRecommendations, renderQuickActions, renderRecommendations } from "./page-actions.js";
 import { renderSavings, renderSessions, renderUsage } from "./page-spend.js";
 import { renderCache, renderTtl } from "./page-cache.js";
-import { renderAgentQuality, renderAgents, renderContextFiles } from "./page-agents.js";
+import { renderAgentHooks, renderAgentQuality, renderAgents, renderContextFiles } from "./page-agents.js";
 import { renderHabits } from "./page-habits.js";
 import { renderConfig, renderProfiles } from "./page-setup.js";
 import { renderCapture } from "./page-capture.js";
@@ -64,6 +64,7 @@ var VIEW_RENDERERS = {
   "agents/subagents": renderAgents,
   "agents/quality": renderAgentQuality,
   "agents/context": renderContextFiles,
+  "agents/hooks": renderAgentHooks,
   habits: renderHabits,
   "setup/settings": renderConfig,
   "setup/profiles": renderProfiles,

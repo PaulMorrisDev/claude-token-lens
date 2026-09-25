@@ -40,7 +40,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import backtest, capture_view, footprint, helptext, quick_actions, skills_review
+from claude_token_lens import backtest, capture_view, footprint, helptext, quick_actions, setup_status, skills_review
 from claude_token_lens.config import CaptureConfig, Config
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.pricing import load_pricing
@@ -986,7 +986,7 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
     canned: dict = {
         "/api/health": {
             "status": "ok",
-            "version": "0.6.2",
+            "version": "0.7.0",
             "schema_version": store.schema_version(),
             "watcher": {"finished_at": "2026-09-19T00:00:00Z", "files_parsed": 1, "errors": 0},
             "capture": {**capture_view.config_block(CaptureConfig()), "hooks_ok": None},
@@ -1038,6 +1038,7 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
     for route, section_key in (
         ("/api/carry", "carry"),
         ("/api/compaction-sim", "compaction_sim"),
+        ("/api/plan-handoff", "plan_handoff"),
         ("/api/model-swap", "model_swap"),
         ("/api/waste", "waste"),
     ):
@@ -1078,6 +1079,13 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
         "uninstall_command": footprint.UNINSTALL_COMMAND,
     }
     canned["/api/capture"] = capture_view.view(CaptureConfig(), units=units)
+    setup_items = setup_status.check_setup(config_dir, is_registered=lambda: False, running=True, url=None)
+    canned["/api/setup/status"] = {
+        "items": [setup_status.to_jsonable(item) for item in setup_items],
+        "done": setup_status.done(setup_items),
+        "needs_attention": len(setup_status.needs_attention(setup_items)),
+        "verdict": setup_status.verdict(setup_items),
+    }
 
     return canned, sessions_map
 
@@ -1512,28 +1520,55 @@ def test_loadinto_render_callbacks_take_data_first_container_second() -> None:
         )
 
 
-def test_the_logon_notice_shows_when_the_service_is_not_registered() -> None:
-    """v3: ``/api/health``'s ``service_registered`` field (see
-    ``docs/api.md``) drives a warning -- someone who skipped
-    ``install-service`` (or whose registration was later removed) needs
-    to see this in the UI, not just find it by reading a JSON field. The
-    redesign says it at the top of the Overview, where it will be seen,
-    and again with the full health detail on Data quality: both go
-    through ``renderLogonNotice``. Source check: there is no browser in
-    this test process.
+def test_the_setup_card_shows_until_every_essential_part_works() -> None:
+    """``/api/setup/status`` (``setup_status.py``) drives the Overview's
+    Setup card: someone who skipped ``install-service``, never connected,
+    or never said how they pay needs to see it in the UI, with the
+    command that fixes it. It replaces the old logon notice, so the
+    dashboard at logon still says why it matters (``cleanupPeriodDays``)
+    -- in the item's own text, which ``setup_status`` writes. Data
+    quality shows the whole checklist. Source check: there is no browser
+    in this test process.
     """
     app_js = _app_js()
-    notice_src = _function_source(app_js, "renderLogonNotice")
-    assert "service_registered" in notice_src, "renderLogonNotice never reads health.service_registered"
-    assert "!== false" in notice_src, "the notice must show only when service_registered === false"
-    assert "install-service" in notice_src, "the notice must tell the operator what command to run"
-    assert "cleanupPeriodDays" in notice_src, "the notice must explain why registration matters (retention)"
+    card_src = _function_source(app_js, "renderSetupCard")
+    assert "setup.done" in card_src, "the card must hide once setup is done"
+    assert "item.essential" in card_src, "the card lists only the parts that matter"
+    item_src = _function_source(app_js, "setupItem")
+    assert "codeBlockWithCopy(withCli(item.fix)" in item_src, "each fix is a command to copy, in this install's form"
+    assert "renderLogonNotice" not in app_js
 
-    assert "renderLogonNotice(" in _function_source(app_js, "renderHealth"), "Data quality's health detail lost the notice"
-    assert "renderLogonNotice(" in _function_source(app_js, "renderOverview"), "the Overview lost the notice"
+    overview = _function_source(app_js, "renderOverview")
+    assert 'fetchJson("/api/setup/status")' in overview and "renderSetupCard(" in overview, "the Overview lost the card"
+    assert '"/api/setup/status", renderSetupList' in _function_source(app_js, "renderDataQuality"), (
+        "Data quality no longer shows the whole checklist"
+    )
     assert '"/api/health", renderHealth' in _function_source(app_js, "renderDataQuality"), (
         "Data quality no longer shows the service's health in full"
     )
+    service = setup_status._service(False, True, None)
+    assert service.essential and service.state != "ok"
+    assert "cleanupPeriodDays" in service.detail and service.fix == "claude-token-lens install-service"
+
+
+def test_ignored_recommendations_leave_every_list_but_their_own() -> None:
+    """``/api/recommendations`` marks each row ``ignored`` (ignores.py).
+    ``groupRecommendations`` leaves those out unless asked for them, so
+    the Overview, the Actions badge and the checks' links all count what
+    the To do list shows; search and the "Feeds N actions" index skip
+    them too. Only Actions asks for the ignored ones, and says "Ignore",
+    never "Dismiss" (docs/writing-help.md)."""
+    app_js = _app_js()
+    grouping = _function_source(app_js, "groupRecommendations")
+    assert "rec.ignored" in grouping and "opts.ignored" in grouping
+    assert "if (rec.ignored) return;" in _function_source(app_js, "recommendationEntries")
+    assert "if (rec.ignored) return;" in _function_source(app_js, "actionIndex")
+    assert "groupRecommendations(recs, { ignored: true })" in _function_source(app_js, "renderRecommendations")
+    section = _function_source(app_js, "ignoreSection")
+    assert 'postJson(withWindow("/api/recommendations/ignore")' in section
+    assert "state.recommendationPromises = {}" in section
+    assert '"Ignore this recommendation"' in section and "Dismiss" not in section
+    assert "Stop ignoring" in section
 
 
 def test_the_overview_compares_like_with_like() -> None:
@@ -1963,6 +1998,38 @@ def test_capture_banner_is_polled_with_health_and_links_to_its_segment() -> None
     assert "captureLink(" in status and "captureStatusText(" in status
 
 
+def test_loading_says_what_it_is_waiting_for() -> None:
+    """A view loading for the first time says what is loading in words
+    over its skeleton (not only to a screen reader), a view being
+    refetched keeps its figures under an "Updating" label, and the status
+    line says when a later scan is checking for new sessions, with its
+    progress, polling quickly while it runs."""
+    app_js = _app_js()
+    css = _static_text("app.css")
+    node = _function_source(app_js, "loadingNode")
+    assert 'class: "loading-label"' in node and "visually-hidden" not in node
+    # Every loadInto names what it waits for, by its route.
+    assert "loadingLabel(url)" in _function_source(app_js, "loadInto")
+    labels = re.search(r"var LOADING_LABELS = \[(.*?)\n\];", app_js, re.S).group(1)
+    prefixes = re.findall(r'\["(/api/[^"]*)"', labels)
+    for match in re.finditer(r'loadInto\(\s*\w+,\s*(?:withWindow\()?"(/api/[^"?]*)', app_js):
+        assert any(match.group(1).startswith(p.split("?")[0]) for p in prefixes), match.group(1)
+    assert "loadingNode()" not in app_js
+    assert ".loading-label {" in css
+    assert ".is-refreshing::after {" in css and 'content: "Updating\\2026";' in css
+    assert ".is-refreshing > * {" in css
+    status = _function_source(app_js, "renderStatusLine")
+    assert '"Checking for new sessions"' in status
+    assert "scanProgressText(scan)" in status and "status-detail" in status
+    progress = _function_source(app_js, "scanProgressText")
+    for phase in ('"finding"', '"reading"', '"storing"'):
+        assert phase in progress
+    poll = _function_source(app_js, "pollHealth")
+    assert '(health.status === "starting" || healthPoll.rescanning) ? 3000 : 60000' in poll
+    # A rescan that stored sessions offers the redraw once it finishes.
+    assert "wasRescanning && health && !healthPoll.rescanning" in poll and "healthPoll.redrawDue = true" in poll
+
+
 def test_capture_segment_repeats_the_cost_warning_before_using_more_tokens() -> None:
     """Switching to a level, a metric or a larger sample that asks Claude
     for more goes through confirmCapture, which shows data.warning."""
@@ -2083,6 +2150,55 @@ def test_a_signed_change_uses_a_true_minus_sign() -> None:
     assert '"\u2212"' in helper and '"+"' in helper
     assert "signedPercent(m.change_pct)" in _function_source(_app_js(), "renderImpact")
     assert not re.search(r'> 0 \? "\+" : ""\)', _app_js())
+
+
+def test_an_impact_card_says_what_changed_where_and_each_measures_reading() -> None:
+    impact = _function_source(_app_js(), "renderImpact")
+    assert "change.summary ||" in impact
+    # Named as the project picker names it, not by its folder.
+    assert 'change.project ? "In " + (change.project_name ? projectName(change.project_name)' in impact
+    assert '{ label: "Reading" }' in impact and 'm.label_text || ""' in impact
+
+
+def test_an_impact_card_leads_with_what_the_sessions_since_would_have_cost_without_it() -> None:
+    source = _app_js()
+    impact = _function_source(source, "renderImpact")
+    assert "renderWithout(item.without, card);" in impact
+    assert impact.index("renderWithout(") < impact.index("item.gate")
+    without = _function_source(source, "renderWithout")
+    assert "if (!without) return;" in without
+    assert "without.text" in without and "without.fidelity_text" in without
+    # A row per setting only when the headline fell back to the sessions before.
+    assert 'without.fidelity === "before" ? without.per_key' in without
+
+
+def test_the_last_change_window_says_what_it_would_have_cost_without_that_change() -> None:
+    source = _app_js()
+    line = _function_source(source, "lastChangeLine")
+    assert "(impactBody.data.changes || [])[0]" in line
+    assert "without.since_text" in line and '"Without your last change ("' in line
+    assert 'pageLink("setup/settings"' in line
+    assert "projectName(change.project_name)" in line
+    overview = _function_source(source, "renderOverview")
+    assert 'state.window !== "change" || state.project' in overview
+    assert "lastChangeLine(loaded[0].body)" in overview
+
+
+def test_an_estimate_is_logged_when_a_change_is_saved_or_its_command_copied() -> None:
+    """EST-P5: the dashboard logs a prediction (``"log": true``) for a
+    change you mean to make, never while you tick or explore."""
+    source = _app_js()
+    goal = _function_source(source, "renderGoalDraft")
+    assert goal.count("log: true") == 1
+    assert goal.index('toast("Profile saved.")') < goal.index("log: true")
+    estimate = _function_source(source, "renderProfileEstimate")
+    assert "if (logged || !request) return;" in estimate and "log: true" in estimate
+    assert "renderProfileDiff(data, box, logEstimate)" in _function_source(source, "renderProfileDetail")
+    assert "{ onCopy: onCopy }" in _function_source(source, "renderProfileDiff")
+    copy = _function_source(source, "codeBlockWithCopy")
+    assert "if (ok && onCopy) onCopy();" in copy
+    block = _function_source(source, "commandBlock")
+    assert block.count("opts.onCopy") == 2
 
 
 def test_copy_button_only_claims_success_when_the_clipboard_write_succeeded() -> None:

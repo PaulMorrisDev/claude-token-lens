@@ -9,8 +9,8 @@ the commands that print them.
 `report.build_report` assembles these sections into one `ReportModel`,
 in this order: `overview`, `usage`, `elasticity` (only under
 subscription billing with usage-log readings), `sessions`, `recache`, `ttl`,
-`limits`, `carry`, `compaction_sim`, `model_swap`, `waste`,
-`compactions`, `agent_startup`, `agents`, `quality`, `workstyle`, `habits`,
+`limits`, `carry`, `compaction_sim`, `plan_handoff`, `model_swap`, `waste`,
+`compactions`, `agent_startup`, `agents`, `run_split`, `hooks`, `quality`, `workstyle`, `habits`,
 `workflows`, `phases` (only with `--phases`), `config` (only when config
 snapshots exist), `context_budget`, `capture`, `scorecard`, and
 `baseline_comparison` (only with `--baseline`). `claude-token-lens
@@ -52,11 +52,14 @@ and it's still useful when you want one section by itself.
 | `limits` | Usage limits | `limits.py` | usage-cap pauses (5-hour/weekly), harness-forced subagent terminations, and the desktop app's resume pings, as first-class attributable facts instead of behavioural noise — see [`limits.md`](limits.md) |
 | `carry` | Context carry cost per tool | `carry.py` | cost of a tool result riding along in the cached prefix on every turn after the one it entered on, by tool and by agent type, plus the saving a truncation cap would have made — see [`carry.md`](carry.md) |
 | `compaction_sim` | Compaction-window sweep | `compaction_sim.py` | modelled cost under other `autoCompactWindow` settings, a fidelity check against each session's actually-configured window, and a conservative "at least W" recommendation — see [`compaction-sim.md`](compaction-sim.md) |
+| `plan_handoff` | Building fresh after a plan | `handoff.py` | what the replies after each approved plan would have cost in a fresh session started from the plan alone, and the same build at Sonnet's prices — see [`plan-handoff.md`](plan-handoff.md) |
 | `model_swap` | Model-swap counterfactual | `model_swap.py` | ceiling saving from repricing every already-observed turn one model tier down, per agent type and corpus-wide — see [`model-swap.md`](model-swap.md) |
 | `waste` | Wasted-turn spend | `waste.py` | spend on turns whose output was never used (tool error, interrupt, tool denial, harness-killed subagent), by cause, agent type and top session — see [`waste.md`](waste.md) |
 | `compactions` | Compactions | `compaction.py` | compaction count, trigger mix, pre/post/dropped tokens, and the re-cache cost of the turn right after each compaction |
 | `agent_startup` | Subagent startup | `context_budget.py` | what each agent type is given before its first turn, what it was given but never used, and what every agent type receives alike |
 | `agents` | Agents and information flow | `topology.py` | downward cost (briefing/system-prompt writes into each agent type), upward cost (`Agent`/`Workflow` tool-result sizes flowing back), skill roll-ups, spawn-depth chains |
+| `run_split` | Splitting long subagent runs | `run_split.py` | what long subagent runs would have cost as several shorter runs, each starting fresh from a short note, at several split intervals, and the interval that saves most per agent type — see [`run-split.md`](run-split.md) |
+| `hooks` | Your hooks | `hook_costs.py` | whether each hook you set up works (failed runs and why, relative script paths), what the context it adds costs to keep, what the calls it blocks cost and how often Claude sent them again unchanged, and time waited — see [`hooks.md`](hooks.md) |
 | `quality` | Quality signals | `quality.py` | whether the work went well: agent runs that didn't finish or likely ran out of turns, failed tool calls and shell commands, denials, corrections, edits redone, per agent type and per model and effort, with a significance test — see [`concepts.md`](concepts.md#7-quality-signals) |
 | `workstyle` | Workstyle | `workstyle.py` | one archetype per session/corpus: `overseer-fanout`, `plan-high-implement-low`, `workflow-heavy`, `effort-varied`, `chat-only`, `single-model`, `mixed` (the fallback when none of the other six match), with the evidence features |
 | `habits` | Work habits | `habits.py` | the "Weekly pace" digest, habits worth trying with a saving estimate and evidence, per-task and per-agent setup comparisons, and (once you rate sessions or use `/tl-feedback`) cost per piece of work that met its goal |
@@ -272,8 +275,12 @@ Simulation assumptions: [Concepts section 4](concepts.md#4-ttl-simulation-assump
   p50/p90, cost observed / all-5m / all-1h, best policy, delta vs. best
   (USD and %), saving if switched, fidelity, unsimulatable and unpriced
   turns, a recommendation string, and the lever (`promptCacheTtl` for
-  the top-level row; otherwise `experimental.cacheTtl` in `<agent>.md`,
-  or `subagentPromptCacheTtl` for all subagents).
+  the top-level row; `subagentPromptCacheTtl` for the `"unknown"` row,
+  which has no agent file; otherwise `experimental.cacheTtl` in
+  `<agent>.md`, or `subagentPromptCacheTtl` for all subagents). A
+  subscription gets the same advice as pay-per-token billing, plus a
+  note on what changes while the plan is on usage credits
+  ([Concepts section 2](concepts.md#2-how-caching-works-in-claude-code)).
 - `ttl_gap_distribution` — inter-turn gap histogram per agent type.
 
 ### TTL utilisation metrics
@@ -422,7 +429,8 @@ The `autoCompactWindow` sweep: full write-up and worked example in
 - `compaction_sim_by_agent_type` — every agent type's (`"top-level"` and
   each subagent type) sessions, observed cost, best candidate window,
   its cost, the saving vs. observed (0 floor), the delta in percent, and
-  a recommendation string naming the window.
+  a recommendation string naming the window. Only the `"top-level"` row
+  says to set it: the window is one setting for the whole session.
 - `compaction_sim_by_task` — the same best-window roll-up as
   `compaction_sim_by_agent_type`, keyed by the kind of task metrics
   capture reported (`task=`) instead of agent type, main sessions only.
@@ -444,7 +452,11 @@ reply after it re-caching its whole context, with the share of the
 starting context real compactions still read from cache read, not
 written. Files re-read after a summary aren't charged by the sweep. A
 real, already-observed compaction is kept as-is under every candidate
-window rather than re-simulated.
+window rather than re-simulated, so a window above the one a session ran
+at costs what it did: raising the window can't be tested. Main sessions a
+scheduled or looped task started, with no message of yours, are not
+replayed (they never compact), and the `compactions` section leaves them
+out too.
 
 `recommend.recommend()` runs the `compaction-window` rule (lever
 `autoCompactWindow`, category `settings`). It names a floor ("at least
@@ -455,6 +467,38 @@ redundant read in `topology_redundant_reads`), is still more
 than 5% of observed cost (`1 - switch_pct`) and more than $1.00
 (`switch_usd`). The action says the figure is modelled, not observed.
 See [`docs/compaction-sim.md`](compaction-sim.md#the-report-section).
+Once the sweep has priced the main sessions, `compaction-churn` is
+dropped and `long-context-share` keeps only its workflow advice, whether
+or not `compaction-window` fires: the replay is the one answer on the
+setting.
+
+## `plan_handoff` (`handoff.py`)
+
+Full write-up: [`docs/plan-handoff.md`](plan-handoff.md). Main sessions
+only; scheduled ones are left out.
+
+- `plan_handoff_summary` — one row (`main sessions`): main sessions,
+  sessions with an approved plan, sessions where a fresh start pays,
+  the median planning context those plans kept, the saving (an upper
+  bound) and its share of main-session cost, main-session cost, and
+  the replies after approved plans priced as they ran (`build_usd`) and
+  at Sonnet's prices (`build_usd_sonnet`, `null` when the rate card has
+  no `sonnet` alias).
+- `plan_handoff_by_session` — one row per session with an approved plan,
+  largest saving first (top `plan_handoff_top_n`, default 20): approved
+  plans, the most context any of them would have dropped, replies after
+  them, whether any counts, the saving, and its build replies and cost
+  at both prices.
+
+`recommend.recommend()` runs the `plan-handoff` rule (`handoff.RULES`,
+category `workflow`, no lever, no setting change). It fires when at
+least `plan_handoff_min_sessions` (default 3) sessions have a plan that
+counts and the saving is at least `plan_handoff_min_saving_share_pct`
+(default 1%) of main-session cost. Its action says to `/clear` and
+carry out the plan file, and that `/branch` saves nothing because it
+copies the whole conversation. Its saving overlaps with
+`compaction-window`'s, so the Overview's available saving doesn't add
+it on top.
 
 ## `model_swap` (`model_swap.py`)
 
@@ -497,6 +541,10 @@ changes a figure.
 alternative, sample and saving thresholds cleared) and names the exact
 lever: `settings.json`'s `"model"` key for the top-level conversation,
 or the subagent's `.claude/agents/<type>.md` frontmatter `model:` line.
+A Sonnet main session never gets Haiku: its row's state is
+`main_floor`, with no alternative and no saving. `advice.finish` gives
+the main session's card its own id, `model-tier-main`, ranked last
+among cards of its severity.
 
 ## `waste` (`waste.py`)
 
@@ -609,6 +657,63 @@ the agents/skills/workflows it spawns" with numbers only:
   rediscovery window; every count is 0 unless the corpus load wired up a
   hashing salt (see `parse.load_or_create_salt`).
 
+## `run_split` (`run_split.py`)
+
+Full write-up: [`docs/run-split.md`](run-split.md). Subagent runs only;
+workflow agents are left out. Every saving is net of what each split
+adds back, at list price.
+
+- `run_split_summary` — one row (`subagent runs`): subagent runs, agent
+  types where splitting pays, the runs it would split and their splits
+  at each such type's best interval, the median context each split
+  drops, those runs' cost, the saving and its share of subagent cost, and
+  subagent cost.
+- `run_split_by_agent` — one row per agent type, largest saving first
+  (top `run_split_top_n`, default 20): runs, longest run, the best split
+  interval (`every_n`, `null` when none pays), the runs it would split,
+  their median length, splits, median context dropped, those runs' cost,
+  the saving, its share of the agent type's cost, and its cost.
+- `run_split_sweep` — one row per interval tried
+  (`run_split_intervals`): runs it would split, splits, the net saving
+  across every agent type (below zero when splitting costs more), and
+  how many agent types it is the best interval for.
+
+`recommend.recommend()` runs the `run-split` rule (`run_split.RULES`,
+category `workflow`, no lever, no setting change, one card per agent
+type) after `plan-handoff`. It fires when an agent type has a best
+interval and splitting there saves at least
+`run_split_min_saving_share_pct` (default 5%) of its cost. Its saving
+overlaps with `compaction-window`'s, so the Overview's available saving
+doesn't add it on top.
+
+## `hooks` (`hook_costs.py`)
+
+Full write-up: [`docs/hooks.md`](hooks.md). Every transcript in the
+window, main sessions and subagents alike. A hook is named by its
+script's file name, never by its command or path.
+
+- `hooks_summary` — one row (`your hooks`): hooks seen, hooks that
+  failed, failed runs, time waited on failed runs, calls blocked, calls
+  sent again unchanged, the cost of blocks, the context added (tokens)
+  and the cost of keeping it.
+- `hooks_by_script` — one row per hook, costliest first (top
+  `hooks_top_n`, default 20): the events it runs on, failed runs, why it
+  failed (`script not found`, `timed out` or `error`, plus
+  `(relative path)` or `(%VAR% not expanded)` when a script not found is
+  named by one), sessions it
+  failed in, the last day it failed, runs seen working, calls blocked,
+  sent again unchanged, cost of blocks, times it added context, context
+  added, the cost of keeping it, and time waited.
+
+The notes give the thresholds and, when there is any, the context
+Claude Code's own hooks added (left out of the tables).
+
+`recommend.recommend()` runs `hook_costs.RULES` after `run-split`:
+`hook-failures` (severity `action`), `hook-block-resent` and
+`hook-context-carry` (severity `advice`). Each is category `workflow`
+with no lever and no setting change; see
+[`hooks.md`](hooks.md#the-recommendations) for when each fires.
+
 ## `quality` (`quality.py`)
 
 Whether the work went well, not only what it cost. One *run* is one
@@ -626,13 +731,17 @@ test and privacy are in [concepts](concepts.md#7-quality-signals).
   say) is blank.
 - `quality_by_setup` — per agent type, model and effort (the model and
   effort most of a run's replies used; runs that never replied are left
-  out): the main shares and per-run measures, the setup compared with
-  (the one that agent used most), a verdict (`only`, `baseline`,
-  `worse`, `possibly_worse`, `better`, `possibly_better`,
-  `no_clear_difference`, `too_little_data`) and the difference in
-  words. Setups ran at different times on possibly different work. The
-  retried share is shown but not compared (the largest model can never
-  be retried on a larger one).
+  out, and so are main sessions a scheduled or looped task started with
+  no message of yours, `Run.scheduled`): the main shares and per-run
+  measures, the setup compared with (the one that agent used most), a
+  verdict (`only`, `baseline`, `worse`, `possibly_worse`, `better`,
+  `possibly_better`, `no_clear_difference`, `too_little_data`,
+  `not_comparable`) and the difference in words. `not_comparable` means
+  the two setups' mean replies per run are more than
+  `quality.COMPARABLE_SIZE` (5) times apart, so no test is run. Setups
+  ran at different times on possibly different work. The retried share
+  is shown but not compared (the largest model can never be retried on
+  a larger one).
 - `quality_retried` — per agent type and model with at least one run
   retried on a larger model (`quality.retried_rows`; the rule is in
   [concepts](concepts.md#7-quality-signals)): runs that edited files,
@@ -754,6 +863,15 @@ capture is off or no feedback has been given.
   ...): pieces of work, messages, cost, per piece, the most common kind
   of task, what slowed it most, what would have helped most, and where
   the answers came from (`/tl-feedback` or a dashboard rating).
+- `habits_by_shape` — main sessions by shape (`handoff.plan_shape`):
+  `plan_build` (a plan approved with `ExitPlanMode`, then files edited in
+  the same session), `plan_only` (approved, nothing edited after it) and
+  `no_plan`. Per shape: sessions, their share, the average cost, the
+  median planning context a fresh start would have dropped
+  (`handoff.plan_carried`), the pieces of work rated, the share that met
+  its goal, the shares worth it and too costly, and the /tl-feedback
+  handoff answers (`yes`, `partly`, `no`). The `plan-handoff` card and
+  the suggested profile read it.
 - `habits_self_report` — Claude's own reports against your feedback: per
   `level` word (`easy`, `normal`, `hard`) and `brief` word (`clear`,
   `partial`, `vague`) it tagged a message with, the messages that carries,
@@ -1317,7 +1435,9 @@ without `agent_startup` data; otherwise the per-part `spawn-claude-md`,
 `spawn-task-prompt` and `spawn-shared-claude-md`), `effort-mismatch`,
 `discovery-share` (only with `--phases`), `pricing-coverage`,
 `data-quality`, `limit-pressure`. Then each module's own rule:
-`tool-output-carry` (`carry.RULES`), `compaction-window`
+`tool-output-carry` (`carry.RULES`), `plan-handoff` (`handoff.RULES`),
+`run-split` (`run_split.RULES`), `hook-failures`, `hook-block-resent`
+and `hook-context-carry` (`hook_costs.RULES`), `compaction-window`
 (`compaction_sim.RULES`), `model-tier` (`model_swap.RULES`) and
 `wasted-turns` (`waste.RULES`). Last, `window-budget`
 (`elasticity.RULES`, subscription billing only). Rules are gated by

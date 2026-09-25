@@ -38,6 +38,15 @@ def test_recommendations_goal_ticks_everything_but_the_main_model():
     assert out["profile"] == {"settings": {}, "agents": {"reviewer": {"model": "sonnet"}}}
 
 
+def test_ignored_recommendations_stay_out_of_the_draft():
+    kept = NS(key="kept", title="Kept", changes=[_change("model", "reviewer", "sonnet")])
+    ignored = NS(key="ignored", title="Ignored", changes=[_change("model", "writer", "sonnet")])
+    for goal in ("recommendations", "subagents", "models"):
+        out = goals.draft(goal, _report([kept, ignored]), UNITS, skip_keys=frozenset({"ignored"}))
+        agents = {c["agent"] for c in out["candidates"] if c.get("evidence", "").startswith("Recommended")}
+        assert "writer" not in agents and "reviewer" in agents, goal
+
+
 def test_models_goal_reads_the_cheapest_alternative_per_agent():
     model = _report()
     [table] = model.sections[0].tables
@@ -50,6 +59,33 @@ def test_models_goal_reads_the_cheapest_alternative_per_agent():
     assert rows == {(None, "sonnet", False), ("Explore", "haiku", True)}
     explore = next(c for c in out["candidates"] if c["agent"] == "Explore")
     assert explore["estimate"]["saving_usd"] == 8.0
+
+
+def _with_plans(observed="claude-opus-5-5", build=100.0, sonnet=60.0):
+    model = _model()
+    model.sections[0].tables[0].rows[0][1] = observed
+    model.sections.append(NS(key="plan_handoff", tables=[_table("plan_handoff_summary", [
+        {"scope": "main sessions", "build_usd": build, "build_usd_sonnet": sonnet},
+    ])]))
+    return model
+
+
+def test_models_goal_offers_opusplan_unticked_when_the_main_session_ran_on_opus():
+    result = goals.draft("models", _with_plans(), UNITS, effective={"model": "opus"})
+    [main] = [c for c in result["candidates"] if c["agent"] is None]
+    assert (main["key"], main["value"], main["ticked"]) == ("model", "opusplan", False)
+    assert "40% less on Sonnet" in main["evidence"] and "/model opusplan" in main["evidence"]
+    assert main["estimate"]["saving_usd"] == pytest.approx(40.0)
+    assert main["estimate"]["fidelity"] == "ceiling"
+
+
+def test_opusplan_needs_an_opus_main_session_and_a_build_to_reprice():
+    for model in (_with_plans(observed="claude-sonnet-5"), _with_plans(build=0.0), _with_plans(sonnet=None)):
+        result = goals.draft("models", model, UNITS)
+        assert all(c["value"] != "opusplan" for c in result["candidates"])
+    # Already on opusplan: nothing to offer, not taken for plain Opus.
+    result = goals.draft("models", _with_plans(), UNITS, effective={"model": "opusplan"})
+    assert all(c["value"] != "opusplan" for c in result["candidates"])
 
 
 def test_models_goal_skips_a_model_the_quality_check_found_worse():
