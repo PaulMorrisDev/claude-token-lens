@@ -1035,7 +1035,7 @@ CHECKS: tuple[Check, ...] = (
           "Thinking is billed as output, the most expensive kind of token.", _effort, ("effort-mismatch",)),
     Check("compaction", "When should conversations be summarised?",
           "Every reply re-reads the whole conversation, so the point it's summarised at sets the cost of each reply.",
-          _compaction, ("compaction-window", "compaction-churn")),
+          _compaction, ("compaction-window", "compaction-churn", "plan-handoff")),
     Check("cache", "Which cache lifetime is cheaper for you?",
           "A 5-minute cache is cheaper to write; a 1-hour one survives longer pauses without rebuilding.", _cache,
           ("ttl-switch",)),

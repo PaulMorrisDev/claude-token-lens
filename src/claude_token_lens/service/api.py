@@ -1964,6 +1964,17 @@ def make_handler(
         section = _find_section(model, "carry")
         return _ok(to_jsonable(section) if section is not None else None)
 
+    def route_plan_handoff(store, query, body):
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
+        section = _find_section(model, "plan_handoff")
+        return _ok(to_jsonable(section) if section is not None else None)
+
     def route_compaction_sim(store, query, body):
         window, err = _window_query(query)
         if err is not None:
@@ -2601,6 +2612,7 @@ def make_handler(
         "/api/ttl": route_ttl,
         "/api/carry": route_carry,
         "/api/compaction-sim": route_compaction_sim,
+        "/api/plan-handoff": route_plan_handoff,
         "/api/model-swap": route_model_swap,
         "/api/waste": route_waste,
         "/api/config-diff": route_config_diff,

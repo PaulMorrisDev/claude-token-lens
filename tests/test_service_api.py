@@ -1211,7 +1211,7 @@ def test_ttl_route(server):
     assert_privacy(body)
 
 
-@pytest.mark.parametrize("route", ["/api/carry", "/api/compaction-sim", "/api/model-swap", "/api/waste"])
+@pytest.mark.parametrize("route", ["/api/carry", "/api/compaction-sim", "/api/plan-handoff", "/api/model-swap", "/api/waste"])
 def test_v4_report_backed_routes_return_ok(server, route):
     """Mirrors test_ttl_route for the v4 wiring round's four new
     report-backed routes -- each just reads its own like-named section
@@ -1242,7 +1242,7 @@ def test_report_backed_routes_carry_lead_columns(server):
 
 
 def test_v4_report_backed_routes_accept_since_until(server):
-    for route in ("/api/carry", "/api/compaction-sim", "/api/model-swap", "/api/waste"):
+    for route in ("/api/carry", "/api/compaction-sim", "/api/plan-handoff", "/api/model-swap", "/api/waste"):
         resp, body = server.get_json(f"{route}?since=2026-08-01T00:00:00%2B00:00&until=2026-08-31T00:00:00%2B00:00")
         assert resp.status == 200
         assert body["ok"] is True
@@ -3039,6 +3039,7 @@ def test_report_cache_does_not_leak_across_project_filters(two_project_server):
         "/api/ttl",
         "/api/carry",
         "/api/compaction-sim",
+        "/api/plan-handoff",
         "/api/model-swap",
         "/api/waste",
         "/api/config-diff?auto_keys=1",

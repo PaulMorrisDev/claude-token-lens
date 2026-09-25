@@ -541,13 +541,16 @@ subscription billing with usage-limit readings.
 **Answers:** "Which change saves the most, and how sure is it?"
 
 Chart 2 heads the page: the four ways to save side by side, hatched
-unless measured. A bar leads to the row its figure comes from. Then four
+unless measured. A bar leads to the row its figure comes from. Then five
 sections, each from its own route rather than the full report:
 
 - `/api/carry`: what tool output kept in context costs, and what a cap
   would save;
 - `/api/compaction-sim`: the conversation-summary sweep, the best size
   per agent type and the fidelity check, with chart 3;
+- `/api/plan-handoff`: what building in a fresh session after each big
+  approved plan could have saved (no bar in chart 2: it overlaps with
+  the conversation-summary saving);
 - `/api/model-swap`: the most a one-tier-cheaper model could save;
 - `/api/waste`: spend on replies whose output was never used.
 

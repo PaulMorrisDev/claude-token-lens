@@ -626,6 +626,14 @@ def _explain_effort_mismatch_reported(rec: Recommendation, ctx: _Context) -> Non
     rec.saving_basis = ctx.basis("Half the thinking on those messages, at list price. Not measured.")
 
 
+def _explain_plan_handoff(rec: Recommendation, ctx: _Context) -> None:
+    rec.estimated_saving = ctx.money(rec.saving_usd, prefix="At most ")
+    rec.saving_basis = ctx.basis(
+        "The replies after each big approved plan, priced without the planning context, less one cache write "
+        "of the plan and an allowance for re-reading files. At list price."
+    )
+
+
 def _explain_baseline_bloat(rec: Recommendation, ctx: _Context) -> None:
     table = next((t for s in ctx.report.sections if s.key == "agents" for t in s.tables
                   if t.name == "topology_session_baseline"), None)
@@ -780,6 +788,7 @@ _EXPLAIN: dict[str, Callable[[Recommendation, _Context], None]] = {
     "long-context-share": _explain_long_context_share,
     "ttl-switch": _explain_ttl_switch,
     "effort-mismatch": _explain_effort_mismatch,
+    "plan-handoff": _explain_plan_handoff,
     "baseline-bloat": _explain_baseline_bloat,
     "spawn-cost": _explain_spawn_cost,
     "agent-report-size": _explain_agent_report_size,

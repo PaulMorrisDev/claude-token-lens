@@ -133,7 +133,7 @@ import dataclasses
 import re
 from dataclasses import dataclass
 
-from . import carry, compaction_sim, elasticity, model_swap, waste
+from . import carry, compaction_sim, elasticity, handoff, model_swap, waste
 from .config import Config
 from .context_budget import _READ_ONLY_TOOLS
 from .model import Recommendation, ReportModel, Section, SettingChange, Table
@@ -2255,6 +2255,7 @@ def recommend(
     compaction_sim_th = compaction_sim.CompactionSimThresholds.from_config(config.thresholds)
     model_swap_th = model_swap.ModelSwapThresholds.from_config(config.thresholds)
     waste_th = waste.WasteThresholds.from_config(config.thresholds)
+    handoff_th = handoff.HandoffThresholds.from_config(config.thresholds)
 
     recs: list[Recommendation] = []
     recs.extend(_rule_ttl_switch(report, config, snapshot, archetype, th))
@@ -2291,6 +2292,7 @@ def recommend(
     # the same read-rendered-tables-not-raw-accumulators contract every
     # rule in this file follows.
     recs.extend(carry.RULES[0](report, carry_th))
+    recs.extend(handoff.RULES[0](report, handoff_th))
     recs.extend(compaction_sim.RULES[0](report, compaction_sim_th, snapshot))
     recs.extend(model_swap.RULES["model-tier"](report, model_swap_th, archetype, snapshot))
     recs.extend(waste.RULES[0](report, waste_th))

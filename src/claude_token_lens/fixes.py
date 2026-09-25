@@ -341,6 +341,12 @@ _WORKFLOW_PROMPTS = {
         "exploration-heavy work to a subagent, whose context is discarded when it finishes, and when I switch "
         "to an unrelated task, suggest starting a fresh session instead of carrying this one on."
     ),
+    "plan-handoff": (
+        "After I approve a big plan, the planning stays in context for the whole build: {title_lower}. Please "
+        "add a short instruction to my ~/.claude/CLAUDE.md: when I approve a plan that took a lot of exploring, "
+        "remind me to run /clear and start the build from the saved plan file, one phase per session. Show me "
+        "the diff before saving. Claude Code will ask my permission before editing files under .claude."
+    ),
     "spawn-task-prompt": (
         "The instructions I write when spawning {agent} are long: {title_lower}. From now on, when I'm "
         "about to give {agent} a long brief, point it at the files it needs instead of pasting their "
@@ -469,6 +475,13 @@ _WORKFLOW_EXPLAINER: dict[str, tuple[str, str, str]] = {
         "Moving exploration into a subagent means its findings only reach the main session through its final "
         "report, which can lose nuance; a fresh session starts without what the old one knew.",
         "Go back to exploring directly in the main session and carrying one session across tasks.",
+    ),
+    "plan-handoff": (
+        "Nowhere in Claude Code's config: how you move from planning to building in the main session. The "
+        "prompt adds a reminder to your CLAUDE.md.",
+        "A fresh session knows only the plan and what it reads again, so a thin plan can mean re-reading "
+        "files or asking again about decisions made while planning.",
+        "Remove the reminder from your CLAUDE.md and keep building in the planning session.",
     ),
     "cache-read-dominance": (
         "Nothing to change here -- this card is informational.",

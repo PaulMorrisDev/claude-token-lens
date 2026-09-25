@@ -473,8 +473,8 @@ then model. `cost` is at list price.
 
 ### Report-backed routes: windowing query params
 
-`/api/ttl`, `/api/carry`, `/api/compaction-sim`, `/api/model-swap`,
-`/api/waste`, `/api/config-diff`, `/api/recommendations`,
+`/api/ttl`, `/api/carry`, `/api/compaction-sim`, `/api/plan-handoff`,
+`/api/model-swap`, `/api/waste`, `/api/config-diff`, `/api/recommendations`,
 `/api/diagnostics`, `/api/claude-md`, `/api/claude-md/<id>`,
 `/api/skills`, `/api/profile-goals` (with `goal`), `/api/quick-actions`,
 `/api/quick-actions/<id>`, `POST /api/whatif` and
@@ -563,6 +563,16 @@ the per-agent-type best window and the fidelity check against each
 session's actually-configured window) — same shape as the CLI's
 `compaction-sim` section tables, sourced from the assembled report's
 `"compaction_sim"` section (`compaction_sim.py`).
+
+Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
+routes: windowing query params" above).
+
+### `GET /api/plan-handoff`
+
+The "building in a fresh session after a big plan" tables
+(`plan_handoff_summary`, `plan_handoff_by_session`), sourced from the
+assembled report's `"plan_handoff"` section (`handoff.py`, see
+[`plan-handoff.md`](plan-handoff.md)); `null` when the section is absent.
 
 Query: `window`, `window_days`, or `since`/`until` (see "Report-backed
 routes: windowing query params" above).

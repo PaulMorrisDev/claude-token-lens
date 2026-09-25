@@ -949,6 +949,8 @@ var SECTION_CARDS = {
   context_budget: "startup-context",
   carry: "tool-output",
   compaction_sim: "conversation-summaries",
+  // The planning context kept is re-read on every later reply.
+  plan_handoff: "cache-reads",
   compactions: "conversation-summaries",
   elasticity: "billing-mode",
 };

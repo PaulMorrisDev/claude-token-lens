@@ -267,6 +267,7 @@ export var SECTION_PAGE_MAP = {
   // Data quality when the whole report is walked.
   carry: "spend/savings",
   compaction_sim: "spend/savings",
+  plan_handoff: "spend/savings",
   model_swap: "spend/savings",
   waste: "spend/savings",
   sessions: "spend/sessions",

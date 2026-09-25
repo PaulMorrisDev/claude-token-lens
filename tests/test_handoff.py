@@ -1,0 +1,196 @@
+"""The "start building in a fresh session" tip (``handoff.py``): what the
+replies after an approved plan would have cost had the build started
+from the plan alone.
+
+Hand-built turns use the packaged Sonnet 5 rates (cache_write_5m 2.5 and
+cache_read 0.2 per million tokens), as ``test_carry.py`` does.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from claude_token_lens import model
+from claude_token_lens.handoff import (
+    RULES,
+    HandoffThresholds,
+    build_section,
+    compute_handoff,
+    starting_context,
+)
+from claude_token_lens.model import EventKind, PlanStats, ReportModel, TranscriptMeta, TranscriptResult
+from claude_token_lens.parse import parse_transcript
+from claude_token_lens.pricing import load_pricing
+
+from helpers import assert_privacy, tool_result_block, tool_use_block, turn_line, user_block_line, user_str_line, write_jsonl
+
+PRICING = load_pricing()
+
+
+def _turn(i: int, **overrides) -> model.Turn:
+    fields = dict(message_id=f"msg_{i}", request_id=f"req_{i}", turn_index=i, model="claude-sonnet-5")
+    fields.update(overrides)
+    return model.Turn(**fields)
+
+
+def _session(
+    *,
+    session_id="s1",
+    later=10,
+    plan_ctx=100_000,
+    plan_chars=4_000,
+    outcome="approved",
+    compaction_at=None,
+    kind="top-level",
+    model_id="claude-sonnet-5",
+) -> TranscriptResult:
+    """A session that starts at 10,000 tokens, plans up to ``plan_ctx``,
+    has the plan approved, then runs ``later`` replies that each read
+    ``plan_ctx`` tokens from the cache."""
+    turns = [_turn(1, ctx=10_000, cache_read_tokens=10_000, human_prompt_chars=0, model=model_id)]
+    turns.append(
+        _turn(
+            2,
+            ctx=plan_ctx,
+            cache_read_tokens=plan_ctx,
+            plan_stats=PlanStats(steps=3, chars=plan_chars, outcome=outcome),
+            model=model_id,
+        )
+    )
+    for n in range(later):
+        i = 3 + n
+        kinds = (EventKind.COMPACT_BOUNDARY,) if compaction_at == i else ()
+        turns.append(_turn(i, ctx=plan_ctx, cache_read_tokens=plan_ctx, preceding_event_kinds=kinds, model=model_id))
+    meta = TranscriptMeta(session_id=session_id, kind=kind, agent_type=None if kind == "top-level" else "Explore")
+    return TranscriptResult(meta=meta, turns=turns)
+
+
+def test_the_saving_takes_off_the_fresh_cache_write_and_the_allowance():
+    stats = compute_handoff([_session()], PRICING, rediscovery_allowance_usd=0.01)
+    [plan] = stats.plans
+    # Fresh start: 10,000 + 4,000 / 4 = 11,000 tokens, so 89,000 dropped.
+    assert plan.tokens_carried == 89_000
+    assert plan.later_turns == 10
+    assert plan.qualifies
+    # 10 replies each read 89,000 fewer tokens at $0.20 per million, less
+    # one cache write of the 11,000-token fresh start ($2.50 - $0.20 per
+    # million) and the $0.01 allowance.
+    expected = 10 * 89_000 * 0.2e-6 - 11_000 * 2.3e-6 - 0.01
+    assert plan.saving_usd == pytest.approx(expected)
+    [row] = stats.sessions
+    assert row.saving_usd == pytest.approx(expected)
+    assert row.qualifying_plans == 1
+
+
+def test_a_rejected_plan_counts_for_nothing():
+    stats = compute_handoff([_session(outcome="rejected")], PRICING)
+    assert stats.plans == [] and stats.sessions == []
+    assert stats.main_sessions == 1
+
+
+def test_the_window_ends_at_a_conversation_summary():
+    stats = compute_handoff([_session(later=14, compaction_at=9)], PRICING)
+    # Replies 3 to 8 only: the summary before reply 9 already dropped it.
+    assert stats.plans[0].later_turns == 6
+    assert not stats.plans[0].qualifies
+    assert stats.sessions[0].saving_usd == 0.0
+
+
+def test_small_plans_and_short_builds_do_not_count():
+    assert not compute_handoff([_session(later=9)], PRICING).plans[0].qualifies
+    small = compute_handoff([_session(plan_ctx=45_000)], PRICING).plans[0]
+    assert small.tokens_carried == 34_000 and not small.qualifies
+    loose = HandoffThresholds(min_dropped_tokens=30_000, min_later_turns=5)
+    assert compute_handoff([_session(plan_ctx=45_000)], PRICING, loose).plans[0].qualifies
+
+
+def test_subagents_are_left_out():
+    stats = compute_handoff([_session(kind="subagent")], PRICING)
+    assert stats.main_sessions == 0 and stats.plans == []
+
+
+def test_the_build_is_priced_at_sonnet_too():
+    stats = compute_handoff([_session(model_id="claude-opus-5")], PRICING)
+    [row] = stats.sessions
+    assert row.build_turns == 10
+    assert row.build_usd_sonnet is not None
+    assert 0 < row.build_usd_sonnet < row.build_usd
+
+
+def test_starting_context_leaves_out_the_first_message():
+    turns = [_turn(1, ctx=20_000, human_prompt_chars=4_000)]
+    assert starting_context(turns) == 19_000
+    assert starting_context([]) == 0
+
+
+def test_the_section_tables_and_privacy():
+    stats = compute_handoff([_session(session_id=f"s{i}") for i in range(3)], PRICING)
+    section = build_section(stats)
+    assert section.key == "plan_handoff"
+    assert [t.name for t in section.tables] == ["plan_handoff_summary", "plan_handoff_by_session"]
+    summary = {c.key: v for c, v in zip(section.tables[0].columns, section.tables[0].rows[0])}
+    assert summary["qualifying_sessions"] == 3
+    assert summary["tokens_carried_median"] == 89_000
+    assert summary["saving_pct"] > 0
+    assert len(section.tables[1].rows) == 3
+    assert_privacy(section)
+
+
+def _report(sessions: int, **kw) -> ReportModel:
+    stats = compute_handoff([_session(session_id=f"s{i}", **kw) for i in range(sessions)], PRICING)
+    return ReportModel(sections=[build_section(stats)])
+
+
+def test_the_rule_fires_on_three_sessions_and_says_clear_not_fork():
+    [rec] = RULES[0](_report(3), HandoffThresholds())
+    assert rec.id == "plan-handoff"
+    assert rec.lever is None and rec.changes == []
+    assert rec.saving_usd > 0
+    assert "/clear" in rec.action and "/branch" in rec.action
+    assert "89,000 tokens" in rec.why
+    for _label, _value, source, row_key in rec.evidence:
+        assert source == "plan_handoff.plan_handoff_summary" and row_key == "main sessions"
+
+
+def test_the_rule_needs_three_sessions_and_a_saving_share():
+    assert RULES[0](_report(2), HandoffThresholds()) == []
+    assert RULES[0](_report(3), HandoffThresholds(min_saving_share_pct=99.0)) == []
+    assert RULES[0](ReportModel(), HandoffThresholds()) == []
+
+
+def test_thresholds_read_their_prefixed_keys():
+    th = HandoffThresholds.from_config({"plan_handoff_min_sessions": 5, "plan_handoff_min_dropped_tokens": "x", "top_n": 3})
+    assert th.min_sessions == 5
+    assert th.min_dropped_tokens == 40_000.0
+    assert th.top_n == 20
+
+
+def test_a_parsed_session_with_an_approved_plan(tmp_path: Path):
+    """End to end from a transcript: a long exploration, an approved
+    ExitPlanMode, then twelve build replies."""
+    lines = [user_str_line("Plan the change", origin={"kind": "human"})]
+    lines.append(turn_line(cache_read_input_tokens=15_000, input_tokens=10))
+    for n in range(8):
+        lines.append(turn_line(cache_read_input_tokens=15_000 + 12_000 * (n + 1), input_tokens=10))
+    lines.append(
+        turn_line(
+            cache_read_input_tokens=120_000,
+            input_tokens=10,
+            content=[tool_use_block("ExitPlanMode", "tu_plan", {"plan": "1. Edit a\n2. Edit b\n" + "x" * 3_000})],
+        )
+    )
+    lines.append(user_block_line([tool_result_block("tu_plan", "User has approved your plan.")]))
+    for _ in range(12):
+        lines.append(turn_line(cache_read_input_tokens=122_000, input_tokens=10))
+    path = tmp_path / "session.jsonl"
+    write_jsonl(path, lines)
+    result = parse_transcript(path, TranscriptMeta(path=str(path), session_id="parsed"))
+
+    stats = compute_handoff([result], PRICING)
+    [plan] = stats.plans
+    assert plan.qualifies
+    assert plan.later_turns == 12
+    assert plan.tokens_carried > 100_000
+    assert stats.sessions[0].saving_usd > 0

@@ -47,6 +47,7 @@ from . import classify
 from . import model_gate
 from . import quality
 from .context_files import _parse_ts
+from .handoff import starting_context
 from .model import PROMPT_FLAGS, Column, EventKind, Feedback, Recommendation, Section, Table, Turn
 from .pricing import Pricing, effective_rates, price_turn
 from .topology import agent_key
@@ -681,7 +682,7 @@ def _session(bundle, rates: _Rates, out: Habits, rating) -> None:
     cycles = capture_mod.prompt_cycles(top, bundle.subs)
     carry = _CarryCost(turns, rates)
     first_turn = turns[0]
-    baseline = max(0, first_turn.ctx - (first_turn.human_prompt_chars or 0) // capture_mod.CHARS_PER_TOKEN)
+    baseline = starting_context(turns)
 
     rated: dict[int, Feedback] = {}
     for span in capture_mod.feedback_spans(cycles):

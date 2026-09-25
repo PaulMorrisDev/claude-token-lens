@@ -192,7 +192,9 @@ function moneyTile(label, usd, opts) {
 }
 
 // Actions whose saving a Savings lever already counts.
-var LEVER_RULES = { "model-tier": "model_swap", "model-tier-main": "model_swap" };
+// A fresh session after a plan saves the same carried context the
+// auto-compact lever counts, so it isn't added on top.
+var LEVER_RULES = { "model-tier": "model_swap", "model-tier-main": "model_swap", "plan-handoff": "compaction_sim" };
 
 // The most the ways to save could come to: the four Savings levers, plus
 // any priced action no lever counts (lower effort, say). An action is an

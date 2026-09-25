@@ -1038,6 +1038,7 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
     for route, section_key in (
         ("/api/carry", "carry"),
         ("/api/compaction-sim", "compaction_sim"),
+        ("/api/plan-handoff", "plan_handoff"),
         ("/api/model-swap", "model_swap"),
         ("/api/waste", "waste"),
     ):

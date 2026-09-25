@@ -526,6 +526,7 @@ function buildTagSelect(options, current) {
 var SAVINGS_SECTIONS = [
   { url: "/api/carry", id: "savings-carry", empty: "No tool output to weigh in this window: its sessions kept none worth trimming." },
   { url: "/api/compaction-sim", id: "savings-compaction-sim", empty: "No conversation summaries to replay in this window." },
+  { url: "/api/plan-handoff", id: "savings-plan-handoff", empty: "No approved plans in this window." },
   { url: "/api/model-swap", id: "savings-model-swap", empty: "No agent in this window could move to a cheaper model." },
   { url: "/api/waste", id: "savings-waste", empty: "No wasted replies in this window." },
 ];
