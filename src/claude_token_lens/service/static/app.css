@@ -992,10 +992,33 @@ tr:focus-visible {
   box-shadow: var(--elev-1);
 }
 
-/* -- the window picker: a button and its menu ---------------------------------- */
+/* -- the project and window pickers: a button and its menu ---------------------- */
 
+.project-picker,
 .window-picker {
   position: relative;
+}
+
+/* A picked project narrows every figure, so its button looks set. */
+.control-button.is-filtered,
+.control-button.is-filtered:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.control-button.is-filtered svg {
+  color: var(--accent-ink);
+}
+
+.project-picker .control-label {
+  max-width: 20ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.project-picker .menu {
+  max-width: 360px;
 }
 
 .menu {
@@ -1055,6 +1078,44 @@ tr:focus-visible {
 
 .menu-item[aria-checked="true"] svg {
   visibility: visible;
+}
+
+/* A long list (the projects) scrolls inside its menu; the note stays. */
+.menu-rows {
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.menu-item-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-item-detail {
+  flex: none;
+  margin-left: auto;
+  padding-left: var(--space-4);
+  color: var(--ink-3);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-regular);
+}
+
+/* A line saying why there is nothing to pick: read, not chosen. */
+.menu-item.is-disabled {
+  height: auto;
+  min-height: 30px;
+  padding-block: var(--space-3);
+  color: var(--ink-3);
+  line-height: 1.4;
+  white-space: normal;
+  cursor: default;
+}
+
+.menu-item.is-disabled:hover {
+  background: none;
 }
 
 .menu-note {

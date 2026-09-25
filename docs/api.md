@@ -1098,6 +1098,17 @@ given value back, only that `project` was the problem. The report cache
 (below) keys on `project` alongside the window, so two different
 `project` values for the same window never share a cache entry.
 
+The dashboard's project picker lists every project's
+`report.json` `meta.projects` for the window, then sends the picked
+slug as `project=` with every window-aware request, the Overview's
+previous-window `/api/summary?since=&until=` included. Routes that
+don't take the filter (`/api/impact`, `/api/backtest`,
+`/api/baseline`, `/api/recache`) keep covering every project,
+and the dashboard puts an "All projects" chip beside what they draw
+while a project is picked. It checks an unknown slug once with
+`/api/sessions?limit=1&project=` and, on the `400`, falls back to every
+project.
+
 ## Mutating routes
 
 The `POST` routes. All but `POST /api/whatif` write something, each

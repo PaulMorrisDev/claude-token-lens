@@ -1,7 +1,8 @@
 /* claude-token-lens service UI: api.js
  *
- * Fetching from the service: the {ok, data} envelope, the per-window
- * report cache and the figures-as-of stamp.
+ * Fetching from the service: the {ok, data} envelope, the window and
+ * project every session-reading route is asked for, the report cache
+ * and the figures-as-of stamp.
  */
 
 import { clear, state } from "./core.js";
@@ -10,7 +11,9 @@ import { errorNotice, loadingNode } from "./ui.js";
 
 // -- fetch / envelope handling ----------------------------------------
 
-export function fetchJson(url, options) {
+// quiet: the response isn't drawn as figures (the project picker's list
+// of projects), so its X-Figures-As-Of isn't noted.
+export function fetchJson(url, options, quiet) {
   return fetch(url, options)
     .then(function (res) {
       return res
@@ -22,7 +25,7 @@ export function fetchJson(url, options) {
           // A report-backed route says when its figures are from
           // (docs/api.md, "Caching").
           var asOf = res.headers.get("X-Figures-As-Of");
-          if (asOf) noteFiguresAsOf(asOf);
+          if (asOf && !quiet) noteFiguresAsOf(asOf);
           noteConnection(true);
           return { httpStatus: res.status, body: readableAmounts(body), asOf: asOf };
         });
@@ -119,20 +122,57 @@ function windowParam() {
   return /^[0-9]+$/.test(value) ? "window_days=" + value : "window=" + encodeURIComponent(value);
 }
 
-export function withWindow(url) {
-  return url + (url.indexOf("?") === -1 ? "?" : "&") + windowParam();
+// The picked project as a query parameter, or "" for all projects
+// (docs/api.md, "Filtering by project").
+function projectParam() {
+  return state.project ? "project=" + encodeURIComponent(state.project) : "";
 }
 
-export function loadReport() {
-  var key = state.window;
+function addParams(url, params) {
+  var text = params
+    .filter(function (param) {
+      return param;
+    })
+    .join("&");
+  if (!text) return url;
+  return url + (url.indexOf("?") === -1 ? "?" : "&") + text;
+}
+
+// The window and the picked project, for every route that reads
+// sessions: what the page header says is on screen.
+export function withWindow(url) {
+  return addParams(url, [windowParam(), projectParam()]);
+}
+
+// The project only, for a route asked about its own period (the
+// Overview's previous window, by since and until).
+export function withProject(url) {
+  return addParams(url, [projectParam()]);
+}
+
+// What the window and project decide, as one cache key.
+export function scopeKey() {
+  return state.window + (state.project ? "|" + state.project : "");
+}
+
+// The report for the window and the picked project. options.allProjects
+// asks for every project's report instead: its meta.projects is the list
+// the project picker offers (a report for one project lists only that
+// one).
+export function loadReport(options) {
+  var allProjects = !!(options && options.allProjects && state.project);
+  var key = allProjects ? state.window : scopeKey();
   if (state.reportPromises[key]) {
     // A report fetched earlier is drawn again: its figures' time counts.
-    state.reportPromises[key].then(function (loaded) {
-      if (loaded && loaded.asOf) noteFiguresAsOf(loaded.asOf);
-    });
+    if (!allProjects) {
+      state.reportPromises[key].then(function (loaded) {
+        if (loaded && loaded.asOf) noteFiguresAsOf(loaded.asOf);
+      });
+    }
   } else {
-    var url = withWindow("/api/report.json");
-    state.reportPromises[key] = fetchJson(url).then(function (result) {
+    var url = allProjects ? "/api/report.json?" + windowParam() : withWindow("/api/report.json");
+    var everyProject = allProjects || !state.project;
+    state.reportPromises[key] = fetchJson(url, undefined, allProjects).then(function (result) {
       var body = result.body;
       if (!body || body.ok === false) {
         // Not kept: the next view that asks fetches it again (the
@@ -158,19 +198,32 @@ export function loadReport() {
       if (report && report.meta && report.meta.units) {
         state.units = report.meta.units;
       }
-      if (report && report.meta && report.meta.projects) setKnownProjects(report.meta.projects);
+      // Readable project names are worked out from every project, so a
+      // report for one project (which lists only that one) leaves them.
+      if (report && report.meta && report.meta.projects && everyProject) setKnownProjects(report.meta.projects);
       return { report: report, asOf: asOf };
     });
   }
   return state.reportPromises[key];
 }
 
-// /api/recommendations for the window on screen, fetched once per window
-// and shared by every view that reads it (the Actions badge and inbox,
-// the Overview, the "Feeds N actions" chips). Resolves to fetchJson's
-// result; a failed fetch isn't kept, so the next caller asks again.
+// Every project with a session in the window, costliest first, for the
+// project picker and search: resolves to a list of slugs, or null when
+// the report couldn't load.
+export function loadProjects() {
+  return loadReport({ allProjects: true }).then(function (loaded) {
+    var meta = loaded && loaded.report && loaded.report.meta;
+    return meta && Array.isArray(meta.projects) ? meta.projects : null;
+  });
+}
+
+// /api/recommendations for the window and project on screen, fetched
+// once per window and project and shared by every view that reads it
+// (the Actions badge and inbox, the Overview, the "Feeds N actions"
+// chips). Resolves to fetchJson's result; a failed fetch isn't kept, so
+// the next caller asks again.
 export function loadRecommendations() {
-  var key = state.window;
+  var key = scopeKey();
   if (!state.recommendationPromises[key]) {
     state.recommendationPromises[key] = fetchJson(withWindow("/api/recommendations")).then(function (result) {
       var body = result.body;

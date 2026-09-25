@@ -83,10 +83,11 @@ export function storageRemove(key) {
 // -- report.json cache (shared by every view that reads the report) ---
 
 export var state = {
-  // One report promise per window (review finding 21): /api/report.json
-  // takes the window and the server memoizes its answer per window and
-  // change (docs/api.md). A single shared promise kept every view on the
-  // first window's report after the picker changed.
+  // One report promise per window and project (review finding 21):
+  // /api/report.json takes both and the server memoizes its answer per
+  // window, project and change (docs/api.md). A single shared promise
+  // kept every view on the first window's report after the picker
+  // changed. Keyed by api.js's scopeKey().
   reportPromises: {},
   // The same for /api/recommendations (api.js's loadRecommendations).
   recommendationPromises: {},
@@ -101,6 +102,11 @@ export var state = {
   // number of days, or a named window the server resolves ("1h",
   // "today", "24h", "change", "all").
   window: "30",
+  // The one project every view reads (the project picker), as its slug
+  // from report.meta.projects (already redacted), or "" for all of them.
+  // Kept in the address (&project=) and nowhere else: a filter that
+  // outlived the visit would quietly shrink every figure next time.
+  project: "",
   // The view on screen, as links.js's view key ("spend/usage").
   view: null,
   // The address's other parameters for that view (everything but w):
@@ -142,6 +148,20 @@ export function setRouteHandler(handler) {
 // params (the address's other parameters: {id}, or {t, row}).
 export function goTo(viewKey, options) {
   if (routeHandler) routeHandler(viewKey, options);
+}
+
+// The project picker lives in app.js too. A module that offers "Show only
+// this project" or "Show all projects" (search, an error notice) calls
+// pickProject, with "" for all projects. options.focus moves focus to the
+// page title, for a button the redraw takes away.
+var projectHandler = null;
+
+export function setProjectHandler(handler) {
+  projectHandler = handler;
+}
+
+export function pickProject(slug, options) {
+  if (projectHandler) projectHandler(slug || "", options || {});
 }
 
 // A view that takes parameters (an item to select) says how to follow

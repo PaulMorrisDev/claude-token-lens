@@ -182,7 +182,7 @@ export function viewFor(key) {
 }
 
 // ======================================================================
-// Routes: #/<page>[/<segment>][?w=<window>&...]
+// Routes: #/<page>[/<segment>][?w=<window>&project=<slug>&...]
 // ======================================================================
 
 // A route from location.hash. A page with segments and none named (or
@@ -201,12 +201,19 @@ export function parseHash(hash) {
   return { page: page, segment: segment, params: params };
 }
 
-// The hash for a view key and its parameters; the window (w) goes first
-// so every address says which window it shows.
+// The hash for a view key and its parameters; the window (w) goes
+// first, then the project, so every address starts with what it shows.
+// An empty value (all projects) is left out.
+var LEADING_PARAMS = { w: 0, project: 1 };
+
+function paramRank(name) {
+  return name in LEADING_PARAMS ? LEADING_PARAMS[name] : 2;
+}
+
 export function formatHash(key, params) {
   var query = new URLSearchParams();
   var names = Object.keys(params || {}).sort(function (a, b) {
-    return (a === "w" ? 0 : 1) - (b === "w" ? 0 : 1) || (a < b ? -1 : a > b ? 1 : 0);
+    return paramRank(a) - paramRank(b) || (a < b ? -1 : a > b ? 1 : 0);
   });
   names.forEach(function (name) {
     var value = params[name];
@@ -320,12 +327,19 @@ export function viewIntro(container, key) {
   if (text) container.appendChild(el("p", { class: "view-intro", text: text }));
 }
 
+// What every address carries: the window, and the project when one is
+// picked (formatHash leaves an empty one out). Links, the router and the
+// pages all take it from here, so none drops the project.
+export function scopeParams() {
+  return { w: state.window, project: state.project };
+}
+
 // A link to another view: a real #/ address (so it opens in a new tab
 // and shows in the status bar), which moves focus to the new page's
 // title when followed here. Without text it reads as the view's name.
 // params: what to open there ({id: a recommendation's key}).
 export function pageLink(key, text, params) {
-  var link = el("a", { class: "page-link", href: formatHash(key, Object.assign({ w: state.window }, params || {})), text: text || viewLabel(key) });
+  var link = el("a", { class: "page-link", href: formatHash(key, Object.assign(scopeParams(), params || {})), text: text || viewLabel(key) });
   link.addEventListener("click", function (event) {
     if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
@@ -344,7 +358,7 @@ export function replaceParams(params) {
     if (state.params[name] !== null && state.params[name] !== undefined) clean[name] = state.params[name];
   });
   state.params = clean;
-  window.history.replaceState(null, "", formatHash(state.view, Object.assign({ w: state.window }, clean)));
+  window.history.replaceState(null, "", formatHash(state.view, Object.assign(scopeParams(), clean)));
 }
 
 export function captureLink(text) {

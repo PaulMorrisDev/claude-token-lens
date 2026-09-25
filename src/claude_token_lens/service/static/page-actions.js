@@ -36,7 +36,7 @@ import {
 } from "./ui.js";
 import { dataGrid, simpleTable } from "./grid.js";
 import { modelName } from "./format.js";
-import { formatHash, pageLink, replaceParams, viewIntro } from "./links.js";
+import { formatHash, pageLink, replaceParams, scopeParams, viewIntro } from "./links.js";
 import { evidenceList } from "./evidence.js";
 import { modelSentence, priced, pricingFacts } from "./costs.js";
 
@@ -331,7 +331,7 @@ function inbox(container, spec) {
     });
     if (!shownItems.length) list.appendChild(el("li", { class: "inbox-none", text: spec.empty }));
     shownItems.forEach(function (item) {
-      var link = el("a", { class: "inbox-item", href: formatHash(spec.viewKey, { w: state.window, id: item.key }), "data-key": item.key }, spec.itemContent(item));
+      var link = el("a", { class: "inbox-item", href: formatHash(spec.viewKey, Object.assign(scopeParams(), { id: item.key })), "data-key": item.key }, spec.itemContent(item));
       if (item === selected) link.setAttribute("aria-current", "true");
       link.addEventListener("click", function (event) {
         if (!inAppClick(event)) return;

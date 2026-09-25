@@ -279,6 +279,9 @@ last hour, today or the last 24 hours to see the effect of a change
 straight away, 7 to 90 days or all time for the long view, or **since my
 last change**. **Setup › Capture** doesn't depend on it, so there the
 picker gives way to a note saying so, as it does on **Glossary › Terms**.
+The project picker beside it narrows every page that follows the window
+to one project; the address keeps it (`?project=`), so a bookmark or a
+shared link opens the same view.
 
 Amounts follow your billing mode. On a Pro or Max plan, savings are a
 share of your usage limits once your statusline has logged enough

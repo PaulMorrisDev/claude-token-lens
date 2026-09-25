@@ -3,7 +3,7 @@
  * The Cache page: Rebuilds and Lifetime.
  */
 
-import { clear, el } from "./core.js";
+import { clear, el, state } from "./core.js";
 import { compactNumber, fraction, moneyParts, thousands } from "./format.js";
 import { findSection, loadInto, loadReport, withWindow } from "./api.js";
 import { chip, errorNotice, loadingNode, tile, tileRow } from "./ui.js";
@@ -188,7 +188,10 @@ function renderRecacheQuickStats(data, container) {
   });
   var block = el("section", { class: "report-section cache-causes" });
   block.appendChild(
-    el("div", { class: "block-head" }, [el("h2", { class: "section-title", text: "Cache rebuilds by cause" }), chip("All time", { icon: "clock", class: "all-time-chip" })])
+    el("div", { class: "block-head" }, [
+      el("h2", { class: "section-title", text: "Cache rebuilds by cause" }),
+      chip(state.project ? "All time, all projects" : "All time", { icon: "clock", class: "all-time-chip" }),
+    ])
   );
   block.appendChild(tileRow(tiles));
   container.appendChild(block);

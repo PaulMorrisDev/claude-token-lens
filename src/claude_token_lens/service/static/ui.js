@@ -6,7 +6,7 @@
  * from these, so a thing looks and behaves the same wherever it shows.
  */
 
-import { clear, el } from "./core.js";
+import { clear, el, pickProject, state } from "./core.js";
 import { icon } from "./icons.js";
 import { cardLink, glossaryText, JARGON, linkText, plainText, termLink } from "./links.js";
 
@@ -359,6 +359,27 @@ export function errorNotice(error, retry) {
   var code = (error && error.code) || "error";
   var message = (error && error.message) || "Something went wrong.";
   var offline = code === "network_error";
+  // An address from a bookmark can name a project the service no longer
+  // knows (docs/api.md: a 400 that names the project parameter).
+  if (code === "bad_request" && state.project && message.indexOf("'project'") !== -1) {
+    return callout({
+      tone: "warning",
+      title: "Token Lens has no project by this name.",
+      children: [
+        el("p", {
+          class: "callout-detail",
+          text: "The address picks a project that isn't in the sessions Token Lens has read. Its folder may have moved or been renamed.",
+        }),
+      ],
+      actions: [
+        button("Show all projects", {
+          action: function () {
+            pickProject("", { focus: true });
+          },
+        }),
+      ],
+    });
+  }
   return callout({
     tone: "critical",
     title: offline ? "Couldn't reach Token Lens's local service." : "Couldn't load this.",

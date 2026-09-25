@@ -123,7 +123,9 @@ inline SVG charts, `prefers-color-scheme` dark."
   `full`) and the capture banner's `tls:captureNotesHidden`. Two older
   keys are read once: `tls:activeTab` (the old tab bar's last tab,
   opened as its view and then removed) and `tls:overviewWindow`, when
-  `tls:window` is unset.
+  `tls:window` is unset. The picked project is never stored: it lives in
+  the address only (`?project=`), so a filter never outlives the visit
+  that chose it and quietly narrows the next one.
 
 ## Components
 
@@ -193,7 +195,9 @@ finds:
 - glossary terms and the How costs work cards (`?term=`, `?card=`);
 - the window's 20 most recent sessions, each opening its drawer.
 
-And it runs commands: **Set window: …**, the three themes, **Show
+It also finds the window's projects, each showing only that project.
+And it runs commands: **Set window: …**, **Show all projects** (while
+one is picked), the three themes, **Show
 keyboard shortcuts**, and **Copy prompt: …** for each recommendation
 with a prompt (if the browser refuses the clipboard, the recommendation
 opens so the prompt can be copied from there). Search never changes
@@ -389,10 +393,11 @@ the weekly pace line on a Work habits card.
 One page (`index.html`) with a sidebar of pages (`PAGES` in `links.js`).
 A page with more than one part shows them as segments, a row of links
 beside its title. Each page, or page and segment, is a *view* with its
-own address, `#/<page>[/<segment>]?w=<window>`, and each view renders
-from its own `/api/*` route(s). A view is drawn the first time it is
-opened and kept until the window changes; views have no background
-poll. Eighteen views ship, in the sidebar's order below.
+own address, `#/<page>[/<segment>]?w=<window>&project=<slug>` (the
+window first, then the project, left out for all projects), and each
+view renders from its own `/api/*` route(s). A view is drawn the first
+time it is opened and kept until the window or project changes; views
+have no background poll. Eighteen views ship, in the sidebar's order below.
 
 **The router** (`app.js`) reads the address on load and on every
 `hashchange`. Every in-app link goes through `goTo` (`core.js`, which
@@ -443,8 +448,12 @@ page's name as a tooltip on hover and on keyboard focus
 
 **The page header** stays pinned while the view scrolls, with a
 hairline once content passes under it. It holds the page title, the
-segments, the window picker and the theme toggle (same as the system,
-light or dark: `tls:theme`).
+segments, Search, the project picker, the window picker and the theme
+toggle (same as the system, light or dark: `tls:theme`). Both pickers
+are one component, `menuControl` (`app.js`): a menu button with radio
+rows, moved through with the arrow keys, Home and End, or the first
+letter of a row; Esc closes it and returns focus, and a click outside
+or Tab closes it.
 
 **The health banner and status line** are on every view, from
 `/api/health` (`pollHealth()`: every 3 seconds while its `status` is
@@ -513,6 +522,33 @@ panel, "Your changes and what they did", the setup panel and service
 health. Setup › Capture's figures don't depend on the window, so there
 the picker gives way to a note, "The window doesn't apply here"; the
 Glossary has no figures and shows neither.
+
+**The project picker** sits beside it: All projects (the default), then
+every project with a session in the window, the most expensive first
+(`report.meta.projects` from every project's report for the window,
+`loadProjects()`). Each row reads as its folder (`projectName`), with
+the full slug on hover. Picking one sends `project=<slug>` with every
+window-aware request (`withWindow()`; the Overview's previous window
+adds it through `withProject()`), so every figure that follows the
+window covers only that project, and the header button keeps the
+accent while it does. It is carried in the address as `?project=`,
+never stored, and hides wherever the window picker does. The report
+and recommendation caches are keyed by window and project together
+(`scopeKey()`), and a report for one project never replaces the list of
+project names (`setKnownProjects`). A project with no session in the
+window stays in the menu, marked "No sessions in this window", and the
+Overview says "No sessions in <project> <when>. Pick a longer window, or
+all projects." An address naming a project the service doesn't know
+(an old bookmark, a moved folder) is checked once (`checkProject`,
+which keeps the answer): the dashboard shows every project and a toast
+says why, and does so at once if an address names it again. Every
+address the dashboard writes, from links, the pickers or a page saying
+what it has open, carries the window and project through `scopeParams()`
+(`links.js`), so none drops the project. Panels that
+cover every project whatever the picker says (Settings' changes,
+estimates and baseline; Cache › Rebuilds' causes) carry an "All
+projects" chip while one is picked. Search lists the projects too, and
+offers **Show all projects** while one is picked.
 
 1. **Overview** — answers "What should I change next?". Top to bottom:
    - the logon warning, only when `/api/health` says the service is not
@@ -995,15 +1031,15 @@ stdlib-only test suite.
 
 | File | Holds |
 |---|---|
-| `app.js` | the entry point: the router (`resolveRoute`, `showView`, `VIEW_RENDERERS`), the sidebar, the page header, the window picker and the theme toggle |
-| `core.js` | `el`/`clear`, `localStorage` helpers, the shared `state`, `WINDOW_OPTIONS`, `renderedViews`, the `goTo` hook and the linked-highlight bus (`highlight`, `listenHighlight`) |
+| `app.js` | the entry point: the router (`resolveRoute`, `showView`, `VIEW_RENDERERS`), the sidebar, the page header, the project and window pickers (`menuControl`) and the theme toggle |
+| `core.js` | `el`/`clear`, `localStorage` helpers, the shared `state`, `WINDOW_OPTIONS`, `renderedViews`, the `goTo` and `pickProject` hooks (`setRouteHandler`, `setProjectHandler`) and the linked-highlight bus (`highlight`, `listenHighlight`) |
 | `format.js` | the one number format: `formatCell`, `money`/`moneyText`/`moneyNode`/`moneyParts` (the `Units.money` mirror), `currencyAmount`, `moneyUnit`, `readableAmounts`, `compactNumber`, `signedPercent`, `fraction` (a price ratio in words: "a tenth of"), `shortTs`/`relativeTime`, `projectName` |
-| `api.js` | `fetchJson`, `loadInto`, `postJson`, `withWindow`, `loadReport` (cached per window), the figures-as-of stamp, and the connection state behind "Service unreachable" |
+| `api.js` | `fetchJson`, `loadInto`, `postJson`, `withWindow`/`withProject`, `scopeKey`, `loadReport` and `loadRecommendations` (cached per window and project), `loadProjects` (the project picker's list), the figures-as-of stamp, and the connection state behind "Service unreachable" |
 | `ui.js` | the components (see "Components"): buttons, chips, tiles, panels, callouts, empty states, skeletons, command blocks and `RESTART_NOTE`, popovers, tooltips, drawers, toasts and the confirm dialog |
 | `grid.js` | the data grid (`dataGrid`, with `link` and `swatch` for linked highlight), report tables (`renderTable`, `renderPlacedTables`), `renderMappedSections`, `simpleTable`, `pulseRow` |
 | `charts.js` | the chart frame: `CHART_SPECS`, `fillSummary`, `ENTITY_COLOURS`/`entityColour`, axes, the tooltip, keyboard reading, the table view, resize, `drawChart`/`holdChart`/`chartError` |
 | `charts-types.js` | the chart forms and `renderChart`, `sessionContextChart`, `savingsLevers`, and the micro-forms `sparkline`, `meter`, `habitSparkline` |
-| `links.js` | `PAGES` (pages, segments, intros), `SECTION_PAGE_MAP`/`TABLE_PAGE_MAP`, `parseHash`/`formatHash`, `viewIntro`, `pageLink`/`captureLink`, `GLOSSARY`/`termLink`/`termSlug`, `COST_CARDS`/`cardLink` |
+| `links.js` | `PAGES` (pages, segments, intros), `SECTION_PAGE_MAP`/`TABLE_PAGE_MAP`, `parseHash`/`formatHash`, `scopeParams` (the window and project every address carries), `viewIntro`, `pageLink`/`captureLink`, `GLOSSARY`/`termLink`/`termSlug`, `COST_CARDS`/`cardLink` |
 | `costs.js` | the pricing helpers Actions and Glossary both need, from `report.meta.rates`: `pricingFacts`, `priced`, `modelSentence`, and `cardRuleText` (the rule sentence for each `COST_CARDS` concept — the one source Glossary's two segments both read) |
 | `shell.js` | what is on every view: the health banner, the sidebar's status line, the capture banner; the health detail (`renderHealth`) and logon warning (`renderLogonNotice`) the Overview and Data quality show |
 | `icons.js` | the icon set: `icon(name, opts)` returns an inline 16px SVG |

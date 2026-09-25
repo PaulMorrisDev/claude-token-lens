@@ -12,7 +12,7 @@ import { clear, el, goTo, state } from "./core.js";
 import { findSection, loadReport } from "./api.js";
 import { formatEvidenceValue, pulseNode, pulseRow, renderTable } from "./grid.js";
 import { drawer, emptyState, loadingNode } from "./ui.js";
-import { formatHash, SECTION_PAGE_MAP, TABLE_PAGE_MAP, viewForTable, viewLabel } from "./links.js";
+import { formatHash, scopeParams, SECTION_PAGE_MAP, TABLE_PAGE_MAP, viewForTable, viewLabel } from "./links.js";
 
 // "section.table" -> its two parts.
 export function splitSource(sourceTable) {
@@ -88,7 +88,7 @@ function evidenceItem(report, group) {
   var row = rowKey === null || rowKey === undefined ? null : String(rowKey);
   var link = el("a", {
     class: "evidence-link",
-    href: view ? formatHash(view, { w: state.window, t: sourceTable, row: row }) : "#",
+    href: view ? formatHash(view, Object.assign(scopeParams(), { t: sourceTable, row: row })) : "#",
     text: names.table + (names.row ? ", " + names.row : ""),
   });
   link.addEventListener("click", function (event) {

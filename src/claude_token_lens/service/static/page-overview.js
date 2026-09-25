@@ -7,8 +7,8 @@
  */
 
 import { clear, el, goTo, state, WINDOW_OPTIONS } from "./core.js";
-import { formatCell, fraction, money, moneyParts, thousands } from "./format.js";
-import { fetchJson, findSection, loadRecommendations, loadReport, withWindow } from "./api.js";
+import { formatCell, fraction, money, moneyParts, projectName, thousands } from "./format.js";
+import { fetchJson, findSection, loadRecommendations, loadReport, withProject, withWindow } from "./api.js";
 import {
   button,
   copyToClipboard,
@@ -100,9 +100,15 @@ function changeClause(current, previous, phrase) {
   return ", " + rounded + "% " + (change > 0 ? "more" : "less") + " than " + phrase;
 }
 
+// The window, and the project when one is picked: "Last 30 days in
+// claude-token-lens".
+function scopeLabel() {
+  return windowLabel(state.window) + (state.project ? " in " + projectName(state.project) : "");
+}
+
 // Built from fixed wording and numbers only (docs/writing-help.md).
 function summarySentence(facts) {
-  var first = windowLabel(state.window) + ": " + spendClause(facts.cost) + changeClause(facts.cost, facts.previousCost, facts.phrase) + ".";
+  var first = scopeLabel() + ": " + spendClause(facts.cost) + changeClause(facts.cost, facts.previousCost, facts.phrase) + ".";
   var saving = money(facts.saving);
   var worth = facts.worth;
   var second;
@@ -508,7 +514,7 @@ export function renderOverview(panel) {
   var summaryLoad = fetchJson(withWindow("/api/summary"));
   var previous = previousPeriod(state.window, Date.now());
   var previousLoad = previous
-    ? fetchJson("/api/summary?since=" + encodeURIComponent(isoMinute(previous.since)) + "&until=" + encodeURIComponent(isoMinute(previous.until)))
+    ? fetchJson(withProject("/api/summary?since=" + encodeURIComponent(isoMinute(previous.since)) + "&until=" + encodeURIComponent(isoMinute(previous.until))))
     : Promise.resolve(null);
   var dailyLoad = fetchJson(withWindow("/api/daily-usage") + "&split=agent");
   var impactLoad = fetchJson("/api/impact");
@@ -543,7 +549,9 @@ export function renderOverview(panel) {
     var dailyRows = dailyBody && dailyBody.ok === true ? dailyBody.data || [] : [];
     clear(sentence);
     clear(tilesHost);
-    if (summaryBody && summaryBody.ok !== true && state.window === "change" && summaryBody.error && summaryBody.error.code === "bad_request") {
+    var summaryError = summaryBody && summaryBody.ok !== true ? summaryBody.error : null;
+    var projectError = !!summaryError && String(summaryError.message).indexOf("'project'") !== -1;
+    if (summaryError && state.window === "change" && summaryError.code === "bad_request" && !projectError) {
       // "Since my last change" with no change recorded has nowhere to start.
       sentence.appendChild(
         el("p", { class: "overview-summary", text: "No change recorded yet, so this window has nowhere to start. Pick another window, or come back after you change a setting." })
@@ -565,8 +573,15 @@ export function renderOverview(panel) {
 
     if (!summary.sessions) {
       body.hidden = true;
-      if (state.window === "all") {
+      if (state.window === "all" && !state.project) {
         firstRun(sentence, healthBody && healthBody.ok ? healthBody.data : null);
+      } else if (state.project) {
+        sentence.appendChild(
+          el("p", {
+            class: "overview-summary",
+            text: "No sessions in " + projectName(state.project) + " " + windowWhen(state.window) + ". Pick a longer window, or all projects.",
+          })
+        );
       } else {
         sentence.appendChild(el("p", { class: "overview-summary", text: "No sessions " + windowWhen(state.window) + ". Pick a longer window to see older ones." }));
       }

@@ -20,19 +20,22 @@
  * never a blank view.
  *
  * No view holds state the server doesn't already have (docs/ui.md's Data
- * flow section): the address (#/page/segment?w=window) says what is on
- * screen, and `localStorage` keeps only per-viewer conveniences -- the
- * last view, the chosen window, the theme, the sidebar's width and a
- * table's sort -- never data the server is the source of truth for.
+ * flow section): the address (#/page/segment?w=window&project=slug)
+ * says what is on screen, and `localStorage` keeps only per-viewer
+ * conveniences -- the last view, the chosen window, the theme, the
+ * sidebar's width and a table's sort -- never data the server is the
+ * source of truth for.
  * Reads/writes are wrapped in try/catch: a private window or blocked
  * site data must never break rendering.
  */
 
-import { el, paramsChanged, renderedViews, setRouteHandler, state, storageGet, storageRemove, storageSet, WINDOW_OPTIONS } from "./core.js";
+import { clear, el, paramsChanged, renderedViews, setProjectHandler, setRouteHandler, state, storageGet, storageRemove, storageSet, WINDOW_OPTIONS } from "./core.js";
 import { icon } from "./icons.js";
-import { loadRecommendations, resetFiguresAsOf } from "./api.js";
+import { fetchJson, loadProjects, loadRecommendations, resetFiguresAsOf, scopeKey } from "./api.js";
+import { toast } from "./ui.js";
+import { projectName } from "./format.js";
 import { pollHealth } from "./shell.js";
-import { formatHash, OLD_TAB_VIEWS, PAGES, parseHash, VIEW_KEYS, viewFor } from "./links.js";
+import { formatHash, OLD_TAB_VIEWS, PAGES, parseHash, scopeParams, VIEW_KEYS, viewFor } from "./links.js";
 import { revealEvidence } from "./evidence.js";
 import { setSectionChart } from "./grid.js";
 import { sectionChart } from "./charts-types.js";
@@ -71,7 +74,7 @@ var VIEW_RENDERERS = {
 };
 
 // ======================================================================
-// The router: #/<page>[/<segment>][?w=<window>&id=<item>&t=<table>&row=<row>]
+// The router: #/<page>[/<segment>][?w=<window>&project=<slug>&id=<item>&t=<table>&row=<row>]
 // ======================================================================
 
 var router = {
@@ -86,9 +89,10 @@ var router = {
   pending: null,
 };
 
-// How a view relates to the window: "follow" (the default), "fixed" (its
-// figures don't change with the window; the header says so) or "none"
-// (no figures at all, so nothing is said).
+// How a view relates to the window and project: "follow" (the default),
+// "fixed" (its figures don't change with the window; the header says
+// so) or "none" (no figures at all, so nothing is said). Only a view
+// that follows them offers the window and project pickers.
 function windowMode(view) {
   var flag = view.segment && view.segment.window !== undefined ? view.segment.window : view.page.window;
   if (flag === false) return view.page.segments ? "fixed" : "none";
@@ -122,17 +126,23 @@ function startingView() {
 
 // Read the address and show what it names. An address that is not a
 // route, or leaves out the segment or window, is rewritten in place (no
-// extra history entry) to the full form first.
+// extra history entry) to the full form first. The project comes only
+// from the address: one without it shows every project.
 function resolveRoute() {
   var route = parseHash(window.location.hash);
   var key = route ? routeKey(route.page, route.segment) : startingView();
   var params = route ? route.params : {};
-  if (params.w && knownWindow(params.w) && params.w !== state.window) applyWindow(params.w);
-  params.w = state.window;
+  // Both at once, so Back from one window and project to another never
+  // asks for the new window with the old project.
+  var windowValue = params.w && knownWindow(params.w) ? params.w : state.window;
+  var project = params.project || "";
+  if (windowValue !== state.window || project !== state.project) applyScope(windowValue, project);
+  Object.assign(params, scopeParams());
   var hash = formatHash(key, params);
   if (window.location.hash !== hash) window.history.replaceState(null, "", hash);
   var extra = Object.assign({}, params);
   delete extra.w;
+  delete extra.project;
   state.params = extra;
 
   var pending = router.pending;
@@ -164,7 +174,7 @@ function goTo(target, options) {
     return;
   }
   router.pending = { key: key, options: options };
-  var hash = formatHash(key, Object.assign({}, options.params || {}, { w: state.window }));
+  var hash = formatHash(key, Object.assign({}, options.params || {}, scopeParams()));
   if (window.location.hash === hash) resolveRoute();
   else window.location.hash = hash;
 }
@@ -282,16 +292,16 @@ function updateSidebar(view) {
   });
 }
 
-// The number of "Do this" recommendations for the window, beside
-// Actions. Hidden when there are none or they can't be counted.
+// The number of "Do this" recommendations for the window and project,
+// beside Actions. Hidden when there are none or they can't be counted.
 var badgeFor = null;
 
 function refreshActionsBadge(again) {
-  var windowAsked = state.window;
-  if (badgeFor === windowAsked && !again) return;
-  badgeFor = windowAsked;
+  var scopeAsked = scopeKey();
+  if (badgeFor === scopeAsked && !again) return;
+  badgeFor = scopeAsked;
   loadRecommendations().then(function (result) {
-    if (state.window !== windowAsked) return;
+    if (scopeKey() !== scopeAsked) return;
     var badge = document.getElementById("actions-badge");
     if (!badge) return;
     var body = result.body;
@@ -308,11 +318,16 @@ function refreshActionsBadge(again) {
 }
 
 // ======================================================================
-// Page header: title, segments, window, theme
+// Page header: title, segments, project, window, theme
 // ======================================================================
 
 function updateHeader(view) {
   document.getElementById("page-title").textContent = view.page.label;
+  // The sidebar's links open with the window and project on screen, in
+  // this tab or a new one.
+  Array.prototype.forEach.call(document.querySelectorAll(".nav-item[data-page]"), function (link) {
+    link.setAttribute("href", formatHash(link.getAttribute("data-page"), scopeParams()));
+  });
 
   var nav = document.getElementById("segments");
   nav.textContent = "";
@@ -321,7 +336,7 @@ function updateHeader(view) {
     nav.setAttribute("aria-label", view.page.label + " sections");
     view.page.segments.forEach(function (segment) {
       var key = view.page.id + "/" + segment.id;
-      var link = el("a", { class: "segment", href: formatHash(key, { w: state.window }), text: segment.label });
+      var link = el("a", { class: "segment", href: formatHash(key, scopeParams()), text: segment.label });
       if (segment === view.segment) link.setAttribute("aria-current", "page");
       link.addEventListener("click", function (event) {
         if (!inAppClick(event)) return;
@@ -331,10 +346,150 @@ function updateHeader(view) {
       nav.appendChild(link);
     });
   }
-  updateWindowControl(view);
+  updateScopeControls(view);
 }
 
-var windowControl = { button: null, label: null, menu: null, fixed: null };
+// ======================================================================
+// Header menus: the project and the window
+// ======================================================================
+
+// A header button that opens a menu of choices, one of them checked: a
+// role=menu list of menuitemradio rows. Up, Down, Home and End move, a
+// letter jumps to the next row starting with it, Enter or a click picks
+// and Esc closes; focus goes back to the button. opts: id, icon, name
+// (what a screen reader hears before the choice), note (a line under the
+// rows), pick(value), open() (called as the menu opens).
+function menuControl(host, opts) {
+  var label = el("span", { class: "control-label" });
+  var button = el(
+    "button",
+    {
+      type: "button",
+      class: "control-button",
+      id: opts.id + "-button",
+      "aria-haspopup": "menu",
+      "aria-expanded": "false",
+      "aria-controls": opts.id + "-menu",
+    },
+    [icon(opts.icon), el("span", { class: "visually-hidden", text: opts.name + ": " }), label, icon("chevron-down")]
+  );
+  var rows = el("div", { class: "menu-rows", role: "none" });
+  var menu = el("div", { class: "menu", id: opts.id + "-menu", role: "menu", "aria-label": opts.name, hidden: true }, [rows]);
+  if (opts.note) menu.appendChild(el("p", { class: "menu-note", text: opts.note }));
+  host.appendChild(button);
+  host.appendChild(menu);
+  var checked = null;
+
+  // The rows the keys move through: a line saying why there is nothing
+  // to pick is read, not stopped on.
+  function items() {
+    return Array.prototype.slice.call(rows.querySelectorAll(".menu-item:not(.is-disabled)"));
+  }
+  function mark(value) {
+    checked = value;
+    Array.prototype.forEach.call(rows.querySelectorAll("[role=menuitemradio]"), function (item) {
+      item.setAttribute("aria-checked", item.getAttribute("data-value") === value ? "true" : "false");
+    });
+  }
+  function focusRow(value) {
+    var target = null;
+    items().forEach(function (item) {
+      if (item.getAttribute("data-value") === value) target = item;
+    });
+    target = target || items()[0];
+    if (target) target.focus();
+  }
+  function focusChecked() {
+    focusRow(checked);
+  }
+  // list: [{value, label, detail, title}], and {label, disabled: true}
+  // for a line saying why there is nothing to pick.
+  function setRows(list) {
+    // New rows while the menu is open (the list arrived): focus stays on
+    // the row it was on.
+    var hadFocus = !menu.hidden && menu.contains(document.activeElement);
+    var focusedValue = hadFocus ? document.activeElement.getAttribute("data-value") : null;
+    clear(rows);
+    list.forEach(function (row) {
+      if (row.disabled) {
+        rows.appendChild(el("div", { class: "menu-item is-disabled", role: "menuitem", "aria-disabled": "true", text: row.label }));
+        return;
+      }
+      var item = el("button", { type: "button", class: "menu-item", role: "menuitemradio", "data-value": row.value, tabIndex: -1, title: row.title || null }, [
+        icon("check"),
+        el("span", { class: "menu-item-label", text: row.label }),
+        row.detail ? el("span", { class: "menu-item-detail", text: row.detail }) : null,
+      ]);
+      item.addEventListener("click", function () {
+        close(true);
+        opts.pick(row.value);
+      });
+      rows.appendChild(item);
+    });
+    mark(checked);
+    if (hadFocus) focusRow(focusedValue === null ? checked : focusedValue);
+  }
+  function open() {
+    if (opts.open) opts.open();
+    menu.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+    focusChecked();
+  }
+  function close(returnFocus) {
+    if (menu.hidden) return;
+    menu.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+    if (returnFocus) button.focus();
+  }
+  button.addEventListener("click", function () {
+    if (menu.hidden) open();
+    else close(false);
+  });
+  button.addEventListener("keydown", function (event) {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      open();
+    }
+  });
+  menu.addEventListener("keydown", function (event) {
+    var list = items();
+    var index = list.indexOf(document.activeElement);
+    var next = null;
+    if (!list.length) return;
+    if (event.key === "ArrowDown") next = (index + 1) % list.length;
+    else if (event.key === "ArrowUp") next = (index - 1 + list.length) % list.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = list.length - 1;
+    else if (event.key === "Escape") {
+      event.preventDefault();
+      close(true);
+      return;
+    } else if (event.key === "Tab") {
+      close(false);
+      return;
+    } else if (event.key.length === 1 && event.key !== " " && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      var letter = event.key.toLowerCase();
+      for (var step = 1; step <= list.length; step++) {
+        var at = (index + step) % list.length;
+        if (list[at].textContent.trim().toLowerCase().indexOf(letter) === 0) {
+          next = at;
+          break;
+        }
+      }
+    }
+    if (next === null) return;
+    event.preventDefault();
+    list[next].focus();
+  });
+  document.addEventListener("pointerdown", function (event) {
+    if (!host.contains(event.target)) close(false);
+  });
+  return { button: button, label: label, menu: menu, mark: mark, setRows: setRows };
+}
+
+var windowMenu = null;
+var windowFixed = null;
+var projectMenu = null;
 
 function windowLabel(value) {
   for (var i = 0; i < WINDOW_OPTIONS.length; i++) {
@@ -343,23 +498,86 @@ function windowLabel(value) {
   return value;
 }
 
-function updateWindowControl(view) {
-  var mode = windowMode(view);
-  windowControl.button.hidden = mode !== "follow";
-  windowControl.fixed.hidden = mode !== "fixed";
-  windowControl.label.textContent = windowLabel(state.window);
-  Array.prototype.forEach.call(windowControl.menu.querySelectorAll("[role=menuitemradio]"), function (item) {
-    item.setAttribute("aria-checked", item.getAttribute("data-value") === state.window ? "true" : "false");
-  });
+function updateScopeControls(view) {
+  var follow = windowMode(view) === "follow";
+  windowMenu.button.hidden = !follow;
+  windowFixed.hidden = windowMode(view) !== "fixed";
+  windowMenu.label.textContent = windowLabel(state.window);
+  windowMenu.mark(state.window);
+  projectMenu.button.hidden = !follow;
+  drawProjectLabel();
 }
 
 // A new window: every view that follows the window draws again when next
 // shown (setWindow redraws the one on screen).
 function applyWindow(value) {
-  state.window = value;
-  storageSet("tls:window", value);
-  delete state.reportPromises[value];
-  delete state.recommendationPromises[value];
+  applyScope(value, state.project);
+}
+
+// A new project ("" for all of them), the same way.
+function applyProject(value) {
+  applyScope(state.window, value);
+}
+
+// A new window, project or both, as one change. A project the service
+// has already said it doesn't know gives way to every project at once.
+function applyScope(windowValue, project) {
+  if (project && checkedProjects[project] === "unknown") {
+    project = "";
+    unknownProjectToast();
+  }
+  var windowChanged = windowValue !== state.window;
+  var projectChanged = project !== state.project;
+  if (windowChanged) {
+    state.window = windowValue;
+    storageSet("tls:window", windowValue);
+  }
+  state.project = project;
+  scopeChanged(windowChanged);
+  if (!projectChanged || !project) return;
+  // A project picked in the address is named from the full list, which
+  // this fetches if nothing has yet.
+  drawProjectRows();
+  checkProject(project);
+}
+
+// An address can name a project the service doesn't know (an old
+// bookmark, a folder since moved): every route answers 400 for it
+// (docs/api.md, "Filtering by project"). Asked once per project, and the
+// answer kept ("asking", "known" or "unknown"): an unknown one gives way
+// to every project, now and whenever an address names it again, as an
+// unknown window gives way to the one in use.
+var checkedProjects = {};
+
+function checkProject(value) {
+  if (checkedProjects[value]) return;
+  checkedProjects[value] = "asking";
+  fetchJson("/api/sessions?limit=1&project=" + encodeURIComponent(value)).then(function (result) {
+    var error = result.body && result.body.error;
+    if (result.httpStatus !== 400 || !error || String(error.message).indexOf("'project'") === -1) {
+      // Only a clear answer counts: a failed check is asked again.
+      if (result.httpStatus === 0) delete checkedProjects[value];
+      else checkedProjects[value] = "known";
+      return;
+    }
+    checkedProjects[value] = "unknown";
+    if (state.project !== value) return;
+    setProject("");
+    unknownProjectToast();
+  });
+}
+
+function unknownProjectToast() {
+  toast("Token Lens has no project by the name in the address, so this shows every project.", { tone: "warning" });
+}
+
+// After a new window or project, the figures for it are fetched fresh
+// and every view that follows them draws again when next shown. A new
+// window refreshes its list of projects too (every project's report).
+function scopeChanged(windowChanged) {
+  delete state.reportPromises[scopeKey()];
+  delete state.recommendationPromises[scopeKey()];
+  if (windowChanged) delete state.reportPromises[state.window];
   resetFiguresAsOf();
   Object.keys(renderedViews).forEach(function (key) {
     var view = viewFor(key);
@@ -371,13 +589,33 @@ function applyWindow(value) {
 function setWindow(value) {
   if (value === state.window || !knownWindow(value)) return;
   applyWindow(value);
+  redrawForScope();
+}
+
+// options.focus: the control that asked is redrawn away, so focus moves
+// to the page title (the error notice's "Show all projects").
+function setProject(value, options) {
+  value = value || "";
+  if (value === state.project) return;
+  applyProject(value);
+  redrawForScope();
+  if (options && options.focus) focusTitle();
+}
+
+// The address and header say what the pickers now show, and the view on
+// screen draws again if it follows them. What the view had open stays
+// open if the new figures have it; a table row shown from an evidence
+// link was a one-off. Neither picker adds a history entry. While a move
+// to another view is under way (its address set, not yet shown), that
+// move carries the old scope, and resolveRoute applies the new one when
+// it lands.
+function redrawForScope() {
+  if (router.pending) return;
   var view = viewFor(router.current);
-  // What the view had open stays open if the new window has it; a table
-  // row shown from an evidence link was a one-off.
   var keep = {};
   if (state.params.id) keep.id = state.params.id;
   state.params = keep;
-  window.history.replaceState(null, "", formatHash(router.current, Object.assign({ w: value }, keep)));
+  window.history.replaceState(null, "", formatHash(router.current, Object.assign(scopeParams(), keep)));
   updateHeader(view);
   if (windowMode(view) === "follow") showView(router.current, { force: true, scroll: "keep" });
 }
@@ -391,83 +629,95 @@ function initWindowPicker() {
   if (knownWindow(saved)) state.window = saved;
 
   var host = document.getElementById("window-picker");
-  var label = el("span", { class: "control-label" });
-  var button = el(
-    "button",
-    { type: "button", class: "control-button", id: "window-button", "aria-haspopup": "menu", "aria-expanded": "false", "aria-controls": "window-menu" },
-    [icon("clock"), el("span", { class: "visually-hidden", text: "Window: " }), label, icon("chevron-down")]
-  );
-  var menu = el("div", { class: "menu", id: "window-menu", role: "menu", "aria-label": "Window", hidden: true });
-  WINDOW_OPTIONS.forEach(function (opt) {
-    var item = el("button", { type: "button", class: "menu-item", role: "menuitemradio", "data-value": opt.value, tabIndex: -1 }, [
-      icon("check"),
-      el("span", { text: opt.label }),
-    ]);
-    item.addEventListener("click", function () {
-      closeMenu(true);
-      setWindow(opt.value);
-    });
-    menu.appendChild(item);
+  windowMenu = menuControl(host, {
+    id: "window",
+    icon: "clock",
+    name: "Window",
+    note: "A window counts every session with a reply in it, in full. So a long session that started earlier counts whole.",
+    pick: function (value) {
+      setWindow(value);
+    },
   });
-  menu.appendChild(
-    el("p", {
-      class: "menu-note",
-      text: "A window counts every session with a reply in it, in full. So a long session that started earlier counts whole.",
+  windowMenu.setRows(
+    WINDOW_OPTIONS.map(function (opt) {
+      return { value: opt.value, label: opt.label };
     })
   );
-  var fixed = el("span", { class: "window-fixed", hidden: true }, [icon("clock"), el("span", { text: "The window doesn't apply here" })]);
-  host.appendChild(button);
-  host.appendChild(menu);
-  host.appendChild(fixed);
-  windowControl = { button: button, label: label, menu: menu, fixed: fixed };
+  windowFixed = el("span", { class: "window-fixed", hidden: true }, [icon("clock"), el("span", { text: "The window doesn't apply here" })]);
+  host.appendChild(windowFixed);
+}
 
-  function items() {
-    return Array.prototype.slice.call(menu.querySelectorAll(".menu-item"));
-  }
-  function openMenu() {
-    menu.hidden = false;
-    button.setAttribute("aria-expanded", "true");
-    (menu.querySelector('[aria-checked="true"]') || items()[0]).focus();
-  }
-  function closeMenu(returnFocus) {
-    if (menu.hidden) return;
-    menu.hidden = true;
-    button.setAttribute("aria-expanded", "false");
-    if (returnFocus) button.focus();
-  }
-  button.addEventListener("click", function () {
-    if (menu.hidden) openMenu();
-    else closeMenu(false);
+// The project picker: all projects, then every project with a session in
+// the window, the most expensive first (report.meta.projects). The list
+// is read when the menu opens; the last one seen shows meanwhile.
+var projectLists = {};
+
+function initProjectPicker() {
+  projectMenu = menuControl(document.getElementById("project-picker"), {
+    id: "project",
+    icon: "folder",
+    name: "Project",
+    note: "Projects with a session in this window, the most expensive first. Settings, cache rebuild causes and Data quality always cover every project.",
+    pick: function (value) {
+      setProject(value);
+    },
+    open: drawProjectRows,
   });
-  button.addEventListener("keydown", function (event) {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      openMenu();
+  setProjectRows(undefined);
+}
+
+function drawProjectRows() {
+  var windowAsked = state.window;
+  setProjectRows(projectLists[windowAsked]);
+  loadProjects().then(function (slugs) {
+    if (slugs) projectLists[windowAsked] = slugs;
+    if (state.window !== windowAsked) return;
+    // The names read better once every project is known.
+    drawProjectLabel();
+    setProjectRows(slugs || projectLists[windowAsked] || null);
+  });
+}
+
+// A long folder name keeps its start and its end, where two folders
+// under one parent differ ("AppData-Local-Te…scratchpad-live-work").
+var MENU_NAME_CHARS = 42;
+
+function menuName(slug) {
+  var name = projectName(slug);
+  if (name.length <= MENU_NAME_CHARS) return name;
+  return name.slice(0, 16) + "…" + name.slice(17 - MENU_NAME_CHARS);
+}
+
+// slugs: the window's projects, undefined while they load, null when
+// they couldn't.
+function setProjectRows(slugs) {
+  var rows = [{ value: "", label: "All projects" }];
+  if (!slugs) {
+    rows.push({ disabled: true, label: slugs === null ? "Couldn't load the projects. Open this menu again to retry." : "Loading the projects\u2026" });
+  } else {
+    // A project from the address with no sessions in this window stays
+    // pickable, so the menu still shows what is picked.
+    if (state.project && slugs.indexOf(state.project) === -1) {
+      rows.push({ value: state.project, label: menuName(state.project), detail: "No sessions in this window", title: state.project });
     }
-  });
-  menu.addEventListener("keydown", function (event) {
-    var list = items();
-    var index = list.indexOf(document.activeElement);
-    var next = null;
-    if (event.key === "ArrowDown") next = (index + 1) % list.length;
-    else if (event.key === "ArrowUp") next = (index - 1 + list.length) % list.length;
-    else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = list.length - 1;
-    else if (event.key === "Escape") {
-      event.preventDefault();
-      closeMenu(true);
-      return;
-    } else if (event.key === "Tab") {
-      closeMenu(false);
-      return;
-    }
-    if (next === null) return;
-    event.preventDefault();
-    list[next].focus();
-  });
-  document.addEventListener("pointerdown", function (event) {
-    if (!host.contains(event.target)) closeMenu(false);
-  });
+    slugs.forEach(function (slug) {
+      rows.push({ value: slug, label: menuName(slug), title: slug });
+    });
+    if (!slugs.length) rows.push({ disabled: true, label: "No project has a session in this window." });
+  }
+  projectMenu.setRows(rows);
+  projectMenu.mark(state.project);
+}
+
+// The button names the picked project (its full folder name on hover)
+// and looks set while one is, so narrowed figures never go unnoticed.
+function drawProjectLabel() {
+  var button = projectMenu.button;
+  projectMenu.label.textContent = state.project ? projectName(state.project) : "All projects";
+  button.classList.toggle("is-filtered", !!state.project);
+  if (state.project) button.setAttribute("title", state.project);
+  else button.removeAttribute("title");
+  projectMenu.mark(state.project);
 }
 
 // The theme: follow the system, or the viewer's pick (tls:theme, which
@@ -521,9 +771,11 @@ function initStickyHeader() {
 function init() {
   if ("scrollRestoration" in window.history) window.history.scrollRestoration = "manual";
   setRouteHandler(goTo);
+  setProjectHandler(setProject);
   setSectionChart(sectionChart);
   buildSidebar();
   initWindowPicker();
+  initProjectPicker();
   initThemeToggle();
   initPalette({ setWindow: setWindow, setTheme: setTheme });
   initStickyHeader();

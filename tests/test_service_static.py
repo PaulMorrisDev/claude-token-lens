@@ -1075,7 +1075,8 @@ def test_load_report_cache_is_keyed_by_the_selected_window() -> None:
     assert "reportPromises" in app_js, "the report cache should be keyed (by the selected window)"
 
     load_report_src = _function_source(app_js, "loadReport")
-    assert "state.window" in load_report_src, "loadReport() must key its cache by the selected window"
+    assert "scopeKey()" in load_report_src, "loadReport() must key its cache by the selected window (and project)"
+    assert 'return state.window + (state.project ? "|" + state.project : "")' in _function_source(app_js, "scopeKey")
     assert 'withWindow("/api/report.json")' in load_report_src, (
         "loadReport() must forward the window to /api/report.json"
     )
@@ -1083,15 +1084,129 @@ def test_load_report_cache_is_keyed_by_the_selected_window() -> None:
     # The window lives in the page header's picker and applies to every
     # view that follows it: a change must drop every drawn view and redraw
     # the one on screen, so no view keeps showing the previous window's
-    # numbers.
+    # numbers. The project picker shares the same path (scopeChanged,
+    # redrawForScope).
     assert "setWindow(" in _function_source(app_js, "initWindowPicker")
     set_window_src = _function_source(app_js, "setWindow")
     assert "applyWindow(value)" in set_window_src
-    assert "force: true" in set_window_src
-    apply_src = _function_source(app_js, "applyWindow")
-    assert "state.window = value" in apply_src
-    assert "delete renderedViews[key]" in apply_src
-    assert "delete state.reportPromises[value]" in apply_src
+    assert "redrawForScope()" in set_window_src
+    assert "force: true" in _function_source(app_js, "redrawForScope")
+    assert "applyScope(value, state.project)" in _function_source(app_js, "applyWindow")
+    apply_src = _function_source(app_js, "applyScope")
+    assert "state.window = windowValue" in apply_src
+    assert "scopeChanged(windowChanged)" in apply_src
+    changed_src = _function_source(app_js, "scopeChanged")
+    assert "delete renderedViews[key]" in changed_src
+    assert "delete state.reportPromises[scopeKey()]" in changed_src
+    # A new window refreshes every project's report too (the picker's list).
+    assert "if (windowChanged) delete state.reportPromises[state.window]" in changed_src
+
+
+def test_every_windowed_request_carries_the_picked_project() -> None:
+    """The project picker narrows every figure that follows the window:
+    withWindow adds the project beside the window, so each route the
+    dashboard asks through it is filtered (docs/api.md, "Filtering by
+    project"). The Overview's previous window asks by since and until, so
+    it adds the project on its own."""
+    app_js = _app_js()
+    with_window = _function_source(app_js, "withWindow")
+    assert "windowParam()" in with_window and "projectParam()" in with_window
+    assert "projectParam()" in _function_source(app_js, "withProject")
+    assert '"project=" + encodeURIComponent(state.project)' in _function_source(app_js, "projectParam")
+    assert 'withProject("/api/summary?since="' in _function_source(app_js, "renderOverview")
+    # Only windowParam writes the window query: a request that built its
+    # own would drop the project. The one exception is the every-project
+    # report the picker lists projects from.
+    assert app_js.count('"window_days="') == 1
+    assert app_js.count('"/api/report.json?" + windowParam()') == 1
+    assert _js_code_only(app_js).count("windowParam()") == 3
+
+
+def test_the_project_lives_in_the_address_only() -> None:
+    """A picked project narrows every figure, so it lasts only as long as
+    the address that names it: nothing stores it, and a visit without it
+    shows every project. The address puts it straight after the window."""
+    app_js = _app_js()
+    assert "tls:project" not in app_js
+    assert 'project: ""' in _declaration_source(app_js, "state")
+    resolve = _function_source(app_js, "resolveRoute")
+    assert 'var project = params.project || "";' in resolve
+    assert "delete extra.project" in resolve
+    assert "LEADING_PARAMS = { w: 0, project: 1 }" in app_js
+    assert "paramRank(a) - paramRank(b)" in _function_source(app_js, "formatHash")
+    assert "w: state.window, project: state.project" in _function_source(app_js, "scopeParams")
+    # Every address goes through scopeParams: one that wrote the window
+    # itself would drop the project (a link, a page saying what it has
+    # open, the router).
+    assert app_js.count("w: state.window") == 1
+    for name in ("pageLink", "replaceParams", "goTo", "redrawForScope", "resolveRoute", "evidenceItem"):
+        assert "scopeParams()" in _function_source(app_js, name), name
+    # Back to another window and project changes both at once, so no
+    # request asks for the new window with the old project.
+    resolve = _function_source(app_js, "resolveRoute")
+    assert "applyScope(windowValue, project)" in resolve
+    assert "applyWindow(" not in resolve and "applyProject(" not in resolve
+
+
+def test_the_project_picker_is_a_radio_menu_beside_the_window() -> None:
+    """The project picker shares the window picker's menu: radio rows, All
+    projects first, the full folder name on hover, and it hides wherever
+    the window does. The header button looks set while a project is
+    picked, so narrowed figures never go unnoticed."""
+    app_js = _app_js()
+    index = _static_text("index.html")
+    assert index.index('id="project-picker"') < index.index('id="window-picker"')
+    menu = _function_source(app_js, "menuControl")
+    assert '"menuitemradio"' in menu and '"aria-checked"' in menu
+    rows = _function_source(app_js, "setProjectRows")
+    assert 'value: "", label: "All projects"' in rows
+    assert "title: slug" in rows
+    assert "No sessions in this window" in rows
+    label = _function_source(app_js, "drawProjectLabel")
+    assert '"is-filtered"' in label
+    controls = _function_source(app_js, "updateScopeControls")
+    assert "projectMenu.button.hidden = !follow" in controls
+    assert "setProjectHandler(setProject)" in _function_source(app_js, "init")
+
+
+def test_only_every_project_report_names_the_projects() -> None:
+    """A report for one project lists only that project, so the picker
+    and the short project names read the list from every project's
+    report for the window."""
+    app_js = _app_js()
+    load = _function_source(app_js, "loadReport")
+    assert "var everyProject = allProjects || !state.project;" in load
+    assert "everyProject) setKnownProjects(report.meta.projects)" in load
+    assert "loadReport({ allProjects: true })" in _function_source(app_js, "loadProjects")
+
+
+def test_an_unknown_project_gives_way_to_every_project() -> None:
+    """An address can name a project the service doesn't know (an old
+    bookmark, a moved folder): every route answers 400 for it. The
+    dashboard asks once, then shows every project and says why, as an
+    unknown window gives way to the one in use."""
+    app_js = _app_js()
+    check = _function_source(app_js, "checkProject")
+    assert "result.httpStatus !== 400" in check
+    assert "\"'project'\"" in check
+    assert 'setProject("")' in check
+    assert "unknownProjectToast()" in check
+    # The answer is kept: an address naming it again gives way at once.
+    assert 'checkedProjects[value] = "unknown"' in check
+    assert 'checkedProjects[project] === "unknown"' in _function_source(app_js, "applyScope")
+    notice = _function_source(app_js, "errorNotice")
+    assert 'pickProject("", { focus: true })' in notice and "Show all projects" in notice
+    # The Overview doesn't read a project error as "no change recorded".
+    assert "!projectError" in _function_source(app_js, "renderOverview")
+
+
+def test_search_finds_projects() -> None:
+    """Search lists the window's projects, and offers "Show all projects"
+    while one is picked; both go through the picker's own handler."""
+    app_js = _app_js()
+    assert "pickProject(slug)" in _function_source(app_js, "projectEntries")
+    assert "safely(loadProjects(), projectEntries)" in _function_source(app_js, "loadEntries")
+    assert '"Show all projects"' in _function_source(app_js, "commandEntries")
 
 
 def test_section_page_map_includes_recache_by_group() -> None:
@@ -1577,7 +1692,7 @@ def test_recommendations_are_fetched_once_per_window() -> None:
     app_js = _app_js()
     assert app_js.count('withWindow("/api/recommendations")') == 1
     assert "state.recommendationPromises[key]" in _function_source(app_js, "loadRecommendations")
-    assert "delete state.recommendationPromises[value]" in _function_source(app_js, "applyWindow")
+    assert "state.recommendationPromises[scopeKey()]" in _function_source(app_js, "scopeChanged")
     assert "state.recommendationPromises = {}" in _function_source(app_js, "redrawEverything")
 
 
@@ -2218,7 +2333,7 @@ def test_recommendations_and_checks_open_from_the_address() -> None:
         assert 'onParams("' + view + '"' in app_js, view
     inbox_source = _function_source(app_js, "inbox")
     assert "replaceParams({ id: memberKey || item.key })" in inbox_source
-    assert "formatHash(spec.viewKey, { w: state.window, id: item.key })" in inbox_source
+    assert "formatHash(spec.viewKey, Object.assign(scopeParams(), { id: item.key }))" in inbox_source
     assert "paramsChanged(key, extra)" in _function_source(app_js, "resolveRoute")
     assert "params" in _function_source(app_js, "pageLink")
     assert "history.replaceState" in _function_source(app_js, "replaceParams")

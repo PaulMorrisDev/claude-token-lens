@@ -2,8 +2,9 @@
  *
  * Search (Ctrl+K) and the keyboard shortcuts. Search finds the pages,
  * the report's sections and tables, the recommendations and checks for
- * the window, glossary terms and recent sessions, and runs a few
- * commands: a window, a theme, copying a recommendation's prompt. Like
+ * the window, glossary terms, recent sessions and projects, and runs a
+ * few commands: a window, a project, a theme, copying a recommendation's
+ * prompt. Like
  * the rest of the dashboard it only moves around and copies text; it
  * never changes Claude Code.
  *
@@ -12,9 +13,9 @@
  * the results.
  */
 
-import { clear, el, goTo, state, WINDOW_OPTIONS } from "./core.js";
+import { clear, el, goTo, pickProject, state, WINDOW_OPTIONS } from "./core.js";
 import { icon } from "./icons.js";
-import { fetchJson, loadRecommendations, loadReport, withWindow } from "./api.js";
+import { fetchJson, loadProjects, loadRecommendations, loadReport, scopeKey, withWindow } from "./api.js";
 import { COST_CARDS, findPage, GLOSSARY, plainText, termSlug, VIEW_KEYS, viewFor, viewForSection, viewLabel } from "./links.js";
 import { evidenceView, openEvidence } from "./evidence.js";
 import { button, copyToClipboard, SEVERITY_LABELS, statusLabel, toast } from "./ui.js";
@@ -34,6 +35,7 @@ var GROUPS = [
   { kind: "table", label: "Sections and tables" },
   { kind: "term", label: "Glossary" },
   { kind: "session", label: "Recent sessions" },
+  { kind: "project", label: "Projects" },
 ];
 
 // Results shown per group once something is typed.
@@ -89,6 +91,19 @@ function commandEntries() {
       { words: "window time period range", icon: "clock" }
     );
   });
+  if (state.project) {
+    list.push(
+      entry(
+        "command",
+        "Show all projects",
+        "Shown now: " + projectName(state.project),
+        function () {
+          pickProject("");
+        },
+        { words: "project projects filter every", icon: "folder" }
+      )
+    );
+  }
   THEME_COMMANDS.forEach(function (theme) {
     list.push(
       entry(
@@ -257,13 +272,29 @@ function sessionEntries(rows) {
   });
 }
 
-// The window's recommendations, checks, report and recent sessions,
-// fetched once per window when search first opens. A source that fails
-// adds nothing; the rest still come.
-var loaded = { window: null, promise: null };
+// Every project with a session in the window: choosing one shows only
+// that project (the project picker's list).
+function projectEntries(slugs) {
+  return (slugs || []).map(function (slug) {
+    return entry(
+      "project",
+      projectName(slug),
+      slug === state.project ? "Shown now" : "Show only this project",
+      function () {
+        pickProject(slug);
+      },
+      { words: "project filter folder " + slug, icon: "folder", typed: true }
+    );
+  });
+}
+
+// The window's recommendations, checks, report, recent sessions and
+// projects, fetched once per window and project when search first
+// opens. A source that fails adds nothing; the rest still come.
+var loaded = { key: null, promise: null };
 
 function loadEntries() {
-  if (loaded.window === state.window && loaded.promise) return loaded.promise;
+  if (loaded.key === scopeKey() && loaded.promise) return loaded.promise;
   function safely(promise, build) {
     return promise.then(build, function () {
       return [];
@@ -271,7 +302,7 @@ function loadEntries() {
       return [];
     });
   }
-  loaded.window = state.window;
+  loaded.key = scopeKey();
   loaded.promise = Promise.all([
     safely(loadRecommendations(), function (result) {
       var body = result.body;
@@ -288,6 +319,7 @@ function loadEntries() {
       var body = result.body;
       return sessionEntries(body && body.ok === true && Array.isArray(body.data) ? body.data : []);
     }),
+    safely(loadProjects(), projectEntries),
   ]).then(function (lists) {
     return lists.reduce(function (all, list) {
       return all.concat(list);
@@ -295,7 +327,7 @@ function loadEntries() {
   });
   loaded.promise.then(function (entries) {
     // Nothing came (the service is away): ask again next time.
-    if (!entries.length && loaded.window === state.window) loaded.promise = null;
+    if (!entries.length && loaded.key === scopeKey()) loaded.promise = null;
   });
   return loaded.promise;
 }
@@ -431,7 +463,7 @@ export function openPalette() {
     "aria-controls": "palette-results",
     "aria-autocomplete": "list",
     "aria-label": "Search",
-    placeholder: "Search pages, tables, actions, terms and sessions",
+    placeholder: "Search pages, tables, actions, terms, sessions and projects",
     autocomplete: "off",
     spellcheck: "false",
   });
@@ -516,7 +548,7 @@ export function openPalette() {
         })
       );
       say(waiting ? "" : "No results");
-    } else if (waiting && typed) say(shown.length + (shown.length === 1 ? " result" : " results") + " so far. Still loading tables, actions and sessions.");
+    } else if (waiting && typed) say(shown.length + (shown.length === 1 ? " result" : " results") + " so far. Still loading tables, actions, sessions and projects.");
     else say(shown.length + (shown.length === 1 ? " result" : " results"));
   }
 
@@ -612,7 +644,7 @@ var SHORTCUTS = [
   {
     heading: "Anywhere",
     rows: [
-      [["Ctrl", "K"], "Search pages, tables, actions, terms and sessions"],
+      [["Ctrl", "K"], "Search pages, tables, actions, terms, sessions and projects"],
       [["?"], "Show these shortcuts"],
       [["Esc"], "Close a panel, menu or search"],
     ],
@@ -686,8 +718,7 @@ function typing(target) {
 
 function overlayOpen() {
   if (document.querySelector("dialog[open]")) return true;
-  var menu = document.getElementById("window-menu");
-  if (menu && !menu.hidden) return true;
+  if (document.querySelector(".page-controls .menu:not([hidden])")) return true;
   try {
     return !!document.querySelector(":popover-open");
   } catch (error) {

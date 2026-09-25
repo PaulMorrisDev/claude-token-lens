@@ -18,15 +18,15 @@ export function renderConfig(panel) {
   clear(panel);
   viewIntro(panel, "setup/settings");
 
-  var impactContainer = setupSection(panel, "Your changes and what they did", "settings-impact");
+  var impactContainer = setupSection(panel, "Your changes and what they did", "settings-impact", { everyProject: true });
   var impactLoaded = loadInto(impactContainer, "/api/impact", renderImpact, { skeleton: "rows" });
-  var backtestContainer = setupSection(panel, "Did your estimates come true?", "settings-backtest");
+  var backtestContainer = setupSection(panel, "Did your estimates come true?", "settings-backtest", { everyProject: true });
   loadInto(backtestContainer, "/api/backtest", renderBacktest, { skeleton: "rows" });
 
   var driftContainer = setupSection(panel, "Your settings and how they changed", "config-drift");
   loadInto(driftContainer, withWindow("/api/config-diff?auto_keys=1"), renderConfigDiff, { skeleton: "rows" });
 
-  var baselineContainer = setupSection(panel, "Latest baseline", "config-baseline");
+  var baselineContainer = setupSection(panel, "Latest baseline", "config-baseline", { everyProject: true });
   loadInto(baselineContainer, "/api/baseline", renderBaseline, { skeleton: "rows" });
 
   var sectionContainer = el("div", { id: "config-sections" });
@@ -55,9 +55,16 @@ export function renderConfig(panel) {
 
 // One part of a Setup view: a titled section and the body its data
 // fills (id: the body's).
-function setupSection(panel, title, id) {
+// opts.everyProject: the section covers every project, and says so while
+// the picker shows one.
+function setupSection(panel, title, id, opts) {
   var section = el("section", { class: "report-section" });
-  section.appendChild(el("div", { class: "block-head" }, [el("h2", { class: "section-title", text: title })]));
+  section.appendChild(
+    el("div", { class: "block-head" }, [
+      el("h2", { class: "section-title", text: title }),
+      opts && opts.everyProject && state.project ? chip("All projects", { icon: "folder", class: "all-time-chip" }) : null,
+    ])
+  );
   var body = el("div", { id: id });
   section.appendChild(body);
   panel.appendChild(section);
