@@ -459,7 +459,8 @@ SECTION_COPY: dict[str, SectionCopy] = {
             "enough replies come 5 to 60 minutes after the one before. The estimates replay your own replies "
             "and waits.",
             act="Follow the advice column only when the estimate error is low. A subagent's lifetime is set in its "
-            "agent file; the main session's in your settings.",
+            "agent file, or for every subagent at once in your settings, which take priority over agent files. "
+            "The main session's is set in your settings.",
         ),
     ),
     "limits": SectionCopy(
@@ -2861,10 +2862,8 @@ TABLE_COPY: dict[str, TableCopy] = {
             "switch to 1h": "Switch to 1 hour",
             "keep 5m (already dominant)": "Keep 5 minutes (already used)",
             "keep 1h (already dominant)": "Keep 1 hour (already used)",
-            "no material difference (suppressed: subscription billing)": (
-                "No change: a subscription ignores a 1-hour lifetime for subagents"
-            ),
             "promptCacheTtl": "Cache lifetime in your settings",
+            "subagentPromptCacheTtl": "Subagent cache lifetime in your settings",
         },
         lead_columns=[
             "agent_type", "spawns", "cost_observed", "best_policy", "saving_usd", "delta_pct", "recommendation",

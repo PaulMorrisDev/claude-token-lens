@@ -87,12 +87,15 @@ SETTING_TEXT: dict[str, tuple[str, str, str]] = {
     "promptCacheTtl": (
         "How long the main session's cache is kept between replies: 5 minutes or 1 hour.",
         "A 1-hour cache costs more to write, so it only pays off when you often pause for more than 5 minutes.",
-        "A 1-hour lifetime is ignored while a Pro or Max plan is using extra usage credits.",
+        "Needs Claude Code 2.1.242 or later. Left unset, a Pro or Max plan gets 1 hour within plan usage and "
+        "5 minutes once it draws on extra usage credits; a value set here applies either way.",
     ),
     "subagentPromptCacheTtl": (
-        "How long every subagent's cache is kept between replies: 5 minutes or 1 hour.",
+        "How long every subagent's cache is kept between replies: 5 minutes or 1 hour. It also covers "
+        "workflow agents, teammates and compaction.",
         "A 1-hour cache costs more to write, so it only pays off when subagents often wait more than 5 minutes.",
-        "A 1-hour lifetime is ignored while a Pro or Max plan is using extra usage credits.",
+        "Needs Claude Code 2.1.242 or later. Claude Code uses it before any agent file's cacheTtl, and it "
+        "still applies while a Pro or Max plan draws on extra usage credits.",
     ),
     "experimental.cacheTtl": (
         "How long this agent's cache is kept between replies: 5 minutes or 1 hour.",
@@ -304,7 +307,8 @@ _WORKFLOW_PROMPTS = {
         "My prompt-cache TTL doesn't fit how {agent} actually runs: {title_lower}. Please check the "
         "current TTL setting for {agent} (promptCacheTtl for the main session, subagentPromptCacheTtl or "
         "experimental.cacheTtl for a named agent) in ~/.claude/settings.json or its agent file, and switch "
-        "it to what this finding recommends. Show me the diff before saving. Claude Code will ask my "
+        "it to what this finding recommends. If subagentPromptCacheTtl is set, Claude Code uses it before "
+        "the agent file. Show me the diff before saving. Claude Code will ask my "
         "permission before editing files under .claude."
     ),
     "long-tool-waits": (
@@ -416,12 +420,12 @@ _WORKFLOW_PROMPTS = {
 #: informational card with nothing to ask Claude to do).
 _WORKFLOW_EXPLAINER: dict[str, tuple[str, str, str]] = {
     "ttl-switch": (
-        "settings.json's promptCacheTtl (the main session) or an agent file's subagentPromptCacheTtl / "
-        "experimental.cacheTtl frontmatter (a named agent type) -- whichever key this finding names, at "
-        "user or project scope depending on where it is already set.",
-        "A 1-hour cache costs more to write than the 5-minute default, so it only pays off when replies "
-        "are often more than 5 minutes apart; the 1-hour lifetime is also ignored while a Pro or Max plan "
-        "is drawing on extra usage credits.",
+        "settings.json's promptCacheTtl (the main session) or subagentPromptCacheTtl (every subagent), or an "
+        "agent file's experimental.cacheTtl frontmatter (a named agent type) -- whichever key this finding "
+        "names, at user or project scope depending on where it is already set.",
+        "A 1-hour cache costs more to write than a 5-minute one, so it only pays off when replies "
+        "are often more than 5 minutes apart; a 1-hour lifetime in an agent file is also ignored while a "
+        "Pro or Max plan is drawing on extra usage credits.",
         "Set the TTL key back to its previous value (Claude Code shows the change before saving it, and "
         "claude-token-lens apply --revert undoes a change made with apply).",
     ),
