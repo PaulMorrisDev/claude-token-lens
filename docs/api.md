@@ -486,7 +486,7 @@ params it means all time rather than a 30-day default.
 `/api/sessions` and `/api/compactions` accept them all but, unlike the
 report routes, list everything when none is given. Every other route
 (`/api/health`, `/api/session/<id>`, `/api/recache`, `/api/baseline`,
-`/api/profiles*`, `/api/impact`, `/api/setup`, `/api/capture`) ignores them.
+`/api/profiles*`, `/api/impact`, `/api/setup`, `/api/setup/status`, `/api/capture`) ignores them.
 
 **Caching.** The service builds each window's report once per store
 change (`Store.change_token()`) or `config.toml` change (its
@@ -959,6 +959,29 @@ costs in tokens and how to undo it, plus what to expect
 (`footprint.py`). Used by the dashboard's Data quality page.
 
 `data`: `{"items": [{"key", "title", "status", "where", "what_it_does", "token_cost", "undo"}, ...], "expectations": [{"title", "text"}, ...], "uninstall_command"}`.
+
+### `GET /api/setup/status`
+
+Whether each part of the setup works (`setup_status.check_setup`), for
+the Overview's Setup card and Data quality: the same checklist
+`claude-token-lens status` prints. This dashboard answering is proof it
+runs, so only whether it starts at logon is asked, through the same
+cached probe as `/api/health`'s `service_registered`; `null` from that
+probe means "couldn't tell", never a problem.
+
+`data`: `{"items": [{"key", "label", "state", "word", "detail", "fix", "essential"}, ...], "done", "needs_attention", "verdict"}`.
+
+- `items`, in the order `init` sets them up: `billing`, `hook`,
+  `service`, `capture`, `skill` and `statusline`. `state` is `ok`,
+  `waiting` (set up, but nothing has happened yet to prove it works),
+  `problem` or `off` (left off by choice), and `word` says it the way
+  the CLI does (`Done`, `Waiting`, `Needs attention`, `Off`). `detail` is
+  one or two plain sentences, with the home folder written as `~` and no
+  other path. `fix` is a command to copy, or `null`.
+- `done`: every `essential` item is `ok`. The Setup card shows until it
+  is.
+- `needs_attention`: how many items are a `problem`.
+- `verdict`: "Everything's set up." or "N things need attention."
 
 ### `GET /api/capture`
 

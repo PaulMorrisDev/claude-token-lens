@@ -2,32 +2,76 @@
  *
  * The parts on every page: the sidebar's status line (service health,
  * figures, capture level, version), the health banner and the
- * metrics-capture banner.
+ * metrics-capture banner. Also the setup checklist, which the Overview
+ * and Data quality both draw.
  */
 
-import { clear, cli, el, goTo, renderedViews, state, storageGet, storageSet } from "./core.js";
+import { clear, el, goTo, renderedViews, state, storageGet, storageSet, withCli } from "./core.js";
 import { relativeTime, shortTs, thousands, timeNode } from "./format.js";
 import { connection, fetchJson, figures, resetFiguresAsOf, runReconnectRetries } from "./api.js";
+import { icon } from "./icons.js";
 import { captureLink, pageLink } from "./links.js";
-import { button, callout, prose, toast } from "./ui.js";
+import { button, callout, codeBlockWithCopy, prose, toast } from "./ui.js";
 
-// A service that doesn't start at logon loses history to Claude Code's
-// cleanup: said on the Overview, where it will be seen, and again with
-// the rest of the health detail on Data quality.
-export function renderLogonNotice(health, container) {
-  if (!health || health.service_registered !== false) return;
+// -- the setup checklist (setup_status.py, /api/setup/status) ------------------
+
+// Each state in words with its icon, never the colour alone. Amber, not
+// red, for a fix: it's a command to run, not a failure.
+var SETUP_STATE = {
+  ok: { cls: "severity-good", icon: "success" },
+  waiting: { cls: "severity-info", icon: "info" },
+  problem: { cls: "severity-advice", icon: "warning" },
+  off: { cls: "severity-info", icon: "info" },
+};
+
+function setupItem(item) {
+  var look = SETUP_STATE[item.state] || SETUP_STATE.off;
+  var badge = el("span", { class: "severity-badge " + look.cls }, [icon(look.icon, { size: 14 }), el("span", { text: item.word })]);
+  var row = el("li", { class: "setup-item" }, [
+    el("p", { class: "setup-item-head" }, [el("strong", { text: item.label }), badge]),
+    el("p", null, prose(withCli(item.detail || ""))),
+  ]);
+  // The dashboard changes nothing itself: a fix is a command to copy.
+  if (item.fix && item.state !== "ok") row.appendChild(codeBlockWithCopy(withCli(item.fix), "Command", item.label));
+  return row;
+}
+
+// Said at the top of the Overview while a part that matters isn't
+// working yet: how you pay, the connection to Claude Code, the dashboard
+// at logon (Claude Code deletes transcripts after cleanupPeriodDays, and
+// only a running dashboard keeps their figures: that item's text says
+// so), and capture when it's on. Only those parts are listed; Data
+// quality has the whole checklist.
+export function renderSetupCard(setup, container) {
+  if (!setup || setup.done) return;
+  var pending = (setup.items || []).filter(function (item) {
+    return item.essential && item.state !== "ok";
+  });
+  if (!pending.length) return;
+  var toFix = pending.some(function (item) {
+    return item.state !== "waiting";
+  });
   container.appendChild(
     callout({
-      tone: "critical",
-      title: "The service doesn't start when you log on.",
-      text: "After a restart, history older than Claude Code's cleanup period (cleanupPeriodDays) is lost. To fix it, run: " + cli("install-service"),
+      tone: toFix ? "warning" : "info",
+      class: "setup-card",
+      title: toFix ? "Setup isn't finished." : "Setup is almost done.",
+      children: [
+        el("ul", { class: "setup-list" }, pending.map(setupItem)),
+        el("p", { class: "notes" }, [pageLink("data", "Data quality"), " has the whole checklist."]),
+      ],
     })
   );
 }
 
+// The whole checklist, as 'claude-token-lens status' prints it.
+export function renderSetupList(setup, container) {
+  container.appendChild(el("p", { text: setup.verdict }));
+  container.appendChild(el("ul", { class: "setup-list" }, (setup.items || []).map(setupItem)));
+}
+
 export function renderHealth(health, container) {
   var watcher = health.watcher || {};
-  renderLogonNotice(health, container);
   var scan = health.scan || {};
   if (health.message) {
     container.appendChild(callout({ tone: health.status === "starting" ? "info" : "critical", text: health.message }));

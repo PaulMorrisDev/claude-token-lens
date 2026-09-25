@@ -101,8 +101,8 @@ def test_hook_not_connected_waiting_then_done(tmp_path):
     [
         (True, True, "ok", True),
         (True, False, "problem", True),
-        (False, True, "off", False),
-        (False, False, "off", False),
+        (False, True, "off", True),
+        (False, False, "off", True),
         (None, True, "ok", True),
         (None, False, "off", False),
     ],

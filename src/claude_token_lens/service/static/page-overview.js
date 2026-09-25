@@ -26,7 +26,7 @@ import {
 } from "./ui.js";
 import { renderTable } from "./grid.js";
 import { pageLink, viewIntro } from "./links.js";
-import { renderLogonNotice } from "./shell.js";
+import { renderSetupCard } from "./shell.js";
 import { chartError, holdChart, setChartHeight } from "./charts.js";
 import { dailyChanges, meter, renderChart, savingsLevers, sparkline, windowDays } from "./charts-types.js";
 import { groupRecommendations, groupSavingUsd, groupTitle, listSaving } from "./page-actions.js";
@@ -544,6 +544,7 @@ export function renderOverview(panel) {
   // sets the billing mode every amount is written in.
   var reportLoad = loadReport();
   var healthLoad = fetchJson("/api/health");
+  var setupLoad = fetchJson("/api/setup/status");
   var summaryLoad = fetchJson(withWindow("/api/summary"));
   var previous = previousPeriod(state.window, Date.now());
   var previousLoad = previous
@@ -567,10 +568,9 @@ export function renderOverview(panel) {
     setChartHeight("daily-spend", { slot: "overview" }, chartHeight);
   }
 
-  healthLoad.then(function (result) {
+  setupLoad.then(function (result) {
     if (!current()) return;
-    var health = result.body && result.body.ok ? result.body.data : null;
-    renderLogonNotice(health, notices);
+    renderSetupCard(result.body && result.body.ok ? result.body.data : null, notices);
   });
 
   var figuresDrawn = Promise.all([reportLoad, summaryLoad, previousLoad, recsLoad, healthLoad, dailyLoad]).then(function (loaded) {

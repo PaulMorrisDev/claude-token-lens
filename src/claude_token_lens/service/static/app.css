@@ -1550,6 +1550,32 @@ details.disclosure[open] > summary {
   margin: 0 0 var(--space-6);
 }
 
+/* The setup checklist (shell.js): a label and its state, what it means,
+   then the command that fixes it. */
+.setup-list {
+  display: grid;
+  gap: var(--space-5);
+  max-width: 72ch;
+  margin: var(--space-3) 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-item > p {
+  margin: 0 0 var(--space-2);
+}
+
+.setup-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.setup-item-head .severity-badge {
+  margin-right: 0;
+}
+
 .metric-tiles.overview-tiles {
   margin-top: 0;
 }

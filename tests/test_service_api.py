@@ -2356,6 +2356,34 @@ def test_setup_lists_the_footprint_expectations_and_uninstall(server):
     assert data["uninstall_command"].endswith("--dry-run")
 
 
+@pytest.mark.parametrize("registered", [True, False, None])
+def test_setup_status_says_what_works_and_names_no_path(tmp_path, monkeypatch, registered):
+    handle = _start_server(tmp_path, monkeypatch, service_registered=lambda: registered)
+    try:
+        resp, raw = handle.request("GET", "/api/setup/status")
+        assert resp.status == 200
+        _assert_no_leak(raw)
+        data = json.loads(raw)["data"]
+        items = {item["key"]: item for item in data["items"]}
+        assert list(items) == ["billing", "hook", "service", "capture", "skill", "statusline"]
+        assert all(set(item) == {"key", "label", "state", "word", "detail", "fix", "essential"} for item in data["items"])
+        # Nothing chosen and nothing connected in a fresh config folder.
+        assert items["billing"]["state"] == "problem" and items["hook"]["state"] == "problem"
+        assert data["done"] is False and data["needs_attention"] >= 2
+        assert data["verdict"].endswith("need attention.")
+        # This dashboard answering is proof it runs: only the logon task
+        # is in question, and an unknown answer is never a problem.
+        service = items["service"]
+        assert service["state"] == {True: "ok", False: "off", None: "ok"}[registered]
+        assert "http://" not in service["detail"]
+        if registered is False:
+            assert "cleanupPeriodDays" in service["detail"]
+            assert service["fix"] == "claude-token-lens install-service"
+    finally:
+        handle.close()
+        handle.store.close()
+
+
 # -- metrics capture (/api/health's capture block, /api/capture) -----------
 
 

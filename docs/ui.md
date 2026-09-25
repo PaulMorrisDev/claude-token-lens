@@ -411,9 +411,15 @@ N tokens · <amount> (x% of spend) · tagged on P% of messages") and links
 to Setup › Capture and Work habits. **Dismiss for a week** hides the
 notes until they change.
 
-**The logon warning** shows on the Overview and Data quality when
-`/api/health` says the service won't start at logon
-(`renderLogonNotice`).
+**The Setup card** tops the Overview while a part that matters isn't
+working yet (`/api/setup/status`, `renderSetupCard`): how you pay, the
+connection to Claude Code, the dashboard at logon, and capture when it's
+on. Each part says what's wrong and gives the command that fixes it to
+copy. The dashboard at logon says why it matters: Claude Code deletes
+transcripts after `cleanupPeriodDays`. It shows before any session is
+read too, and says "Setup is almost done." when all that's left is
+waiting for the first Claude Code session. Data quality has the whole
+checklist.
 
 ## Pages
 
@@ -690,14 +696,17 @@ CLI commands instead.
 
 **Answers:** "What did Token Lens install, and can I trust its figures?"
 
-1. **What this tool installed, and what to expect** (`/api/setup`): each
+1. **Your setup** (`/api/setup/status`, `renderSetupList`): each part
+   `Done`, `Waiting`, `Off` or `Needs attention`, with the command that
+   fixes it, as `claude-token-lens status` prints it.
+2. **What this tool installed, and what to expect** (`/api/setup`): each
    thing installed, what it does, its token cost and how to undo it, and
    "Remove everything".
-2. **Service health** (`/api/health`, `renderHealth`): status, version,
+3. **Service health** (`/api/health`, `renderHealth`): status, version,
    last scan, the watcher's counts and recent errors.
-3. Any report section no other view claims (`SECTION_PAGE_MAP`'s
+4. Any report section no other view claims (`SECTION_PAGE_MAP`'s
    fallback).
-4. `/api/diagnostics`: whether the hook and the status line work, then
+5. `/api/diagnostics`: whether the hook and the status line work, then
    the parse-quality counters, matching the CLI report's Diagnostics.
 
 ### Glossary › Terms
@@ -1164,7 +1173,7 @@ hand with Playwright against a dev service.
 | `charts.js` | `CHART_SPECS`, `fillSummary`, `ENTITY_COLOURS`, axes, tooltip, keyboard reading, the table view, resize, `drawChart`, `holdChart`, `chartError` |
 | `charts-types.js` | the eight forms, `renderChart`, `sectionChart`, `sessionContextChart`, `savingsLevers`, `dailyChanges`, `sparkline`, `meter`, `habitSparkline` |
 | `costs.js` | pricing helpers for Actions, Cache and the Glossary: `pricingFacts`, `priced`, `modelSentence`, `avoidableRebuilds`, `cardRuleText` |
-| `shell.js` | on every view: the health banner, the status line, the capture banner, `RETRY_SECONDS`, `renderHealth`, `renderLogonNotice` |
+| `shell.js` | on every view: the health banner, the status line, the capture banner, `RETRY_SECONDS`, `renderHealth`, the setup checklist (`renderSetupCard`, `renderSetupList`) |
 | `icons.js` | `icon(name, opts)` and `ICON_NAMES` |
 | `palette.js` | `openPalette`, `matchScore`, `GO_KEYS`, `showShortcuts`, `initPalette` |
 | `d3.js` | the one door to the vendored d3 |

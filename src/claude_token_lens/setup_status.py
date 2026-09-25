@@ -151,35 +151,43 @@ def _statusline(config_dir: Path, claude_root, entrypoints: dict[str, dict]) -> 
 
 
 def _service(
-    registered: bool | None, running: bool, url: str
+    registered: bool | None, running: bool, url: str | None
 ) -> SetupItem:
     label = "Dashboard at logon"
     keeps = (
         "Claude Code deletes transcripts after 30 days (cleanupPeriodDays), and the dashboard keeps "
         "their history only while it runs."
     )
+    at = f" at {url}" if url else ""
     if registered is True and running:
-        return SetupItem("service", label, "ok", f"Starts when you log on, and is running at {url}.", essential=True)
+        return SetupItem("service", label, "ok", f"Starts when you log on, and is running{at}.", essential=True)
     if registered is True:
         return SetupItem(
             "service",
             label,
             "problem",
-            f"Set to start when you log on, but nothing answers at {url}. {keeps}",
+            f"Set to start when you log on, but nothing answers{at}. {keeps}",
             SERVICE_COMMAND,
             essential=True,
         )
     if registered is None:
         if running:
-            return SetupItem("service", label, "ok", f"Running at {url}.", essential=True)
+            return SetupItem("service", label, "ok", f"Running{at}.", essential=True)
         return SetupItem(
             "service", label, "off", f"Not running, and whether it starts at logon couldn't be checked. {keeps}", SERVICE_COMMAND
         )
+    # Left off by choice, so never a problem, but the dashboard's Setup
+    # card keeps saying so: history is lost while it doesn't run.
     if running:
         return SetupItem(
-            "service", label, "off", f"Running at {url}, but not set to start when you log on. {keeps}", SERVICE_COMMAND
+            "service",
+            label,
+            "off",
+            f"Running{at}, but not set to start when you log on. {keeps}",
+            SERVICE_COMMAND,
+            essential=True,
         )
-    return SetupItem("service", label, "off", f"Not set to start when you log on. {keeps}", SERVICE_COMMAND)
+    return SetupItem("service", label, "off", f"Not set to start when you log on. {keeps}", SERVICE_COMMAND, essential=True)
 
 
 def _capture(config_dir: Path, claude_root, capture: CaptureConfig, now: datetime | None) -> SetupItem:
@@ -264,7 +272,7 @@ def check_setup(
     is_registered: Callable[[], bool | None] | None = None,
     running: bool | None = None,
     health_check: Callable[[str], bool] | None = None,
-    url: str = installer.DEFAULT_URL,
+    url: str | None = installer.DEFAULT_URL,
 ) -> list[SetupItem]:
     """Every part of the setup, in the order ``init`` sets it up.
 
@@ -274,14 +282,15 @@ def check_setup(
     "couldn't tell", never a problem. ``running`` says whether the
     dashboard answers: the dashboard itself passes ``True``; left
     ``None``, ``health_check`` (default :func:`installer.http_health_ok`)
-    asks ``url``. Never raises for an unreadable file: that item reports
-    it.
+    asks ``url``. The dashboard passes ``url=None``: the page is already
+    open there, so the text names no address. Never raises for an
+    unreadable file: that item reports it.
     """
     config_dir = Path(config_dir)
     capture = footprint.capture_setting(config_dir)
     registered = (is_registered or installer.is_registered)()
     if running is None:
-        running = (health_check or installer.http_health_ok)(url)
+        running = url is not None and (health_check or installer.http_health_ok)(url)
     return [
         _billing(config_dir),
         _snapshot_hook(config_dir, claude_root, now),
@@ -321,6 +330,12 @@ def lines(items: list[SetupItem]) -> list[str]:
     return out
 
 
+def done(items: list[SetupItem]) -> bool:
+    """Whether every essential item is ``ok``: until then the dashboard
+    shows its Setup card."""
+    return all(item.state == "ok" for item in items if item.essential)
+
+
 def to_jsonable(item: SetupItem) -> dict:
     return {
         "key": item.key,
@@ -339,6 +354,7 @@ __all__ = [
     "check_setup",
     "needs_attention",
     "essential_problem",
+    "done",
     "verdict",
     "lines",
     "to_jsonable",

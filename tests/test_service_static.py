@@ -40,7 +40,7 @@ from pathlib import Path
 
 import pytest
 
-from claude_token_lens import backtest, capture_view, footprint, helptext, quick_actions, skills_review
+from claude_token_lens import backtest, capture_view, footprint, helptext, quick_actions, setup_status, skills_review
 from claude_token_lens.config import CaptureConfig, Config
 from claude_token_lens.corpus import load_corpus
 from claude_token_lens.pricing import load_pricing
@@ -1078,6 +1078,13 @@ def _build_fixture_data(tmp_path: Path) -> tuple[dict, dict]:
         "uninstall_command": footprint.UNINSTALL_COMMAND,
     }
     canned["/api/capture"] = capture_view.view(CaptureConfig(), units=units)
+    setup_items = setup_status.check_setup(config_dir, is_registered=lambda: False, running=True, url=None)
+    canned["/api/setup/status"] = {
+        "items": [setup_status.to_jsonable(item) for item in setup_items],
+        "done": setup_status.done(setup_items),
+        "needs_attention": len(setup_status.needs_attention(setup_items)),
+        "verdict": setup_status.verdict(setup_items),
+    }
 
     return canned, sessions_map
 
@@ -1512,28 +1519,35 @@ def test_loadinto_render_callbacks_take_data_first_container_second() -> None:
         )
 
 
-def test_the_logon_notice_shows_when_the_service_is_not_registered() -> None:
-    """v3: ``/api/health``'s ``service_registered`` field (see
-    ``docs/api.md``) drives a warning -- someone who skipped
-    ``install-service`` (or whose registration was later removed) needs
-    to see this in the UI, not just find it by reading a JSON field. The
-    redesign says it at the top of the Overview, where it will be seen,
-    and again with the full health detail on Data quality: both go
-    through ``renderLogonNotice``. Source check: there is no browser in
-    this test process.
+def test_the_setup_card_shows_until_every_essential_part_works() -> None:
+    """``/api/setup/status`` (``setup_status.py``) drives the Overview's
+    Setup card: someone who skipped ``install-service``, never connected,
+    or never said how they pay needs to see it in the UI, with the
+    command that fixes it. It replaces the old logon notice, so the
+    dashboard at logon still says why it matters (``cleanupPeriodDays``)
+    -- in the item's own text, which ``setup_status`` writes. Data
+    quality shows the whole checklist. Source check: there is no browser
+    in this test process.
     """
     app_js = _app_js()
-    notice_src = _function_source(app_js, "renderLogonNotice")
-    assert "service_registered" in notice_src, "renderLogonNotice never reads health.service_registered"
-    assert "!== false" in notice_src, "the notice must show only when service_registered === false"
-    assert "install-service" in notice_src, "the notice must tell the operator what command to run"
-    assert "cleanupPeriodDays" in notice_src, "the notice must explain why registration matters (retention)"
+    card_src = _function_source(app_js, "renderSetupCard")
+    assert "setup.done" in card_src, "the card must hide once setup is done"
+    assert "item.essential" in card_src, "the card lists only the parts that matter"
+    item_src = _function_source(app_js, "setupItem")
+    assert "codeBlockWithCopy(withCli(item.fix)" in item_src, "each fix is a command to copy, in this install's form"
+    assert "renderLogonNotice" not in app_js
 
-    assert "renderLogonNotice(" in _function_source(app_js, "renderHealth"), "Data quality's health detail lost the notice"
-    assert "renderLogonNotice(" in _function_source(app_js, "renderOverview"), "the Overview lost the notice"
+    overview = _function_source(app_js, "renderOverview")
+    assert 'fetchJson("/api/setup/status")' in overview and "renderSetupCard(" in overview, "the Overview lost the card"
+    assert '"/api/setup/status", renderSetupList' in _function_source(app_js, "renderDataQuality"), (
+        "Data quality no longer shows the whole checklist"
+    )
     assert '"/api/health", renderHealth' in _function_source(app_js, "renderDataQuality"), (
         "Data quality no longer shows the service's health in full"
     )
+    service = setup_status._service(False, True, None)
+    assert service.essential and service.state != "ok"
+    assert "cleanupPeriodDays" in service.detail and service.fix == "claude-token-lens install-service"
 
 
 def test_the_overview_compares_like_with_like() -> None:

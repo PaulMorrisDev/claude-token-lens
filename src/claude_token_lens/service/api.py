@@ -2294,6 +2294,30 @@ def make_handler(
             }
         )
 
+    def route_setup_status(store, query, body):
+        """Whether each part of the setup works (``setup_status.py``), for
+        the Overview's Setup card and Data quality's checklist. This
+        dashboard answering is proof it runs, so only whether it starts
+        at logon is asked, through the same cached probe as
+        ``/api/health``."""
+        from .. import setup_status
+
+        items = setup_status.check_setup(
+            options.config_dir,
+            entrypoints=store.entrypoint_counts(),
+            is_registered=_cached_service_registered,
+            running=True,
+            url=None,
+        )
+        return _ok(
+            {
+                "items": [setup_status.to_jsonable(item) for item in items],
+                "done": setup_status.done(items),
+                "needs_attention": len(setup_status.needs_attention(items)),
+                "verdict": setup_status.verdict(items),
+            }
+        )
+
     impact_cache: dict = {"key": None, "data": None, "started": 0.0, "as_of": None, "building": False}
 
     def route_impact(store, query, body):
@@ -2520,6 +2544,7 @@ def make_handler(
         "/api/profile-goals": route_profile_goals,
         "/api/quick-actions": route_quick_actions,
         "/api/setup": route_setup,
+        "/api/setup/status": route_setup_status,
         "/api/capture": route_capture,
         "/api/report.json": _render_report("application/json", lambda model: render_json(model)),
         # Finding 22: charset was missing on the two text-ish renderers
