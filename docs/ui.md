@@ -478,7 +478,9 @@ detail scrolls) and the one picked.
 - **Filters** narrow the list by importance (Do this, Worth considering,
   For your information) and by area (Models, Cache, Context, Agents,
   Habits, Data and settings), each with its count. The area comes from
-  `RULE_AREA` in `page-actions.js`.
+  `RULE_AREA` in `page-actions.js`. Once you've ignored something, a
+  **Show: To do · Ignored** row comes first, and the other filters count
+  what it leaves.
 - **Groups.** A rule that fires per agent type (`ttl-switch`, `spawn-*`
   and the rest) is one item for all of them ("7 agent types are sent
   your CLAUDE.md files every time they start").
@@ -490,8 +492,23 @@ detail scrolls) and the one picked.
   the action, with a table when there is more than one change; in a
   group, picking a row shows that agent's change. Then the fixes as
   command blocks (a `scope: "managed"` card says your organisation's
-  policy sets it), **The numbers behind this** as evidence links, and
-  **The check this answers**.
+  policy sets it), **The numbers behind this** as evidence links,
+  **Not for you?** with **Ignore this recommendation**, and **The check
+  this answers**.
+- **Ignoring** (`ignores.py`, `POST /api/recommendations/ignore`) hides
+  an item in the project on screen, or in every project from the
+  all-projects view, while the profile `apply` last marked active stays
+  active. It shows again when it starts suggesting something else, and
+  its detail then says why ("It shows again because it now suggests
+  120000 (you ignored 100000)"). An ignored item's detail says when,
+  where and under which profile it was ignored, with **Stop ignoring**
+  (**Stop ignoring in every project** when an every-project ignore is
+  seen from one project). Ignored items leave every other list: the
+  Overview's next best actions, the Actions badge, search, "Feeds N
+  actions" and the checks' links (`groupRecommendations` leaves them out
+  unless asked), and **Start from my recommendations**. The Overview's
+  available saving comes from the report's tables, so it still counts
+  them.
 - A notice above the inbox says the figures are provisional while a
   baseline capture window is open. An id the window doesn't have opens
   the first item with a note.

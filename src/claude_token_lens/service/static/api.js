@@ -336,6 +336,8 @@ export function actionIndex() {
       list.push({ id: rec.id, key: rec.key || rec.id, title: title, first: title, slot: slot, members: 1 });
     }
     recs.forEach(function (rec) {
+      // Ignored ones feed nothing on screen: only Actions' Ignored list.
+      if (rec.ignored) return;
       (rec.evidence || []).forEach(function (item) {
         if (!Array.isArray(item) || !item[2]) return;
         var source = String(item[2]);

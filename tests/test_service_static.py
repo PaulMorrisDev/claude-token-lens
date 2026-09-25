@@ -1550,6 +1550,26 @@ def test_the_setup_card_shows_until_every_essential_part_works() -> None:
     assert "cleanupPeriodDays" in service.detail and service.fix == "claude-token-lens install-service"
 
 
+def test_ignored_recommendations_leave_every_list_but_their_own() -> None:
+    """``/api/recommendations`` marks each row ``ignored`` (ignores.py).
+    ``groupRecommendations`` leaves those out unless asked for them, so
+    the Overview, the Actions badge and the checks' links all count what
+    the To do list shows; search and the "Feeds N actions" index skip
+    them too. Only Actions asks for the ignored ones, and says "Ignore",
+    never "Dismiss" (docs/writing-help.md)."""
+    app_js = _app_js()
+    grouping = _function_source(app_js, "groupRecommendations")
+    assert "rec.ignored" in grouping and "opts.ignored" in grouping
+    assert "if (rec.ignored) return;" in _function_source(app_js, "recommendationEntries")
+    assert "if (rec.ignored) return;" in _function_source(app_js, "actionIndex")
+    assert "groupRecommendations(recs, { ignored: true })" in _function_source(app_js, "renderRecommendations")
+    section = _function_source(app_js, "ignoreSection")
+    assert 'postJson(withWindow("/api/recommendations/ignore")' in section
+    assert "state.recommendationPromises = {}" in section
+    assert '"Ignore this recommendation"' in section and "Dismiss" not in section
+    assert "Stop ignoring" in section
+
+
 def test_the_overview_compares_like_with_like() -> None:
     """The Overview's deltas compare /api/summary with /api/summary for
     the period of the same length just before (docs/api.md: store and

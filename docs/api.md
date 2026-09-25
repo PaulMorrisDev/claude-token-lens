@@ -644,6 +644,40 @@ across agent types (the same rule can fire once per subagent type), so
 across two runs of the same corpus. A dashboard link can use it as
 `#/actions/recommendations?id=<key>`.
 
+Each row also says whether you ignored it (`ignores.py`, see
+`POST /api/recommendations/ignore`), for the `project` asked about and
+the profile `apply` last marked active: `ignored` (bool), `ignored_at`
+(ISO-8601, or `null`), `ignored_in` (`"project"`, `"all"` for every
+project, or `null`) and `ignored_before` (`{"ignored_at", "changes":
+[{"agent", "key", "value"}, ...]}` when it was ignored here but now
+suggests something else, so it shows again; else `null`). The list
+itself is never filtered, and `/api/report.json` and the CLI reports
+carry no ignore fields.
+
+### `POST /api/recommendations/ignore`
+
+Ignore recommendations, or stop ignoring them. Query: the same window
+and `project` as `GET /api/recommendations`. With a `project`, the
+ignore applies in that project only; without one, in every project.
+Kept per profile: under the profile `apply <profile>` last marked
+active (`<config_dir>/active-profile`), or `none`.
+
+Body: `{"keys": [str, ...], "ignored": bool}` — 1 to 100 recommendation
+`key`s from this window's list (a rule for several agent types is one
+dashboard item, sent as one request). `400` when the body isn't that
+shape or a key isn't `[a-z0-9._:-]`; `404` when a key isn't in this
+window's list. The fingerprint that decides whether a recommendation
+has changed since (its rule and the changes it suggests, never its
+saving or wording) is worked out by the service from its own list,
+never taken from the request. Stopping removes whichever ignore
+applied, so stopping an every-project ignore from one project's view
+stops it everywhere.
+
+Stored in `<config_dir>/ignored-recommendations.json`.
+
+`data`: `{"keys", "ignored", "active_profile_id"}` (`null` when no
+profile has been applied).
+
 ### `GET /api/diagnostics`
 
 The report's parse-quality counters (`ReportModel.diagnostics`) as one
@@ -673,7 +707,7 @@ the store) plus every user profile written under
 watcher's `_scan_profiles`), each tagged with which of the two it came
 from.
 
-`data`: `{"profiles": [{"id", "name", "source": "catalogue"|"user", "archetype": str|null, "for": [str, ...], "tasks": [str, ...], "updated_at": str|null}, ...], "suggested_profile_id": str|null}`.
+`data`: `{"profiles": [{"id", "name", "source": "catalogue"|"user", "archetype": str|null, "for": [str, ...], "tasks": [str, ...], "updated_at": str|null}, ...], "suggested_profile_id": str|null, "active_profile_id": str|null, "active_profile_name": str|null}`.
 
 A catalogue entry's `archetype`/`for` come straight from its shipped
 TOML document; `tasks` is `for` normalised to the capture task
@@ -686,6 +720,10 @@ API-returned). `updated_at` is `null` for a catalogue entry (nothing to
 timestamp). `suggested_profile_id` is the latest recorded baseline's own
 `suggested_profile` field (`null` if no baseline has been captured yet),
 so the UI can mark that entry in the list without a second round trip.
+`active_profile_id` is the profile `apply <profile>` last marked active
+(`<config_dir>/active-profile`), `null` when none has been; ignored
+recommendations are kept under it. `active_profile_name` is its name
+(its id when it's no longer in the list).
 
 ### `GET /api/profile-schema`
 
@@ -881,7 +919,10 @@ name (`"bugfix"` to `"Bug fix"`, from `capture_catalogue.TASK_LABELS`),
 first with a cheaper setup) and `note` says what was found; other goals
 return `[]`, `{}`, `null` and `null`.
 A candidate is ticked only when the data supports it; the main model is
-never pre-ticked. `tasks` also drafts a cheaper-model candidate (`key`
+never pre-ticked. The goals that start from recommendations
+(`recommendations`, `subagents`, `models`) leave out the ones ignored in
+this `project` under the active profile, unless they now suggest
+something else (`ignores.skip_keys`); so do the quick actions' fixes. `tasks` also drafts a cheaper-model candidate (`key`
 `"model"`, `agent` the subagent type) for each agent type that most
 answered that kind of task, from the Work habits section's
 `habits_agents_by_task` table, vetoed the same way as the `models`

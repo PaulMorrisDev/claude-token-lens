@@ -1259,13 +1259,99 @@ def test_recommendations_route(server):
     assert_privacy(body)
 
 
+def _start_recommending_server(tmp_path, monkeypatch) -> _ServerHandle:
+    """The default ``server`` fixture's 3-turn corpus never clears
+    recommend()'s minimum sample, so this builds a bigger,
+    cache-read-heavy one (same shape as test_recommend_contract.py's),
+    which does."""
+    project_dir = tmp_path / "projects" / "proj-b"
+    project_dir.mkdir(parents=True)
+    write_jsonl(
+        project_dir / "session-b.jsonl",
+        [
+            turn_line(
+                timestamp=f"2026-09-{10 + (i % 15):02d}T12:00:00.000Z",
+                input_tokens=100,
+                output_tokens=50,
+                ephemeral_5m_input_tokens=1000,
+                cache_read_input_tokens=5000,
+            )
+            for i in range(220)
+        ],
+    )
+    return _start_server(tmp_path, monkeypatch, corpus=corpus_mod.load_corpus([project_dir]))
+
+
+def test_ignoring_a_recommendation_marks_its_row_and_can_be_undone(tmp_path, monkeypatch):
+    handle = _start_recommending_server(tmp_path, monkeypatch)
+    try:
+        _resp, body = handle.get_json("/api/recommendations")
+        rows = body["data"]
+        assert rows and all(row["ignored"] is False and row["ignored_before"] is None for row in rows)
+        key = rows[0]["key"]
+
+        resp, body = handle.post_json("/api/recommendations/ignore", {"keys": [key], "ignored": True})
+        assert resp.status == 200
+        assert body["data"] == {"keys": [key], "ignored": True, "active_profile_id": None}
+        _resp, body = handle.get_json("/api/recommendations")
+        row = next(r for r in body["data"] if r["key"] == key)
+        assert row["ignored"] is True and row["ignored_in"] == "all" and row["ignored_at"]
+        assert sum(r["ignored"] for r in body["data"]) == 1
+        # The report itself stays complete.
+        _resp, raw = handle.request("GET", "/api/report.json")
+        assert key in raw.decode("utf-8")
+
+        # Kept under the profile apply last marked active.
+        (handle.options.config_dir / "active-profile").write_text("interactive-chat", encoding="utf-8")
+        _resp, body = handle.get_json("/api/recommendations")
+        assert not any(r["ignored"] for r in body["data"])
+        _resp, body = handle.get_json("/api/profiles")
+        assert body["data"]["active_profile_id"] == "interactive-chat"
+        assert body["data"]["active_profile_name"]
+        (handle.options.config_dir / "active-profile").unlink()
+        _resp, body = handle.get_json("/api/profiles")
+        assert body["data"]["active_profile_id"] is None and body["data"]["active_profile_name"] is None
+
+        resp, body = handle.post_json("/api/recommendations/ignore", {"keys": [key], "ignored": False})
+        assert resp.status == 200
+        _resp, body = handle.get_json("/api/recommendations")
+        assert not any(r["ignored"] for r in body["data"])
+    finally:
+        handle.close()
+
+
+def test_ignore_checks_what_it_is_sent(tmp_path, monkeypatch):
+    handle = _start_recommending_server(tmp_path, monkeypatch)
+    try:
+        _resp, body = handle.get_json("/api/recommendations")
+        key = body["data"][0]["key"]
+        for bad in (
+            [],
+            {"keys": key, "ignored": True},
+            {"keys": [], "ignored": True},
+            {"keys": ["../etc/passwd"], "ignored": True},
+            {"keys": [key], "ignored": "yes"},
+            {"keys": [key] * 101, "ignored": True},
+        ):
+            resp, body = handle.post_json("/api/recommendations/ignore", bad)
+            assert resp.status == 400, bad
+        resp, body = handle.post_json("/api/recommendations/ignore", {"keys": ["no-such-rule"], "ignored": True})
+        assert resp.status == 404
+        resp, _raw = handle.request(
+            "POST",
+            "/api/recommendations/ignore",
+            body={"keys": [key], "ignored": True},
+            headers={"Sec-Fetch-Site": "cross-site"},
+        )
+        assert resp.status == 403
+        assert not (handle.options.config_dir / "ignored-recommendations.json").exists()
+    finally:
+        handle.close()
+
+
 def test_recommendations_carry_a_key_and_saving_usd(tmp_path, monkeypatch):
     """Additive (Task Group B): every recommendation gets a deterministic
-    key and its saving as a plain number, alongside the existing fields.
-    The default ``server`` fixture's 3-turn corpus never clears
-    recommend()'s minimum sample, so this builds its own bigger,
-    cache-read-heavy one (same shape as
-    test_recommend_contract.py's), which does."""
+    key and its saving as a plain number, alongside the existing fields."""
     project_dir = tmp_path / "projects" / "proj-b"
     project_dir.mkdir(parents=True)
     write_jsonl(

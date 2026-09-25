@@ -17,7 +17,8 @@ subcommands and the `/api/profiles*`, `/api/profile-schema` and
 1. Pick a goal: start from my recommendations, spend less on subagents,
    cheaper models where it's safe, cheaper cache, shorter conversations,
    less thinking where it isn't needed, a profile for one kind of task,
-   or start from my current settings (`profiles/goals.py`).
+   or start from my current settings (`profiles/goals.py`). A
+   recommendation you ignored on Actions stays out of the draft.
 2. Tick the changes you want. Each row shows the setting, its value now
    and after, the estimated effect over the window, the evidence and the
    trade-off. A change is ticked for you only when your own sessions

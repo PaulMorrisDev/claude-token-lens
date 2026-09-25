@@ -150,8 +150,13 @@ def _share(saving, base) -> float:
     return 100.0 * saving / base if base > 0 else 0.0
 
 
-def _from_recommendations(draft: _Draft, recommendations, keys: set[str] | None = None, *, subagents_only=False):
+def _from_recommendations(
+    draft: _Draft, recommendations, keys: set[str] | None = None, *, subagents_only=False, skip_keys=frozenset()
+):
     for rec in recommendations or ():
+        # Ignored on the dashboard: left out of any profile drafted from them.
+        if getattr(rec, "key", "") in skip_keys:
+            continue
         for change in getattr(rec, "changes", ()) or ():
             if change.value is None or (keys is not None and change.key not in keys):
                 continue
@@ -621,12 +626,15 @@ def draft(
     period: str = "",
     task: str | None = None,
     effort_level_env_set: bool = False,
+    skip_keys: frozenset[str] = frozenset(),
 ) -> dict:
     """The candidate changes for ``goal_id``, each with its what-if row.
     Raises ``KeyError`` for an unknown goal. ``task``: for the ``tasks``
     goal, the kind of task to draft for (the first with a cheaper setup
     when it's missing or not in the data). ``effort_level_env_set``:
-    PROF-03, see ``_Draft``."""
+    PROF-03, see ``_Draft``. ``skip_keys``: the keys of recommendations
+    ignored on the dashboard (``ignores.skip_keys``), whose changes are
+    left out."""
     goal = next(g for g in GOALS if g.id == goal_id) if goal_id in GOAL_IDS else None
     if goal is None:
         raise KeyError(goal_id)
@@ -643,16 +651,16 @@ def draft(
     else:
         task = None
     if goal.id == "recommendations":
-        _from_recommendations(d, recommendations)
+        _from_recommendations(d, recommendations, skip_keys=skip_keys)
     elif goal.id == "subagents":
         _from_recommendations(d, recommendations, {"model", "omitClaudeMd", "effort", "experimental.cacheTtl"},
-                              subagents_only=True)
+                              subagents_only=True, skip_keys=skip_keys)
         _models(d, tables, subagents_only=True)
         _thinking(d, tables, subagents_only=True)
         _cache(d, tables, subagents_only=True)
         _omit_claude_md(d, tables)
     elif goal.id == "models":
-        _from_recommendations(d, recommendations, {"model"})
+        _from_recommendations(d, recommendations, {"model"}, skip_keys=skip_keys)
         _models(d, tables, subagents_only=False)
     elif goal.id == "cache":
         _cache(d, tables, subagents_only=False)

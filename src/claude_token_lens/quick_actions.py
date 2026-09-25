@@ -37,6 +37,9 @@ class Context:
     config_dir: Path
     effective: dict
     effective_agents: dict
+    #: Recommendations ignored on the dashboard (``ignores.py``): the
+    #: drafted fixes leave their changes out.
+    skip_keys: frozenset = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +156,13 @@ def _merge_fixes(*groups: list[dict]) -> list[dict]:
 
 def _goal(ctx: Context, goal_id: str) -> dict:
     return goals.draft(
-        goal_id, ctx.model, ctx.units, effective=ctx.effective, effective_agents=ctx.effective_agents, period=ctx.period
+        goal_id,
+        ctx.model,
+        ctx.units,
+        effective=ctx.effective,
+        effective_agents=ctx.effective_agents,
+        period=ctx.period,
+        skip_keys=ctx.skip_keys,
     )
 
 

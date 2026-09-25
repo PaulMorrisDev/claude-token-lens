@@ -90,7 +90,6 @@ project's convention -- see e.g. ``report.py``'s own module docstring):
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import html
 import ipaddress
@@ -112,7 +111,7 @@ from zoneinfo import ZoneInfo
 
 from .. import __version__ as _TOOL_VERSION
 from .. import baseline as baseline_mod
-from .. import capture_catalogue, helptext, hook_health, invocation
+from .. import capture_catalogue, helptext, hook_health, ignores, invocation
 from .. import snapshots as snapshots_mod
 from ..config import CAPTURE_SAMPLES, ConfigError, load_config, load_session_overrides, set_capture
 from ..pricing import PricingError, cache_read_savings_usd, load_pricing
@@ -336,6 +335,12 @@ _PROFILE_RE = re.compile(r"^/api/profiles/([^/]+)$")
 _SESSION_EXPLAIN_RE = re.compile(r"^/api/session/([^/]+)/explain$")
 _CLAUDE_MD_RE = re.compile(r"^/api/claude-md/([0-9a-f]{16})$")
 _QUICK_ACTION_RE = re.compile(r"^/api/quick-actions/([a-z0-9-]+)$")
+#: A recommendation's key (``Recommendation.key``), as the ignore route
+#: accepts it.
+_REC_KEY_RE = re.compile(r"^[a-z0-9._:-]{1,200}$")
+#: At most this many keys in one ignore request (a rule for many agent
+#: types is one item on the dashboard, and one request).
+_MAX_IGNORE_KEYS = 100
 
 #: ``profiles.diff``'s own ``_VALID_SCOPES`` -- duplicated rather than
 #: imported (that name is private) so a scope query param can be
@@ -1532,10 +1537,19 @@ def make_handler(
             if isinstance(record, dict):
                 suggested_profile_id = record.get("suggested_profile")
 
+        # The profile `apply <profile>` last marked active: ignored
+        # recommendations are kept per profile.
+        active_id = ignores.active_profile(options.config_dir)
+        active_name = None
+        if active_id != ignores.NO_PROFILE:
+            names = {entry["id"]: entry["name"] for entry in catalogue_entries + user_entries}
+            active_name = names.get(active_id, active_id)
         return _ok(
             {
                 "profiles": catalogue_entries + user_entries,
                 "suggested_profile_id": suggested_profile_id,
+                "active_profile_id": None if active_id == ignores.NO_PROFILE else active_id,
+                "active_profile_name": active_name,
             }
         )
 
@@ -2139,6 +2153,7 @@ def make_handler(
                 period=_period_text(*window, name=query.get("window")),
                 task=task,
                 effort_level_env_set=effort_level_env_set,
+                skip_keys=_ignored_keys(model, query),
             )
         )
 
@@ -2250,6 +2265,7 @@ def make_handler(
             config_dir=Path(options.config_dir),
             effective=effective,
             effective_agents=effective_agents,
+            skip_keys=_ignored_keys(model, query),
         )
 
     def route_quick_actions(store, query, body):
@@ -2466,7 +2482,6 @@ def make_handler(
 
     def _compute_backtest(key):
         from .. import backtest as backtest_mod
-        from .. import change_points
         from . import rebuild
 
         started = time.monotonic()
@@ -2492,6 +2507,12 @@ def make_handler(
                 backtest_cache.update(key=key, data=data, started=started, as_of=as_of)
         return data
 
+    def _ignored_keys(model, query) -> frozenset[str]:
+        """The keys of this report's recommendations ignored in the
+        project asked about (as the dashboard names it), under the active
+        profile."""
+        return ignores.skip_keys(options.config_dir, model.recommendations, _str_query(query, "project"))
+
     def route_recommendations(store, query, body):
         window, err = _window_query(query)
         if err is not None:
@@ -2500,7 +2521,56 @@ def make_handler(
         if err is not None:
             return err
         model = _get_report_model(*window, project)
-        return _ok([to_jsonable(rec) for rec in model.recommendations])
+        rows = [to_jsonable(rec) for rec in model.recommendations]
+        # Each row says whether it's ignored here (ignores.py); the cached
+        # report itself is never changed, so /api/report.json and the CLI
+        # reports stay complete.
+        marks = ignores.annotate(
+            model.recommendations,
+            ignores.load(options.config_dir),
+            ignores.active_profile(options.config_dir),
+            _str_query(query, "project"),
+        )
+        for row, mark in zip(rows, marks):
+            row.update(mark)
+        return _ok(rows)
+
+    def route_recommendations_ignore(store, query, body):
+        """Ignore recommendations, or stop ignoring them: ``{"keys":
+        [...], "ignored": true|false}``. Each key must be a recommendation
+        in this window and project's report; the fingerprint that decides
+        whether it has changed since is worked out here, never taken from
+        the request."""
+        if not isinstance(body, dict):
+            return _bad_request("request body must be a JSON object")
+        keys = body.get("keys")
+        if not isinstance(keys, list) or not keys or len(keys) > _MAX_IGNORE_KEYS:
+            return _bad_request(f"'keys' must be a list of 1 to {_MAX_IGNORE_KEYS} recommendation keys")
+        if not all(isinstance(key, str) and _REC_KEY_RE.match(key) for key in keys):
+            return _bad_request("each key must be a recommendation key: a-z, 0-9, '.', '_', ':' or '-'")
+        ignored = body.get("ignored")
+        if not isinstance(ignored, bool):
+            return _bad_request("'ignored' must be true or false")
+        window, err = _window_query(query)
+        if err is not None:
+            return err
+        project, err = _project_query(query)
+        if err is not None:
+            return err
+        model = _get_report_model(*window, project)
+        by_key = {rec.key: rec for rec in model.recommendations}
+        missing = [key for key in keys if key not in by_key]
+        if missing:
+            return _not_found("no recommendation with that key in this window")
+        recs = [by_key[key] for key in dict.fromkeys(keys)]
+        profile = ignores.set_ignored(options.config_dir, recs, ignored=ignored, project=_str_query(query, "project"))
+        return _ok(
+            {
+                "keys": [rec.key for rec in recs],
+                "ignored": ignored,
+                "active_profile_id": None if profile == ignores.NO_PROFILE else profile,
+            }
+        )
 
     def _render_report(content_type: str, render: Callable[[object], str]):
         def _route(store, query, body):
@@ -2568,6 +2638,7 @@ def make_handler(
         "/api/profiles/from-current": route_profiles_from_current,
         "/api/whatif": route_whatif,
         "/api/predictions/seen": route_predictions_seen,
+        "/api/recommendations/ignore": route_recommendations_ignore,
     }
     post_patterns: tuple[tuple[re.Pattern, Callable], ...] = (
         (_SESSION_TAGS_RE, route_set_tag),

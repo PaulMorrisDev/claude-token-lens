@@ -38,6 +38,15 @@ def test_recommendations_goal_ticks_everything_but_the_main_model():
     assert out["profile"] == {"settings": {}, "agents": {"reviewer": {"model": "sonnet"}}}
 
 
+def test_ignored_recommendations_stay_out_of_the_draft():
+    kept = NS(key="kept", title="Kept", changes=[_change("model", "reviewer", "sonnet")])
+    ignored = NS(key="ignored", title="Ignored", changes=[_change("model", "writer", "sonnet")])
+    for goal in ("recommendations", "subagents", "models"):
+        out = goals.draft(goal, _report([kept, ignored]), UNITS, skip_keys=frozenset({"ignored"}))
+        agents = {c["agent"] for c in out["candidates"] if c.get("evidence", "").startswith("Recommended")}
+        assert "writer" not in agents and "reviewer" in agents, goal
+
+
 def test_models_goal_reads_the_cheapest_alternative_per_agent():
     model = _report()
     [table] = model.sections[0].tables
