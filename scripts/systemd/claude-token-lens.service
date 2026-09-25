@@ -23,7 +23,9 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/claude-token-lens serve --projects-root %h/.claude/projects --config-dir %h/.claude/token-lens
+# --exit-on-code-change: after an update lands without a restart, serve
+# exits with status 3 and Restart=on-failure starts it on the new code.
+ExecStart=%h/.local/bin/claude-token-lens serve --projects-root %h/.claude/projects --config-dir %h/.claude/token-lens --exit-on-code-change
 Restart=on-failure
 RestartSec=5
 

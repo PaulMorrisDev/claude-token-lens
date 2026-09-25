@@ -36,6 +36,14 @@ Contract notes:
   ``monthly_job.MonthlyReportJob``: last month's report is written into
   ``DIR`` when missing, checked at startup and hourly on a background
   thread (once, in line, under ``--once``).
+- A running ``serve`` fingerprints this package's files at start
+  (``codewatch.CodeWatch``) and checks them after every watcher tick;
+  ``/api/health`` turns ``"outdated"`` once they change on disk. With
+  ``ServeOptions.exit_on_code_change`` (``--exit-on-code-change``, which
+  ``install-service`` registers) it also exits with
+  :data:`EXIT_CODE_CHANGED` once the change has settled, so the service
+  starts again on the new code (``installer.relaunch_after_exit``); where
+  that can't be arranged it stays up.
 """
 
 from __future__ import annotations
@@ -50,6 +58,8 @@ from .. import __version__
 from .. import hook_health
 from .. import parse as parse_mod
 from ..cache import DigestCache
+from ..installer import relaunch_after_exit
+from .codewatch import CodeWatch
 from .contracts import ServeOptions
 from .store import Store
 from .storelock import StoreLock, StoreLockedError
@@ -66,6 +76,13 @@ _LOOPBACK_ADDRESSES = {"127.0.0.1", "::1", "localhost"}
 #: lock to let go before refusing: long enough for ``install-service``'s
 #: stop-then-start to hand over, short enough to fail visibly otherwise.
 _LOCK_WAIT_S = 10.0
+
+#: ``serve --exit-on-code-change``'s exit status once the package's code
+#: changed on disk. Non-zero, so systemd's ``Restart=on-failure`` starts
+#: it again (launchd's ``KeepAlive`` does whatever the status); Task
+#: Scheduler restarts nothing by exit status, so on Windows
+#: ``installer.relaunch_after_exit`` starts the task again instead.
+EXIT_CODE_CHANGED = 3
 
 
 def _is_loopback(bind: str) -> bool:
@@ -136,7 +153,9 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
     (or, with ``once=True``, run a single watcher tick and return).
     Returns the process exit code: ``0`` on a clean stop, ``1`` if the
     store is in use by another ``serve`` or the port can't be bound,
-    ``2`` if binding a non-loopback ``options.bind`` was refused.
+    ``2`` if binding a non-loopback ``options.bind`` was refused,
+    :data:`EXIT_CODE_CHANGED` when ``options.exit_on_code_change`` stopped
+    it because the package's code changed on disk.
     """
     if not once and not allow_remote and not _is_loopback(options.bind):
         print(
@@ -161,6 +180,10 @@ def run(options: ServeOptions, *, once: bool = False, allow_remote: bool = False
 
 
 def _run_locked(options: ServeOptions, store_path: Path, lock: StoreLock, *, once: bool) -> int:
+    # First, so the fingerprint is of the code this process has loaded
+    # (see codewatch.py). --once exits before an update could matter.
+    code_watch = None if once else CodeWatch()
+
     # ROB-P7: pick up a hook file this tool itself changed since it was
     # last installed (a pip upgrade that ran without --no-service, or one
     # 'update' couldn't reach) -- cheap (a few small files hashed, no
@@ -200,7 +223,33 @@ def _run_locked(options: ServeOptions, store_path: Path, lock: StoreLock, *, onc
     # never mid-run), the same "sweep it where the cache is first opened
     # for real work" placement _load_corpus_for_args uses for the CLI.
     cache.prune_stale_versions()
-    watcher = FileWatcher(store, options, cache=cache, salt=salt)
+
+    # After every tick: has the package's code changed on disk? With
+    # --exit-on-code-change, stop once the change has settled and the
+    # service is sure to start again (else stay up: /api/health says to
+    # restart), from this (the watcher's) thread, which may call
+    # server.shutdown(). Everything this needs was imported at start: a
+    # lazy import now would load the changed code.
+    exit_code = 0
+    stay_up = False
+
+    def _after_tick() -> None:
+        nonlocal exit_code, stay_up
+        code_watch.check()
+        if not options.exit_on_code_change or exit_code or stay_up or not code_watch.settled():
+            return
+        if not relaunch_after_exit(os.getpid()):
+            stay_up = True
+            return
+        exit_code = EXIT_CODE_CHANGED
+        print(
+            "claude-token-lens serve: this package's code changed on disk; exiting "
+            f"(status {EXIT_CODE_CHANGED}) so the service starts again on the new code.",
+            file=sys.stderr,
+        )
+        server.shutdown()
+
+    watcher = FileWatcher(store, options, cache=cache, salt=salt, after_tick=None if once else _after_tick)
 
     # serve --monthly-report DIR: write last month's report into DIR when
     # it is missing (service/monthly_job.py). --once checks once, in
@@ -249,6 +298,8 @@ def _run_locked(options: ServeOptions, store_path: Path, lock: StoreLock, *, onc
         watcher_stats=lambda: watcher.last_stats,
         watcher_state=watcher.state,
         service_registered=_probe_service_registered,
+        code_watch=code_watch,
+        restarts_itself=lambda: options.exit_on_code_change and not stay_up,
     )
     # Bind before the first scan: the dashboard answers (and shows the
     # scan's progress) straight away instead of refusing connections for
@@ -292,7 +343,7 @@ def _run_locked(options: ServeOptions, store_path: Path, lock: StoreLock, *, onc
         watcher.stop()
         store.close()
 
-    return 0
+    return exit_code
 
 
-__all__ = ["run", "STORE_FILENAME", "locked_message", "store_path_for"]
+__all__ = ["run", "EXIT_CODE_CHANGED", "STORE_FILENAME", "locked_message", "store_path_for"]

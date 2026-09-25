@@ -93,6 +93,12 @@ class ServeOptions:
     #: beside the logon service) points this elsewhere so the two never
     #: share, and lock, one database.
     store_path: Path | None = None
+    #: ``serve --exit-on-code-change``: once this package's own files
+    #: change on disk (``codewatch.CodeWatch``), exit with
+    #: ``serve.EXIT_CODE_CHANGED`` so the registered service starts
+    #: ``serve`` again on the new code. ``install-service`` registers it;
+    #: without it, ``serve`` only reports the change.
+    exit_on_code_change: bool = False
 
 
 @dataclass(slots=True)
@@ -187,6 +193,28 @@ class WatcherState:
     phase: str | None = None
     done: int = 0
     total: int = 0
+
+
+@dataclass(slots=True)
+class CodeState:
+    """Whether this package's files on disk still match the ones the
+    running ``serve`` loaded (``codewatch.CodeWatch``). ``/api/health``
+    reports it as ``code`` and turns ``status`` to ``"outdated"`` once
+    they differ.
+    """
+
+    #: The files have differed from the ones loaded at start. Stays
+    #: ``True`` once set, since a lazy import may already have loaded
+    #: new code.
+    changed: bool = False
+    #: When the difference was first seen.
+    changed_at: str | None = None
+    #: ``__version__`` in the package's ``__init__.py`` on disk (``None``
+    #: when it can't be read).
+    version_on_disk: str | None = None
+    #: A short fingerprint of the code this process loaded: a different
+    #: ``id`` after a restart means the service now runs other code.
+    id: str = ""
 
 
 @dataclass(slots=True)

@@ -65,7 +65,10 @@ run *before* doing either.
   first stops a copy the task already started and ends with
   `Start-ScheduledTask`, so the dashboard starts straight away, and
   re-running `install-service` after an update switches it to the new
-  code (`update` does both steps). Folders in `config.toml`'s
+  code (`update` does both steps). An update that lands without either
+  (an editable install after a pull) is caught by `serve
+  --exit-on-code-change`, which every platform's plan registers; see
+  "Updating under a running `serve`" below. Folders in `config.toml`'s
   `extra_projects_roots`, such as a WSL distro's, are not written into
   the task: `serve` reads them each time it starts. This is the same task
   Path 1 below registers by hand, with one difference: there is no
@@ -150,7 +153,7 @@ powershell -ExecutionPolicy Bypass -File scripts\windows\Register-TokenLensTask.
 Registers a Scheduled Task, triggered at logon, running:
 
 ```
-pythonw -m claude_token_lens serve --projects-root "$env:USERPROFILE\.claude\projects" --config-dir "$env:USERPROFILE\.claude\token-lens"
+pythonw -m claude_token_lens serve --projects-root "$env:USERPROFILE\.claude\projects" --config-dir "$env:USERPROFILE\.claude\token-lens" --exit-on-code-change
 ```
 
 - **Runs as the logged-in user, `-RunLevel Limited`** — no admin
@@ -174,6 +177,11 @@ pythonw -m claude_token_lens serve --projects-root "$env:USERPROFILE\.claude\pro
 - `-BillingMode {api,subscription}` forwards `--billing-mode` (see
   `docs/api.md`'s CLI flags section) if you want it set at
   registration time rather than via `config.toml`.
+- **`--exit-on-code-change`** starts the task again on new code after
+  an update lands without a restart (see "Updating under a running
+  `serve`" below). That only happens under the default `-TaskName
+  ClaudeTokenLens`; under another name the dashboard only reports the
+  change.
 
 To remove it and stop any running instance:
 
@@ -204,8 +212,11 @@ systemctl --user enable --now claude-token-lens.service
 ```
 
 Runs `~/.local/bin/claude-token-lens serve --projects-root
-~/.claude/projects --config-dir ~/.claude/token-lens` as your own user,
-restarting on failure (`Restart=on-failure`). That `ExecStart` path
+~/.claude/projects --config-dir ~/.claude/token-lens
+--exit-on-code-change` as your own user, restarting on failure
+(`Restart=on-failure`), which also covers `serve` exiting with status
+`3` after an update (see "Updating under a running `serve`" below).
+That `ExecStart` path
 assumes a `pip install --user`; edit it if `claude-token-lens` lives
 elsewhere (`command -v claude-token-lens`), or use `install-service`,
 which fills in the real interpreter for you.
@@ -473,6 +484,54 @@ that actually delete a row.
   hands over cleanly. To run a second copy beside the service (a dev
   checkout, say), give it its own database with `--store PATH`; it
   still shares `--config-dir`'s settings and parse cache.
+
+## Updating under a running `serve`
+
+`update` and `install-service` restart the service on the new code. An
+update that lands any other way does not: with an editable install
+(`pip install -e .`), `serve` runs straight from the checkout, so a
+`git pull` or a release merged there changes the files under the
+running process. The modules it already loaded stay old, and a module
+it imports later, when a route first needs it, comes from the new
+files. The two don't fit, and those routes fail with an `ImportError`.
+
+`serve` checks for this after every watcher tick
+(`service/codewatch.py`). It compares the package's modules and data
+files by name, size and modification time, and hashes their contents
+only when those moved, so the check costs a few milliseconds and a
+checkout switched away and back is no change. Once the files differ
+from the loaded code:
+
+- `GET /api/health` reports `status: "outdated"` and a `code` block
+  (see [docs/api.md](api.md#get-apihealth)), and the dashboard's banner
+  says the code changed on disk and to run
+  `python -m claude_token_lens install-service`.
+- A route that fails to import answers `503 restart_needed`, saying to
+  restart, instead of `500 internal_error`.
+- With `serve --exit-on-code-change` (which `install-service` and both
+  scripts register), `serve` exits with status `3` once the change has
+  settled (one tick with no further writes, so a pull still in progress
+  isn't caught half-way). The service then starts again on the new
+  code:
+  - **systemd:** `Restart=on-failure` restarts it five seconds later.
+  - **launchd:** `KeepAlive` restarts it.
+  - **Task Scheduler:** its restart setting only covers a task that
+    fails to start, not one that exits with an error. Tested on
+    Windows 11, a task whose action exited with status `3` or `-3` was
+    not run again. So before exiting, `serve` starts a hidden
+    PowerShell helper that waits for it to exit, then runs
+    `Start-ScheduledTask -TaskName ClaudeTokenLens`. `Stop-ScheduledTask`
+    and `uninstall-service` still stop it as before. When no
+    `ClaudeTokenLens` task is registered (you started `serve` by hand,
+    or registered it under another name), exiting would leave no
+    dashboard at all, so `serve` stays up and only reports the change.
+
+  Once it is back, an open dashboard tab offers to reload the page, so
+  its scripts match the new code too.
+
+A task registered before this flag existed doesn't have it: run
+`install-service` once more to add it. Until then the banner still
+says what to do.
 
 ## Re-parsing after a parser upgrade
 

@@ -43,7 +43,7 @@ from claude_token_lens.profiles import schema as profile_schema
 from claude_token_lens.render.json_out import render_json
 from claude_token_lens.report import build_report
 from claude_token_lens.service import api as service_api
-from claude_token_lens.service.contracts import ServeOptions, WatcherState, WatcherStats
+from claude_token_lens.service.contracts import CodeState, ServeOptions, WatcherState, WatcherStats
 from claude_token_lens.service.store import Store
 from claude_token_lens.snapshots import Snapshot
 
@@ -379,6 +379,8 @@ def test_health(server):
     # No watcher_state wired up: nothing to judge the scanner by.
     assert body["data"]["message"] is None
     assert body["data"]["scan"] is None
+    # No code_watch wired up: whether the code changed is unknown.
+    assert body["data"]["code"] is None
     assert_privacy(body)
     _assert_no_leak(json.dumps(body).encode("utf-8"))
 
@@ -450,6 +452,93 @@ def test_health_status_table(state, expected):
     status, message = service_api._health_status(None, state, poll_interval_s=30.0, now=_NOW)
     assert status == expected
     assert (message is None) == (expected == "ok")
+
+
+_CHANGED = CodeState(changed=True, changed_at="2026-09-23T11:58:00Z", version_on_disk="9.9.9", id="0123456789ab")
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        None,
+        WatcherState(running=True, last_success_at="2026-09-23T11:59:30Z"),
+        WatcherState(running=True, scanning=True, phase="reading", done=1, total=9),
+        WatcherState(running=False),
+    ],
+)
+def test_health_outdated_comes_before_every_other_status(state):
+    """Only a restart helps once the code changed on disk, so that is
+    what health says, whatever the scanner is doing."""
+    status, message = service_api._health_status(None, state, poll_interval_s=30.0, now=_NOW, code=_CHANGED)
+    assert status == "outdated"
+    assert "changed on disk at 11:58 UTC" in message
+    assert f"({service_api._TOOL_VERSION} is running, 9.9.9 is on disk)" in message
+    assert "claude-token-lens install-service" in message
+
+
+def test_health_outdated_says_it_restarts_by_itself_with_exit_on_code_change():
+    same_version = CodeState(changed=True, changed_at="2026-09-23T11:58:00Z", version_on_disk=service_api._TOOL_VERSION)
+    _status, message = service_api._health_status(
+        None, None, poll_interval_s=30.0, now=_NOW, code=same_version, restarts_itself=True
+    )
+    assert "restarts by itself" in message
+    assert "claude-token-lens install-service" in message
+    assert "is on disk" not in message  # no version to tell apart
+
+
+def test_health_unchanged_code_leaves_the_status_alone():
+    state = WatcherState(running=True, last_success_at="2026-09-23T11:59:30Z")
+    unchanged = CodeState(version_on_disk=service_api._TOOL_VERSION, id="0123456789ab")
+    assert service_api._health_status(None, state, poll_interval_s=30.0, now=_NOW, code=unchanged) == ("ok", None)
+
+
+class _FakeCodeWatch:
+    """``codewatch.CodeWatch``'s surface for ``make_handler``, counting checks."""
+
+    def __init__(self, state: CodeState):
+        self.current = state
+        self.checks = 0
+
+    def state(self) -> CodeState:
+        return self.current
+
+    def check(self) -> CodeState:
+        self.checks += 1
+        return self.current
+
+
+def test_health_reports_the_code_block_and_outdated_status(tmp_path, monkeypatch):
+    handle = _start_server(tmp_path, monkeypatch, code_watch=_FakeCodeWatch(_CHANGED))
+    try:
+        resp, body = handle.get_json("/api/health")
+        assert resp.status == 200
+        data = body["data"]
+        assert data["status"] == "outdated"
+        assert data["code"] == {
+            "changed": True,
+            "changed_at": "2026-09-23T11:58:00Z",
+            "version_on_disk": "9.9.9",
+            "id": "0123456789ab",
+        }
+        assert "install-service" in data["message"]
+        assert_privacy(body)
+    finally:
+        handle.close()
+        handle.store.close()
+
+
+def test_health_still_answers_when_the_capture_block_cannot_be_worked_out(server, monkeypatch):
+    """/api/health is how a code change on disk is reported, so a part of
+    it that fails (here, as a changed module might) must not take the
+    whole route down."""
+
+    def _broken(*_args, **_kwargs):
+        raise AttributeError("module has no attribute 'config_block'")
+
+    monkeypatch.setattr(service_api, "load_config", _broken)
+    resp, body = server.get_json("/api/health")
+    assert resp.status == 200
+    assert body["data"]["capture"] is None
 
 
 def test_health_stale_threshold_grows_with_a_long_poll_interval():
@@ -1854,6 +1943,59 @@ def test_unexpected_exception_becomes_500_without_traceback(server, monkeypatch)
 
 def _raise_runtime_error(*args, **kwargs):
     raise RuntimeError("boom: something unexpected happened")
+
+
+def _raise_import_error(*args, **kwargs):
+    # As a lazy import of a module changed on disk would: the message
+    # names a local path, which must never reach the response.
+    raise ImportError(
+        "cannot import name 'build_actions' from 'claude_token_lens.quick_actions' "
+        "(C:\\Users\\someone\\claude_token_lens\\quick_actions.py)"
+    )
+
+
+@pytest.mark.parametrize("error", [ImportError, ModuleNotFoundError])
+def test_import_error_becomes_503_restart_needed(tmp_path, monkeypatch, error):
+    """A route that fails to import code changed on disk (the running
+    process holding the old modules) says to restart, not 'internal
+    error'; the exception's text, which names a path, stays out."""
+
+    def _raise(*_args, **_kwargs):
+        if error is ImportError:
+            _raise_import_error()
+        raise ModuleNotFoundError("No module named 'claude_token_lens.report_v2' (C:\\Users\\someone)")
+
+    watch = _FakeCodeWatch(_CHANGED)
+    handle = _start_server(tmp_path, monkeypatch, code_watch=watch)
+    try:
+        monkeypatch.setattr(handle.store, "schema_version", _raise)
+        resp, body = handle.get_json("/api/health")
+        assert resp.status == 503
+        assert body["ok"] is False
+        assert body["error"]["code"] == "restart_needed"
+        message = body["error"]["message"]
+        assert "changed on disk since the dashboard started" in message
+        assert f"({error.__name__})" in message
+        assert "claude-token-lens install-service" in message
+        assert "someone" not in message and "\\" not in message
+        # The route asks the watch to look now, not at the next scan.
+        assert watch.checks == 1
+        assert_privacy(body)
+    finally:
+        handle.close()
+        handle.store.close()
+
+
+def test_import_error_without_a_seen_change_still_says_restart(server, monkeypatch):
+    monkeypatch.setattr(server.store, "schema_version", _raise_import_error)
+    resp, body = server.get_json("/api/health")
+    assert resp.status == 503
+    assert body["error"]["code"] == "restart_needed"
+    message = body["error"]["message"]
+    assert "couldn't be loaded (ImportError)" in message
+    assert "claude-token-lens install-service" in message
+    assert "reinstall Token Lens" in message
+    assert "someone" not in message
 
 
 __all__: list[str] = []

@@ -222,4 +222,11 @@ def test_systemd_unit_runs_the_real_serve_command() -> None:
     assert "--config-dir" in text
 
 
+@pytest.mark.parametrize("path", [REGISTER_SCRIPT, SYSTEMD_UNIT])
+def test_the_service_restarts_on_a_code_change(path: Path) -> None:
+    """Matches install-service: an update that lands without a restart
+    brings the service back up on the new code."""
+    assert "--exit-on-code-change" in _text(path)
+
+
 __all__: list[str] = []

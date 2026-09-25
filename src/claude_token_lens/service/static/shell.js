@@ -32,9 +32,14 @@ export function renderHealth(health, container) {
   if (health.message) {
     container.appendChild(callout({ tone: health.status === "starting" ? "info" : "critical", text: health.message }));
   }
+  var code = health.code;
   var facts = [
     ["Status", HEALTH_LABELS[health.status] || health.status || "Unknown"],
     ["Version", health.version || "-"],
+    [
+      "Code on disk",
+      !code ? "-" : code.changed ? "Changed " + shortTs(code.changed_at) + (code.version_on_disk ? ", version " + code.version_on_disk : "") : "Same as running",
+    ],
     ["Database version", health.schema_version === undefined ? "-" : String(health.schema_version)],
     ["Last scan finished", scan.last_success_at ? shortTs(scan.last_success_at) : watcher.finished_at ? shortTs(watcher.finished_at) : "Not yet"],
     ["Transcript files checked", thousands(watcher.files_scanned || 0)],
@@ -71,12 +76,13 @@ var HEALTH_LABELS = {
   starting: "Scanning your history",
   degraded: "Last scan failed",
   stale: "Not updating",
+  outdated: "Restart needed",
   unreachable: "Can't reach the service",
 };
 
 // The dot beside the label, by status token. The label always says the
 // same thing in words.
-var HEALTH_TONES = { ok: "good", starting: "accent", degraded: "serious", stale: "warn", unreachable: "critical" };
+var HEALTH_TONES = { ok: "good", starting: "accent", degraded: "serious", stale: "warn", outdated: "serious", unreachable: "critical" };
 
 function captureStatusText(block) {
   if (!block) return "";
@@ -168,10 +174,13 @@ figures.notify = renderStatusLine;
 // ======================================================================
 
 // What /api/health's status means when it is not "ok" (first scan in
-// progress, a failed scan, a scanner that has stopped) and, once a scan
-// that was running when the page drew its figures finishes, a way to
-// redraw them (also offered in the status line).
-var healthPoll = { status: null, timer: null, health: null, redrawDue: false, inflight: false, misses: 0 };
+// progress, a failed scan, a scanner that has stopped, code changed on
+// disk) and, once a scan that was running when the page drew its figures
+// finishes, a way to redraw them (also offered in the status line).
+// codeId: the service's code.id when this page loaded; a different one
+// means it restarted on other code, which this page's scripts may not
+// match, so the banner offers a reload (reloadDue).
+var healthPoll = { status: null, timer: null, health: null, redrawDue: false, inflight: false, misses: 0, codeId: null, reloadDue: false };
 
 // options.focus moves focus to the page title: the button pressed is
 // redrawn away. A redraw after reconnecting leaves focus where it is.
@@ -180,6 +189,8 @@ function redrawEverything(options) {
   var banner = document.getElementById("health-banner");
   if (banner) {
     banner.removeAttribute("data-scan-finished");
+    // The next poll draws whatever is still due (a warning, a reload).
+    banner.removeAttribute("data-render-sig");
     banner.hidden = true;
   }
   state.reportPromises = {};
@@ -204,7 +215,9 @@ function redrawButton() {
   return redraw;
 }
 
-function renderHealthBanner(health, previous) {
+// failed: the error /api/health answered with, when the service is up but
+// couldn't report its state (health is null then, as when unreachable).
+function renderHealthBanner(health, previous, failed) {
   var banner = document.getElementById("health-banner");
   if (!banner) return;
   // UX-6/9: this is an aria-live="polite" region polled every 3-60s
@@ -216,17 +229,29 @@ function renderHealthBanner(health, previous) {
   // every few seconds. Skip the rebuild entirely when what would be
   // shown is identical to what is already on screen.
   var scanNow = (health && health.scan) || {};
-  var sig = !health
-    ? "unreachable"
-    : health.status === "ok"
-      ? previous === "starting" || banner.getAttribute("data-scan-finished") === "true"
-        ? "scan-finished"
-        : "hidden"
-      : ["active", health.status, health.message || "", scanNow.total || 0, scanNow.done || 0].join("|");
+  var sig = failed
+    ? "failed|" + (failed.message || "")
+    : !health
+      ? "unreachable"
+      : healthPoll.reloadDue
+        ? "reload"
+        : health.status === "ok"
+          ? previous === "starting" || banner.getAttribute("data-scan-finished") === "true"
+            ? "scan-finished"
+            : "hidden"
+          : ["active", health.status, health.message || "", scanNow.total || 0, scanNow.done || 0].join("|");
   if (banner.getAttribute("data-render-sig") === sig) return;
   banner.setAttribute("data-render-sig", sig);
   clear(banner);
   banner.className = "health-banner";
+  if (failed) {
+    banner.classList.add("error");
+    banner.appendChild(
+      el("p", { text: "Token Lens's local service is running but can't report its state. " + (failed.message || "") })
+    );
+    banner.hidden = false;
+    return;
+  }
   if (!health) {
     // No countdown: this region is read aloud when it changes, so it
     // says once that it retries by itself, with a way to try now.
@@ -235,6 +260,22 @@ function renderHealthBanner(health, previous) {
       el("p", {}, [
         el("span", { text: "Can't reach Token Lens's local service, so the figures on screen may be out of date. It keeps trying by itself. " }),
         button("Try now", { variant: "link", action: pollHealth }),
+      ])
+    );
+    banner.hidden = false;
+    return;
+  }
+  if (healthPoll.reloadDue) {
+    // Ahead of everything else: this page's own scripts are the old ones.
+    banner.appendChild(
+      el("p", {}, [
+        el("span", { text: "Token Lens restarted on updated code. Reload the page to use it. " }),
+        button("Reload page", {
+          variant: "link",
+          action: function () {
+            window.location.reload();
+          },
+        }),
       ])
     );
     banner.hidden = false;
@@ -276,7 +317,12 @@ export function pollHealth() {
     var previous = healthPoll.status;
     healthPoll.status = health ? health.status : result.httpStatus === 0 ? "unreachable" : previous || "starting";
     if (health) healthPoll.health = health;
-    renderHealthBanner(result.httpStatus === 0 ? null : health, previous);
+    if (health && health.code) {
+      if (!healthPoll.codeId) healthPoll.codeId = health.code.id;
+      else if (health.code.id !== healthPoll.codeId) healthPoll.reloadDue = true;
+    }
+    var failed = result.httpStatus !== 0 && !health ? (body && body.error) || {} : null;
+    renderHealthBanner(result.httpStatus === 0 ? null : health, previous, failed);
     renderStatusLine();
     if (health) updateCaptureBanner(health.capture);
     var delay;

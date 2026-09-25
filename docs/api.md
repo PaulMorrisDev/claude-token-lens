@@ -28,7 +28,10 @@ header and one of two top-level shapes:
 `error.code` is a short, stable, machine-matchable string:
 `bad_request` (`400`), `forbidden` (`403`), `not_found` (`404`),
 `method_not_allowed` (`405`), `conflict` (`409`), `payload_too_large`
-(`413`) or `internal_error` (`500`). `error.message` is a one-line
+(`413`), `internal_error` (`500`) or `restart_needed` (`503`: part of
+the package's code couldn't be imported, almost always because it
+changed on disk under a running `serve`; see `code` under
+`GET /api/health`). `error.message` is a one-line
 human-readable explanation. The
 HTTP status code carries the same information for clients that don't
 want to parse the body: `200` for `ok: true` on every route except
@@ -153,6 +156,19 @@ below):
   transcripts already on disk. Exits `2` (and deletes nothing) if
   `--yes` is missing, `0` otherwise (including when there is nothing to
   delete).
+- **`--exit-on-code-change`** sets `ServeOptions.exit_on_code_change`.
+  After each watcher tick `serve` checks whether this package's own
+  files on disk still match the code it loaded (`service/codewatch.py`;
+  see `code` under `GET /api/health`). Without the flag a change is only
+  reported. With it, once the change has settled (one tick with no
+  further writes), `serve` exits with status `3` so the service starts
+  again on the new code: systemd's `Restart=on-failure` and launchd's
+  `KeepAlive` do that themselves; Task Scheduler reruns nothing by exit
+  status, so on Windows `serve` first starts a hidden helper that waits
+  for it to exit and starts the `ClaudeTokenLens` task again
+  (`installer.relaunch_after_exit`). When that task isn't registered,
+  `serve` stays up and only reports the change. `install-service`
+  registers `serve` with this flag.
 
 ## Host allowlist (DNS rebinding)
 
@@ -228,7 +244,7 @@ Liveness/diagnostics probe (also the Docker healthcheck target — plan:
 `serve` binds its port before its first scan, so it answers from the
 first second.
 
-`data`: `{"status": "ok"|"starting"|"degraded"|"stale", "message": str|null, "scan": WatcherState-as-dict|null, "version": str, "schema_version": int, "transcripts_missing": int, "watcher": WatcherStats-as-dict, "service_registered": true|false|null, "capture": {...}|null}`.
+`data`: `{"status": "ok"|"outdated"|"starting"|"degraded"|"stale", "message": str|null, "scan": WatcherState-as-dict|null, "version": str, "code": {"changed": bool, "changed_at": str|null, "version_on_disk": str|null, "id": str}|null, "schema_version": int, "transcripts_missing": int, "watcher": WatcherStats-as-dict, "service_registered": true|false|null, "capture": {...}|null}`.
 
 `status` says whether the figures are keeping up, and `message` says
 what it means in plain words (`null` when `"ok"`). The HTTP status is
@@ -238,6 +254,7 @@ a container mid-scan would only make things worse.
 | `status` | When |
 |---|---|
 | `ok` | The last scan finished without failing outright, recently. |
+| `outdated` | This package's code changed on disk since the process started (`code.changed`), so routes that import code lazily may fail with `503 restart_needed`. Comes before every other status: only a restart helps. `message` gives the time, both versions when they differ, and the restart command, or says the service restarts by itself (`serve --exit-on-code-change` with a restart arranged). |
 | `starting` | No scan has finished since the process started: the first scan is still running (`message` gives its progress). |
 | `degraded` | The last scan failed outright, such as `OperationalError: database is locked` (the reason is in `message` and in `watcher.error_messages`). It retries every poll interval. |
 | `stale` | The background scanner is no longer running, no scan has finished for ten minutes (or ten poll intervals, if longer), or one scan has run for over an hour. Figures are frozen; `message` names the time they are from and how to restart. |
@@ -256,6 +273,28 @@ in parallel; only on a scan with many changed files) and `"storing"`
 --version`), also shown on the dashboard's status line: after an update, a
 dashboard still showing the old one hasn't been restarted, or runs from
 another Python install.
+
+`code` (`null` without a code watch wired in, as in tests and
+`serve --once`) says whether the package's files on disk still match
+the code this process loaded. An editable install (`pip install -e`)
+runs straight from the checkout, so a pull or a release landing there
+changes the files under a running `serve`; a module it then imports
+lazily comes from the new files while the ones already loaded are
+old, and fails. After every watcher tick `service/codewatch.py`
+compares the modules' and data files' names, sizes and modification
+times (the dashboard's own `static/` files are left out, as they are
+read from disk on every request), and hashes their contents only when
+those moved, so a checkout switched away and back is no change.
+`changed` stays `true` once seen, as a lazy import may have loaded the
+other code meanwhile. `changed_at` is when it was first seen and
+`version_on_disk` the `__version__` the files now declare (`null` when
+unreadable). `id` names the loaded code (12 hex characters of its
+hash): the dashboard offers to reload the page when it differs after a
+restart. A route whose code fails to import (`ImportError`) checks at
+once and answers `503` `restart_needed` instead of `internal_error`,
+naming the exception's type only, never its message, which can hold
+a path. See `serve --exit-on-code-change` above for restarting by
+itself.
 
 `service_registered` (v3) is whether `serve` is currently registered to
 start at logon/boot (`claude-token-lens install-service` — see
@@ -306,7 +345,9 @@ switch from off to on runs before it ends, when no end is given),
 set, never the patterns) and `hooks_ok` (whether `settings.json` runs
 every hook the chosen metrics need; `true` when they need none). The
 dashboard fetches `GET /api/capture` for its banner when this block
-changes. `capture` is `null` when `config.toml` can't be read.
+changes. `capture` is `null` when `config.toml` can't be read, or when
+this part fails for any other reason (its code changed on disk, say):
+`/api/health` still answers.
 
 ### `GET /api/summary`
 
@@ -1485,10 +1526,17 @@ files without writing into the source tree.
 **`make_handler()`/`serve.run()` accept parameters beyond their frozen
 signatures.** `service.contracts.MakeHandler` is `(store, options) ->
 type[BaseHTTPRequestHandler]`; `make_handler()` additionally accepts
-three keyword-only parameters with defaults — `watcher_stats` (a
+keyword-only parameters with defaults — `watcher_stats` (a
 zero-argument callable returning the current `WatcherStats`, used by
-`/api/health`), `service_registered` (a zero-argument probe for
-`/api/health`'s field of that name; omitted, it reports `null`) and
+`/api/health`), `watcher_state` (likewise for the current
+`WatcherState`, from which `/api/health` works out its `status`),
+`service_registered` (a zero-argument probe for
+`/api/health`'s field of that name; omitted, it reports `null`),
+`code_watch` (the `codewatch.CodeWatch` behind `/api/health`'s `code`
+and the `503 restart_needed` answer; omitted, `code` is `null`),
+`restarts_itself` (a zero-argument callable: whether this process will
+exit and be started again on changed code; omitted,
+`options.exit_on_code_change` answers) and
 `static_dir` (above) — which is still a valid
 `MakeHandler` implementation (a Protocol callable is satisfied by
 something that accepts extra optional parameters). Similarly,
@@ -1506,9 +1554,12 @@ a Protocol attribute every concrete `Watcher` keeps current — `FileWatcher`
 sets it at the end of every `run_once()`, including the ones its own
 background poll thread runs after `start()`. `/api/health` always has a
 real answer: `serve.run()` passes `make_handler` a `watcher_stats`
-callable that simply reads `watcher.last_stats`, no fallback guesswork
-needed, since `run()` always calls `watcher.run_once()` synchronously
-once before serving starts.
+callable that simply reads `watcher.last_stats`. `serve` binds its port
+before the first scan, which runs on the watcher's thread, so until
+that scan finishes `last_stats` is `None`, `watcher` reports zeros and
+`status` is `"starting"`. After each tick of that thread, `serve.run()`
+also checks the package's code on disk (`FileWatcher`'s `after_tick`
+hook; see `code` under `GET /api/health`).
 
 ## Store rebuild
 

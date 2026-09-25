@@ -132,6 +132,7 @@ python -m claude_token_lens serve
 | `--billing-mode {api,subscription}` | How amounts are shown. Default: `billing` in `config.toml`, else worked out from your transcripts |
 | `--monthly-report DIR` | Write last month's [`monthly-report`](#monthly-report) into `DIR` when it's missing. Checked at start and every hour; a failure is logged and tried again at the next check |
 | `--once` | Read new transcripts once, print what it did, and exit |
+| `--exit-on-code-change` | Exit with status 3 when this package's code changes on disk (an update that landed without a restart), so the service starts again on the new code. `install-service` registers it; see [`deploy.md`](deploy.md#updating-under-a-running-serve) |
 | `--store PATH` | The dashboard's database. Default `<config-dir>/service.db`. A running `serve` locks it, so give a second copy its own |
 | `--purge --yes` | Delete the dashboard's database and its sidecar files, then exit. Refused while a `serve` has it open |
 
