@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-token-lens"
-version = "0.6.2"
+version = "0.6.3"
 description = "Config-aware token and prompt-cache analytics for Claude Code transcripts"
 readme = "README.md"
 requires-python = ">=3.11"

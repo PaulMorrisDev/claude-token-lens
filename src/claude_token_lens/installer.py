@@ -156,6 +156,19 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _no_window() -> dict:
+    """``creationflags=CREATE_NO_WINDOW`` on Windows, else nothing: the
+    dashboard runs under pythonw.exe, which has no console, so a console
+    program it starts (schtasks) would otherwise get a console of its
+    own -- a window that flashes up, or a new tab in Windows Terminal
+    when that is the default terminal. With the flag there is no console
+    at all, so nothing appears and no terminal already open is touched.
+    Off Windows the key is left out: Python rejects it there."""
+    if sys.platform != "win32":
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+
+
 def _xml_escape(value: str) -> str:
     return (
         value.replace("&", "&amp;")
@@ -468,7 +481,9 @@ def is_registered(
     couldn't be run at all (an unsupported platform, the query tool
     missing, or any other unexpected error) -- callers (``/api/health``'s
     ``service_registered`` field) must treat ``None`` as "unknown",
-    never fold it into ``False``.
+    never fold it into ``False``. The query runs without a console
+    window (:func:`_no_window`): the dashboard calls this every few
+    minutes from a process that has none.
     """
     plat = platform or detect_platform()
     try:
@@ -476,7 +491,7 @@ def is_registered(
     except InstallerError:
         return None
     try:
-        result = runner(command, capture_output=True, text=True, timeout=10)
+        result = runner(command, capture_output=True, text=True, timeout=10, **_no_window())
     except (OSError, subprocess.SubprocessError):
         return None
     returncode = getattr(result, "returncode", None)
@@ -507,6 +522,7 @@ def registered_python(
                 capture_output=True,
                 text=True,
                 timeout=15,
+                **_no_window(),
             )
             if getattr(result, "returncode", 1) != 0:
                 return None
@@ -564,7 +580,7 @@ def install(
         print(f"Wrote {path}")
 
     for command in plan.commands:
-        result = runner(command, capture_output=True, text=True)
+        result = runner(command, capture_output=True, text=True, **_no_window())
         returncode = getattr(result, "returncode", 0)
         if returncode != 0:
             stderr = getattr(result, "stderr", "") or ""
@@ -598,7 +614,7 @@ def uninstall(
     failures: list[str] = []
     for index, command in enumerate(plan.uninstall_commands):
         try:
-            result = runner(command, capture_output=True, text=True)
+            result = runner(command, capture_output=True, text=True, **_no_window())
         except OSError as exc:
             failures.append(f"{' '.join(command)}: {exc}")
             continue
