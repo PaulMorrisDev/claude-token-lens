@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from claude_token_lens import impact
 from claude_token_lens.change_points import ChangePoint
 from claude_token_lens.corpus import load_corpus
@@ -128,6 +130,16 @@ def test_a_group_with_too_few_runs_is_not_judged():
     assert "6 before and 1 after" in group["verdict"]
 
 
+def test_scheduled_main_sessions_are_left_out_of_the_quality_check():
+    from claude_token_lens import quality
+
+    sessions = [_session(-d / 10, 2.0) for d in range(1, 7)] + [_session(d / 10, 1.0) for d in range(1, 7)]
+    for i, session in enumerate(sessions):
+        session.runs = [quality.Run(replies=5, tool_calls=20, scheduled=i % 2 == 1)]
+    group = impact.compare(ChangePoint(CHANGE, "apply", "x", keys=["model"]), sessions, UNITS)["quality"][0]
+    assert (group["before_runs"], group["after_runs"]) == (3, 3)
+
+
 # -- metrics capture changes ---------------------------------------------------
 
 
@@ -185,6 +197,26 @@ def test_stratum_prefers_task_then_purpose_then_a_catch_all():
     assert impact.stratum(facts) == "refactor"
     facts.task = "test"
     assert impact.stratum(facts) == "test"
+
+
+def test_scheduled_sessions_are_their_own_stratum_so_their_count_does_not_move_cost():
+    """Before: 3 real sessions at 10.00 and 3 scheduled checks at 0.10.
+    After: the same real sessions and prices, but 30 checks ran. Pooled,
+    cost per session falls about 85%; reweighted to before's mix it
+    doesn't move."""
+    def scheduled(days: float) -> SessionFacts:
+        facts = _session(days, 0.10)
+        facts.scheduled = True
+        return facts
+
+    assert impact.stratum(scheduled(0)) == "(scheduled)"
+    before = [_session(-d, 10.0) for d in (1, 2, 3)] + [scheduled(-d - 0.5) for d in (1, 2, 3)]
+    after = [_session(d, 10.0) for d in (0.1, 0.2, 0.3)] + [scheduled(0.4 + d / 100) for d in range(30)]
+    cost = impact._COST
+    old = impact._ratio_estimate(impact._pairs(cost, before)).value
+    pooled = impact._ratio_estimate(impact._pairs(cost, after)).value
+    assert pooled < 0.2 * old
+    assert impact._stratified_estimate(cost, before, after).value == pytest.approx(old)
 
 
 def test_stratified_after_estimate_matches_before_task_mix():

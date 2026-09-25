@@ -833,6 +833,19 @@ def agent_type_label(result: "TranscriptResult") -> str:
         return "top-level"
     return result.meta.agent_type or "unknown"
 
+
+def scheduled_main_session(result: "TranscriptResult") -> bool:
+    """A main session a scheduled or looped task started, with no message
+    of yours: usually a check that runs a command or two and stops, a
+    different job from the work you steer. Left out of the quality setup
+    comparisons, the compaction summary and the compaction replay, where a
+    few dozen of them would dilute the per-session figures."""
+    return (
+        result.meta.kind == "top-level"
+        and all(turn.human_prompt_chars is None for turn in result.turns)
+        and any(event.kind == EventKind.SCHEDULED_TASK for event in result.events)
+    )
+
 @dataclass(slots=True)
 class TranscriptResult:
     """The parsed output of one transcript file: its turns and events plus

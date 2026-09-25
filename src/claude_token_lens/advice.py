@@ -5,10 +5,16 @@ cells that prove it. This module decides *how it is said* and what to
 change, in one place, so every card reads the same way:
 
 - **Consolidation.** Rules that look at the same setting from different
-  angles can disagree. ``compaction-window`` (a modelled sweep that
-  weighs both sides) replaces ``compaction-churn`` ("summaries happen too
-  often") and takes the setting away from ``long-context-share`` ("the
-  context is too large"), which then keeps only its workflow advice.
+  angles can disagree. Once the compaction replay has a verdict on
+  ``autoCompactWindow`` (``compaction_sim_by_window`` priced your main
+  sessions at the candidate windows), that verdict is the one answer on
+  the setting, whether it is ``compaction-window`` (a modelled sweep that
+  weighs both sides) or no window worth setting: ``compaction-churn``
+  ("summaries happen too often", raise it) is dropped and
+  ``long-context-share`` ("the context is too large", lower it) keeps
+  only its workflow advice. Without a replay, ``compaction-churn`` keeps
+  the setting and ``long-context-share`` still gives it up, so the two
+  never point it opposite ways.
   ``model-tier`` fires once per agent type; its cards are merged into one
   with a change per agent type, largest saving first.
 - **Plain words.** Each recommendation gets a plain title, an action, a
@@ -328,7 +334,16 @@ def _merge_model_tier(recs: list[Recommendation], ctx: _Context) -> list[Recomme
     return rest + [merged]
 
 
+def _compaction_replayed(ctx: _Context) -> bool:
+    """The compaction replay priced the main sessions as they ran, and
+    so every candidate window beside them: it has a verdict on
+    ``autoCompactWindow``, whether or not ``compaction-window`` fired."""
+    observed = ctx.cell("compaction_sim", "compaction_sim_by_window", "none", "cost")
+    return isinstance(observed, (int, float)) and observed > 0
+
+
 def _consolidate_compaction(recs: list[Recommendation], ctx: _Context) -> list[Recommendation]:
+    replayed = _compaction_replayed(ctx)
     window = next((r for r in recs if r.id == "compaction-window"), None)
     if window is not None:
         floor = window.title.rsplit(" ", 1)[-1].replace(",", "")
@@ -337,13 +352,15 @@ def _consolidate_compaction(recs: list[Recommendation], ctx: _Context) -> list[R
             # Already summarising at or below the modelled window.
             recs = [r for r in recs if r is not window]
             window = None
-    churn = next((r for r in recs if r.id == "compaction-churn"), None)
-    if window is not None:
+    if window is not None or replayed:
+        # The replay weighed both sides, so its verdict (a window, or none
+        # worth setting) stands over "summaries happen too often".
         recs = [r for r in recs if r.id != "compaction-churn"]
-        churn = None
+    churn = next((r for r in recs if r.id == "compaction-churn"), None)
     for rec in recs:
-        if rec.id == "long-context-share" and (window is not None or churn is not None):
-            # The setting belongs to the rule that weighs both sides.
+        if rec.id == "long-context-share" and (replayed or window is not None or churn is not None):
+            # The setting belongs to the replay, else to churn: never
+            # "raise it" on one card and "lower it" on another.
             rec.lever = None
             rec.category = "workflow"
     return recs

@@ -366,6 +366,64 @@ def test_setups_are_compared_with_the_most_used_one():
     assert rows["claude-opus-5"]["setup_verdict"] == "too_little_data"
 
 
+WATCHDOG = '<scheduled-task name="heartbeat-watchdog">Check the heartbeat file and stop.</scheduled-task>'
+
+
+@pytest.mark.parametrize("lines, scheduled", [
+    # Started by a scheduled task and left to itself.
+    ([user_str_line(WATCHDOG, timestamp=_ts(0)), _reply(1)], True),
+    # Started by a scheduled task, then steered by you: your work.
+    ([user_str_line(WATCHDOG, timestamp=_ts(0)), _reply(1), user_str_line("now fix it", timestamp=_ts(2)),
+      _reply(3)], False),
+    ([user_str_line("fix the build", timestamp=_ts(0)), _reply(1)], False),
+])
+def test_a_main_session_a_scheduled_task_started_with_no_message_of_yours_is_scheduled(tmp_path, lines, scheduled):
+    run = quality.run_facts(_parse(tmp_path, lines), None)
+    assert run.scheduled is scheduled
+
+
+def test_a_subagent_run_is_never_scheduled(tmp_path):
+    run = quality.run_facts(_agent(tmp_path, [user_str_line(WATCHDOG, timestamp=_ts(0)), _reply(1)]), None)
+    assert run.scheduled is False
+
+
+def _main_runs(effort: str, n: int, replies: int, errors: int, **kw) -> list[quality.Run]:
+    return [quality.Run(model="claude-opus-5-5", effort=effort, replies=replies, tool_calls=5 * replies,
+                        tool_errors=errors, human_messages=0 if kw.get("scheduled") else 3, **kw) for _ in range(n)]
+
+
+def test_scheduled_runs_are_not_the_baseline_a_setup_is_judged_against():
+    """22 two-reply scheduled checks at medium effort were the main
+    session's most-used setup, so eight real sessions at xhigh were
+    judged worse against checks that never failed a tool call."""
+    runs = _main_runs("medium", 22, 2, 0, scheduled=True) + _main_runs("xhigh", 8, 500, 50)
+    rows = quality.setup_rows(runs)
+    assert [(r["effort"], r["runs"], r["setup_verdict"]) for r in rows] == [("xhigh", 8, "only")]
+    section = quality.build_section(runs)
+    assert any("(22 in this window)" in note for note in section.notes)
+
+
+def test_a_setup_whose_runs_are_far_larger_or_smaller_is_not_comparable():
+    runs = _main_runs("medium", 22, 2, 0) + _main_runs("xhigh", 8, 500, 50)
+    rows = {r["effort"]: r for r in quality.setup_rows(runs)}
+    assert rows["medium"]["setup_verdict"] == "baseline"
+    xhigh = rows["xhigh"]
+    assert xhigh["setup_verdict"] == "not_comparable"
+    assert xhigh["comparison"] == []
+    assert (xhigh["compared_model"], xhigh["compared_effort"]) == ("claude-opus-5-5", "medium")
+    assert xhigh["difference"].startswith("Not compared: its runs averaged 500.0 replies against 2.0")
+    assert "not_comparable" in quality.SETUP_VERDICTS
+    # Nothing clearly worse, so the models check doesn't hold xhigh back.
+    assert quality.worse_models(rows.values()) == {}
+
+
+def test_setups_up_to_the_size_limit_apart_are_still_compared():
+    ratio = int(quality.COMPARABLE_SIZE)
+    runs = _main_runs("medium", 20, 10, 0) + _main_runs("xhigh", 10, 10 * ratio, 100)
+    rows = {r["effort"]: r for r in quality.setup_rows(runs)}
+    assert rows["xhigh"]["setup_verdict"] == "worse"
+
+
 def test_clearly_worse_on_one_signal_and_clearly_better_on_another_is_mixed():
     def row(label_key):
         return {"label_key": label_key, "worse_when": "higher"}

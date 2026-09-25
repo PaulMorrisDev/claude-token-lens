@@ -76,7 +76,7 @@ from datetime import datetime
 from typing import Iterable
 
 from . import recache
-from .model import Column, Event, EventKind, Section, Table, TranscriptResult, Turn
+from .model import Column, Event, EventKind, Section, Table, TranscriptResult, Turn, scheduled_main_session
 from .pricing import ModelRates, ResolvedRates, price_turn
 from .recache import RecacheThresholds
 
@@ -377,6 +377,9 @@ class CompactionStats:
     #: denominator that doesn't undercount a turn whose prefix was never
     #: cacheable at all.
     total_new_tokens: int = 0
+    #: Main sessions a scheduled task started with no message of yours
+    #: (``model.scheduled_main_session``), left out of every figure.
+    scheduled_sessions: int = 0
 
     @classmethod
     def build(
@@ -402,6 +405,11 @@ class CompactionStats:
         also appended to ``self.records``. ``thresholds`` (fix item 6) is
         forwarded to :func:`compaction_records_for_transcript`.
         """
+        if scheduled_main_session(tr):
+            # A scheduled check never compacts; counting it as a session
+            # would dilute compactions per session.
+            self.scheduled_sessions += 1
+            return []
         session_id = tr.meta.session_id
         self._sessions_seen.add(session_id)
         priced = _priced_turns(tr)
@@ -670,6 +678,12 @@ def build_section(stats: CompactionStats) -> Section:
         "whose next reply came more than 15 minutes later. That reply most "
         "likely belongs to a resumed session.",
     ]
+    if stats.scheduled_sessions:
+        notes.append(
+            f"{stats.scheduled_sessions} main session{'s' if stats.scheduled_sessions != 1 else ''} a scheduled "
+            "task started, with no message of yours, are left out. Counting checks that never summarise would "
+            "lower the summaries per session."
+        )
     if not stats.records:
         notes.insert(0, "No conversation summaries found in this window.")
 

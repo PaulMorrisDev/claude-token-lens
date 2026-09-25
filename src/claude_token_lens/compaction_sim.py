@@ -143,6 +143,7 @@ from .model import (
     Table,
     TranscriptResult,
     Turn,
+    scheduled_main_session,
 )
 from .pricing import ModelRates, ResolvedRates, price_turn
 from .recache import RecacheThresholds
@@ -178,7 +179,9 @@ ASSUMPTIONS: list[str] = [
     "This lasts until the next summary, real or simulated. Growth after "
     "the summary is kept whole",
     "a real summary already in a session is kept as it is under every "
-    "candidate window: never simulated again, never removed",
+    "candidate window: never simulated again, never removed. So a window "
+    "above the one your sessions ran at costs what they did, and raising "
+    "the window can't be tested",
     "a change in cost is the candidate window's cost minus the observed "
     "cost. Negative means the candidate is cheaper (a saving): the "
     "opposite sign to the cache lifetime tables",
@@ -742,12 +745,17 @@ class CompactionSimTypeStats:
     def saving_usd(self) -> float:
         return max(0.0, -self.delta_usd)
 
-    def recommendation(self, th: CompactionSimThresholds, units: "Units | None" = None) -> str:
+    def recommendation(
+        self, th: CompactionSimThresholds, units: "Units | None" = None, *, subagent: bool = False
+    ) -> str:
         """Mirrors ``TtlTypeStats.recommendation``'s switch-gating
         shape: a switch is only worth stating when it clears both
         ``switch_pct`` and ``switch_usd``. ``units`` (UX-2) phrases the
         saving for the report's billing mode; a bare "$" number without
-        it, for a caller that hasn't been given one."""
+        it, for a caller that hasn't been given one. A ``subagent`` row
+        names its cheapest window without telling you to set it: the
+        window is one setting for the whole session, which only the
+        main session's sweep (``compaction-window``) decides."""
         if self.observed_cost <= 0:
             return "no material difference"
         pct_ok = self.best_cost < th.switch_pct * self.observed_cost
@@ -756,6 +764,11 @@ class CompactionSimTypeStats:
             return "no material difference"
         if pct_ok and usd_ok:
             saving_text = units.money_text(self.saving_usd) if units is not None else f"${self.saving_usd:.2f}"
+            if subagent:
+                return (
+                    f"Cheapest at {self.best_window:,} tokens (saves {saving_text}), but the window is one setting "
+                    "for the whole session: choose it from the main session row"
+                )
             return f"Set the auto-compact window to {self.best_window:,} tokens (saves {saving_text})"
         return "no material difference"
 
@@ -807,6 +820,9 @@ class CompactionSimStats:
         #: by reported task instead of agent-type key, main sessions only.
         self._task_acc: dict[tuple[str, int | None], _WindowAccumulator] = {}
         self._sessions_by_task: dict[str, int] = {}
+        #: Main sessions a scheduled task started with no message of yours
+        #: (``model.scheduled_main_session``), not replayed.
+        self.scheduled_sessions = 0
 
     def add_transcript(
         self,
@@ -817,6 +833,11 @@ class CompactionSimStats:
     ) -> None:
         priced_turns = _priced_turns(tr.turns)
         if not priced_turns:
+            return
+        if scheduled_main_session(tr):
+            # A scheduled check never compacts; replaying it would dilute
+            # the simulated compactions per session the rule gates on.
+            self.scheduled_sessions += 1
             return
         key = "top-level" if tr.meta.kind == "top-level" else (tr.meta.agent_type or "unknown")
         real_after = _real_compaction_turn_indices(tr, priced_turns, th)
@@ -1068,7 +1089,7 @@ def build_section(
                 row.best_cost,
                 row.saving_usd,
                 row.delta_pct,
-                row.recommendation(th, units),
+                row.recommendation(th, units, subagent=key != "top-level"),
             ]
             for key, row in sorted(by_key.items())
         ],
@@ -1182,6 +1203,12 @@ def build_section(
         " The sweep's own costs leave it out."
     )
     notes.append(allowance_note)
+    if stats.scheduled_sessions:
+        notes.append(
+            f"{stats.scheduled_sessions} main session{'s' if stats.scheduled_sessions != 1 else ''} a scheduled "
+            "task started, with no message of yours, are not replayed. They never summarise, so they would lower "
+            "the summaries per session."
+        )
     notes.extend(th.describe())
 
     flagged = [row for row in fidelity_rows if (row.fidelity_pct or 0.0) > th.fidelity_warn_pct]

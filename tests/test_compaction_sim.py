@@ -403,6 +403,47 @@ def test_build_section_tables_and_notes():
     assert_privacy(section)
 
 
+def test_only_the_main_session_row_says_to_set_the_window(monkeypatch):
+    """The window is one setting for the whole session: a subagent type
+    whose own replay is cheapest at a smaller window says so without
+    telling you to set it, so it never contradicts the main session's
+    row or the compaction-window rule."""
+    from claude_token_lens.compaction_sim import CompactionSimTypeStats
+
+    stats = simulate_compaction_windows([], SONNET_RATES, {})
+    monkeypatch.setattr(stats, "by_key", lambda: {
+        "top-level": CompactionSimTypeStats("top-level", 30, 300.0, 250_000, 250.0),
+        "general-purpose": CompactionSimTypeStats("general-purpose", 25, 400.0, 200_000, 327.1),
+    })
+    by_type = next(t for t in build_section(stats).tables if t.name == "compaction_sim_by_agent_type")
+    col = [c.key for c in by_type.columns].index("recommendation")
+    advice = {row[0]: row[col] for row in by_type.rows}
+    assert advice["top-level"] == "Set the auto-compact window to 250,000 tokens (saves $50.00)"
+    assert advice["general-purpose"] == (
+        "Cheapest at 200,000 tokens (saves $72.90), but the window is one setting for the whole session: "
+        "choose it from the main session row"
+    )
+
+
+def test_a_scheduled_main_session_is_not_replayed():
+    """Scheduled checks never summarise, so replaying them would lower the
+    simulated compactions per session the compaction-window rule gates on."""
+    real = _top_level_transcript("sess-real", _synthetic_20_turn_transcript())
+    check = _top_level_transcript(
+        "sess-check", [_turn()], events=[Event(kind=EventKind.SCHEDULED_TASK, subkind=None, ts=_ts(0))]
+    )
+    alone = simulate_compaction_windows([real], SONNET_RATES, {})
+    stats = simulate_compaction_windows([real] + [check] * 3, SONNET_RATES, {})
+    assert stats.scheduled_sessions == 3
+    assert stats.by_key()["top-level"].sessions == 1
+    assert [r.compactions_per_session for r in stats.by_window("top-level")] == [
+        r.compactions_per_session for r in alone.by_window("top-level")
+    ]
+    notes = build_section(stats).notes
+    assert any(note.startswith("3 main sessions a scheduled task started") for note in notes)
+    assert any("raising the window can't be tested" in note for note in notes)
+
+
 def test_build_section_notes_flag_every_default():
     turns = _synthetic_20_turn_transcript()
     tr = _top_level_transcript("sess-synthetic", turns)

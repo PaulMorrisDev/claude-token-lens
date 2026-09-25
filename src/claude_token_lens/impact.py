@@ -19,7 +19,10 @@ as :mod:`quality`, duplicated here since the pairs a measure draws from
 sessions aren't :class:`quality.Run` signals). The "after" side is
 stratum-reweighted to "before"'s mix of task/purpose (EST-P3) first, so
 a change in the kind of work people did after a change doesn't read as
-the change's own effect. ``label_key`` carries the closed verdict:
+the change's own effect. Main sessions a scheduled task started with no
+message of yours are a stratum of their own: their cost still counts,
+but more or fewer of them running after a change doesn't read as a
+saving or a rise. ``label_key`` carries the closed verdict:
 ``lower``, ``possibly_lower``, ``higher``, ``possibly_higher``,
 ``no_clear_change`` or ``too_little_data``.
 
@@ -31,7 +34,9 @@ Each change is also checked for quality (:mod:`quality`): the runs of the
 agent it changed (or the main session, for any other setting) before and
 after, on every quality signal, each marked worse, better, no clear
 change or too little data. A cheaper setting that makes the work worse
-shows up here.
+shows up here. Main sessions a scheduled task started with no message of
+yours (``quality.Run.scheduled``) are left out of that check, as they are
+of the setup comparisons.
 """
 
 from __future__ import annotations
@@ -44,7 +49,7 @@ from . import capture as capture_mod
 from . import classify as classify_mod
 from . import quality, recache
 from .change_points import ChangePoint
-from .model import EventKind, TranscriptResult
+from .model import EventKind, TranscriptResult, scheduled_main_session
 from .pricing import Pricing, price_turn
 from .units import Units
 
@@ -106,6 +111,9 @@ class SessionFacts:
     #: stratify the "after" side onto "before"'s mix of work (EST-P3).
     purpose: str = ""
     mode: str = ""
+    #: Started by a scheduled task with no message of yours
+    #: (model.scheduled_main_session): a stratum of its own.
+    scheduled: bool = False
     #: Your messages, and how many of them Claude tagged.
     messages: int = 0
     tagged: int = 0
@@ -169,6 +177,7 @@ def session_facts(corpus, pricing: Pricing) -> list[SessionFacts]:
                 task=task,
                 purpose=classification.purpose,
                 mode=classification.mode,
+                scheduled=scheduled_main_session(top),
                 spawns=[(sub.meta.agent_type or "(unknown)", _transcript(sub, pricing)) for sub in bundle.subs],
                 runs=quality.session_runs(bundle, pricing),
                 messages=len(cycles),
@@ -180,8 +189,12 @@ def session_facts(corpus, pricing: Pricing) -> list[SessionFacts]:
 
 
 def stratum(session: SessionFacts) -> str:
-    """EST-P3's stratification key: the capture-reported task where we
-    have one, else the heuristic purpose, else a catch-all bucket."""
+    """EST-P3's stratification key: ``"(scheduled)"`` for a main session a
+    scheduled task started with no message of yours, else the
+    capture-reported task where we have one, else the heuristic purpose,
+    else a catch-all bucket."""
+    if session.scheduled:
+        return "(scheduled)"
     return session.task or session.purpose or "(unspecified)"
 
 
@@ -465,8 +478,8 @@ def quality_groups(point: ChangePoint) -> list[str]:
 def _quality(point: ChangePoint, before: list[SessionFacts], after: list[SessionFacts], units: Units) -> list[dict]:
     out = []
     for group in quality_groups(point):
-        old = [run for s in before for run in s.runs if run.group == group]
-        new = [run for s in after for run in s.runs if run.group == group]
+        old = [run for s in before for run in s.runs if run.group == group and not run.scheduled]
+        new = [run for s in after for run in s.runs if run.group == group and not run.scheduled]
         rows = quality.compare_runs(
             old, new, quality.signals_for(group), money=lambda value: _text("money", value, units)
         )

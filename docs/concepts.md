@@ -368,9 +368,14 @@ well?" section has every signal per agent type, then per model and
 effort, with each setup compared against the one that agent used most
 (across the whole window, so a setup used for other work or in another
 week can differ for that reason), then each agent and model whose runs
-were retried on a larger model. Setup › Settings' "Your changes and what
+were retried on a larger model. Main sessions a scheduled or looped task
+started, with no message of yours, are left out of that comparison: a
+check that runs a command and stops is a different job from the work
+you steer. A setup whose runs averaged more than 5 times as many replies
+as the one it would be compared with, or under a fifth, is **Not
+comparable** rather than tested. Setup › Settings' "Your changes and what
 they did" compares the runs of the agent a change touched (or the main
-session) before and after it. The check "Is any agent struggling?" on
+session) before and after it, also without scheduled main sessions. The check "Is any agent struggling?" on
 Actions › Checks turns both into fixes.
 
 **Privacy.** Only counts and flags are kept. Whether a message looks

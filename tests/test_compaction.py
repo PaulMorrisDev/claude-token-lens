@@ -44,7 +44,7 @@ from claude_token_lens.model import TranscriptMeta
 from claude_token_lens.parse import parse_transcript
 from claude_token_lens.pricing import load_pricing
 
-from helpers import assert_privacy, system_line, tool_use_block, turn_line, write_jsonl
+from helpers import assert_privacy, system_line, tool_use_block, turn_line, user_str_line, write_jsonl
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "compaction"
 
@@ -392,6 +392,27 @@ def test_compaction_records_empty_when_no_compact_boundary(tmp_path, sonnet_rate
 
 
 # -- CompactionStats ----------------------------------------------------
+
+
+def test_a_scheduled_main_session_is_not_counted_as_a_session(tmp_path, sonnet_rates):
+    """A watchdog a scheduled task started, with no message of yours,
+    never summarises: counted, 22 of them would cut compactions per
+    session five-fold."""
+    path, meta = _build_fixture_a(tmp_path)
+    watchdog = tmp_path / "watchdog.jsonl"
+    write_jsonl(watchdog, [
+        user_str_line('<scheduled-task name="heartbeat">Check the heartbeat.</scheduled-task>'),
+        turn_line(model="claude-sonnet-5", timestamp="2026-09-18T13:00:00.000Z"),
+    ])
+    stats = compaction.CompactionStats()
+    stats.add_transcript(parse_transcript(path, meta), sonnet_rates)
+    for i in range(4):
+        stats.add_transcript(parse_transcript(watchdog, TranscriptMeta(path=str(watchdog), session_id=f"w{i}")),
+                             sonnet_rates)
+    assert (stats.total_sessions, stats.scheduled_sessions) == (1, 4)
+    assert stats.compactions_per_session_mean == pytest.approx(2.0)
+    notes = compaction.build_section(stats).notes
+    assert any(note.startswith("4 main sessions a scheduled task started") for note in notes)
 
 
 def test_compaction_stats_aggregates_over_fixture_a(tmp_path, sonnet_rates):

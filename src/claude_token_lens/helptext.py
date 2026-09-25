@@ -1182,7 +1182,8 @@ TABLE_COPY: dict[str, TableCopy] = {
         title="Quality by model and effort",
         help=Help(
             shows="Each agent's runs split by the model and effort they used, with each setup compared against "
-            "the one that agent used most.",
+            "the one that agent used most. Main sessions a scheduled task started, with no message of yours, are "
+            "left out.",
             read="Worse or Better means the difference is unlikely to be chance, even allowing for the number of "
             "signals compared. Possibly means it would be, taken alone. The setups ran at different times and "
             "maybe on different work. Check the before and after in \"Your changes and what they did\" on "
@@ -1232,7 +1233,8 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "Verdict",
                 "Worse if any signal is clearly worse than in the setup it is compared with, and none clearly better. "
                 "Mixed if some are clearly worse and others clearly better. Better if one is clearly better and none "
-                "worse.",
+                "worse. Not comparable if its runs averaged over five times as many replies as the setup it would be "
+                "compared with, or under a fifth. The work differs too much to judge the setup.",
             ),
             "difference": (
                 "Difference",
@@ -1251,6 +1253,7 @@ TABLE_COPY: dict[str, TableCopy] = {
             "possibly_better": "Possibly better",
             "no_clear_difference": "No clear difference",
             "too_little_data": "Too little data",
+            "not_comparable": "Not comparable",
             "baseline": "Most used",
             "only": "Only setup",
         },
@@ -3522,7 +3525,11 @@ TABLE_COPY: dict[str, TableCopy] = {
                 "Change (%)",
                 "Simulated change at the best window, against real cost. Negative means cheaper.",
             ),
-            "recommendation": ("Suggestion", "Whether the simulated saving is big enough to act on."),
+            "recommendation": (
+                "Suggestion",
+                "Whether the simulated saving is big enough to act on. A subagent row names its cheapest window "
+                "but leaves the setting to the main session row.",
+            ),
         },
         value_labels={
             "top-level": "Main session",
