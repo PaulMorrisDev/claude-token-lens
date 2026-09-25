@@ -704,6 +704,115 @@ def _offer_hook_repair(health, *, repair_hook: bool, non_interactive: bool, stdi
     stdout.write(f"Fixed. The previous settings.json is at {backup}\n{RESTART_NOTE}\n\n")
 
 
+def print_detection(detection: Detection, health, stdout: IO[str]) -> None:
+    """The "what init found" block, redacted as :class:`Detection` is."""
+    stdout.write("claude-token-lens init\n")
+    stdout.write(f"- config directory: {'exists' if detection.config_dir_exists else 'will be created'}\n")
+    stdout.write(f"- current project: {detection.project_slug}\n")
+    stdout.write(f"- projects discovered under projects root: {detection.project_count}\n")
+    for found in detection.wsl_roots:
+        stdout.write(f"- Claude Code sessions found in {discovery.source_label(found)}: {found}\n")
+    stdout.write(f"- config snapshots on file: {detection.snapshot_count}\n")
+    stdout.write(f"- usage log present: {'yes' if detection.usage_log_present else 'no'}\n")
+    stdout.write(f"- config snapshot hook: {health.summary()}\n")
+    stdout.write("\n")
+
+
+def config_updates(answers: Answers, detection: Detection, now: datetime) -> dict:
+    """The ``config.toml`` values ``answers`` sets. Writes nothing."""
+    updates: dict = {
+        "billing": answers.billing,
+        "exclude_projects": answers.exclude_projects,
+        "launch_overlays": answers.launch_overlays,
+        "shared_project_config": answers.shared_project_config,
+        "apply_scope": answers.apply_scope,
+        "capture_window": answers.capture_window,
+        "extra_projects_roots": answers.extra_projects_roots,
+        # Set once, on the first init: re-running init (to change an
+        # answer, or with --repair-hook) must not restart the capture
+        # window the user is already part-way through.
+        "capture_started": detection.existing_config.capture_started or now.isoformat(),
+    }
+    if answers.tz is not None:
+        updates["tz"] = answers.tz
+    return updates
+
+
+def save_config(config_dir: Path, updates: dict, *, answers: Answers | None = None, stdout: IO[str]) -> int:
+    """Write ``updates`` to ``config.toml`` and, when ``answers`` is
+    given, this project's ``projects/<slug>.toml``. Returns 0, or 2 when
+    ``config.toml`` can't be validated (nothing is written then)."""
+    try:
+        written_path = write_config_values(config_dir, updates)
+    except ConfigError as exc:
+        stdout.write(f"claude-token-lens init: {exc}\n")
+        return 2
+
+    stdout.write(f"Wrote {_relative_label(written_path, config_dir)}\n")
+    if written_path.name == "config.toml.new":
+        stdout.write(
+            "(the existing config.toml had a shape init could not merge automatically -- "
+            "reconcile config.toml.new by hand and rename it into place)\n"
+        )
+    if answers is None:
+        return 0
+
+    project_config = ProjectConfig(
+        kind=None,
+        shared_project_config=answers.shared_project_config,
+        launch_overlays=answers.launch_overlays,
+        apply_scope=answers.apply_scope,
+    )
+    project_slug = discovery.slug_for(os.getcwd())
+    project_path = save_project_config(config_dir, project_slug, project_config)
+    stdout.write(f"Wrote {_relative_label(project_path, config_dir)}\n\n")
+    return 0
+
+
+def baseline_project_dirs(
+    config: Config,
+    *,
+    projects_root_path: Path,
+    extra_projects_roots: list[Path] | None = None,
+    all_projects: bool = False,
+    project: list[str] | None = None,
+    project_family: str | None = None,
+) -> list[Path]:
+    """The project folders the initial baseline reads: the current
+    folder's own, unless a selection flag says otherwise (fix S6)."""
+    baseline_slugs = list(project) if project else None
+    if not all_projects and not project_family and not baseline_slugs:
+        baseline_slugs = [discovery.slug_for(os.getcwd())]
+    return discovery.resolve_project_dirs(
+        discovery.projects_roots([projects_root_path, *(extra_projects_roots or ())], config.extra_projects_roots),
+        slugs=baseline_slugs,
+        all_projects=all_projects,
+        family_regex=project_family,
+        exclude_projects=config.exclude_projects,
+    )
+
+
+def run_baseline(config_dir: Path, project_dirs: list[Path], *, now: datetime, stdout: IO[str]) -> tuple[dict, Path] | None:
+    """Build and save the initial baseline from ``project_dirs``. Returns
+    the record and the path it was saved to, or ``None`` when pricing
+    can't be loaded (said on ``stdout``)."""
+    config = load_config(config_dir)
+    try:
+        pricing = load_pricing(path=config.pricing_path, config_dir=config_dir)
+    except PricingError as exc:
+        stdout.write(f"claude-token-lens init: {exc}\n")
+        return None
+    record, _model = baseline_mod.build_baseline(
+        config=config,
+        pricing=pricing,
+        config_dir=config_dir,
+        project_dirs=project_dirs,
+        now=now,
+    )
+    report_markdown = baseline_mod.render_onboarding_report(record)
+    return record, baseline_mod.save_baseline(config_dir, record, report_markdown)
+
+
 def run_init(
     *,
     config_dir: str | Path,
@@ -751,20 +860,10 @@ def run_init(
     detection = detect(
         config_dir, projects_root_path, extra_projects_roots=extra_projects_roots, find_wsl_roots=find_wsl_roots
     )
-
-    stdout.write("claude-token-lens init\n")
-    stdout.write(f"- config directory: {'exists' if detection.config_dir_exists else 'will be created'}\n")
-    stdout.write(f"- current project: {detection.project_slug}\n")
-    stdout.write(f"- projects discovered under projects root: {detection.project_count}\n")
-    for found in detection.wsl_roots:
-        stdout.write(f"- Claude Code sessions found in {discovery.source_label(found)}: {found}\n")
-    stdout.write(f"- config snapshots on file: {detection.snapshot_count}\n")
-    stdout.write(f"- usage log present: {'yes' if detection.usage_log_present else 'no'}\n")
     # claude_root: Claude Code's own folder (``--claude-root``, else
     # $CLAUDE_CONFIG_DIR, else ~/.claude), never config_dir's parent.
     health = hook_health.check(config_dir, now=now, claude_root=claude_root)
-    stdout.write(f"- config snapshot hook: {health.summary()}\n")
-    stdout.write("\n")
+    print_detection(detection, health, stdout)
     _offer_hook_repair(health, repair_hook=repair_hook, non_interactive=non_interactive, stdin=stdin, stdout=stdout, now=now)
 
     try:
@@ -784,44 +883,9 @@ def run_init(
     if answers.notes:
         stdout.write("\n")
 
-    updates: dict = {
-        "billing": answers.billing,
-        "exclude_projects": answers.exclude_projects,
-        "launch_overlays": answers.launch_overlays,
-        "shared_project_config": answers.shared_project_config,
-        "apply_scope": answers.apply_scope,
-        "capture_window": answers.capture_window,
-        "extra_projects_roots": answers.extra_projects_roots,
-        # Set once, on the first init: re-running init (to change an
-        # answer, or with --repair-hook) must not restart the capture
-        # window the user is already part-way through.
-        "capture_started": detection.existing_config.capture_started or now.isoformat(),
-    }
-    if answers.tz is not None:
-        updates["tz"] = answers.tz
-
-    try:
-        written_path = write_config_values(config_dir, updates)
-    except ConfigError as exc:
-        stdout.write(f"claude-token-lens init: {exc}\n")
-        return 2
-
-    stdout.write(f"Wrote {_relative_label(written_path, config_dir)}\n")
-    if written_path.name == "config.toml.new":
-        stdout.write(
-            "(the existing config.toml had a shape init could not merge automatically -- "
-            "reconcile config.toml.new by hand and rename it into place)\n"
-        )
-
-    project_config = ProjectConfig(
-        kind=None,
-        shared_project_config=answers.shared_project_config,
-        launch_overlays=answers.launch_overlays,
-        apply_scope=answers.apply_scope,
-    )
-    project_slug = discovery.slug_for(os.getcwd())
-    project_path = save_project_config(config_dir, project_slug, project_config)
-    stdout.write(f"Wrote {_relative_label(project_path, config_dir)}\n\n")
+    rc = save_config(config_dir, config_updates(answers, detection, now), answers=answers, stdout=stdout)
+    if rc != 0:
+        return rc
 
     if connect_step:
         # cli.py's connect step follows run_init: it shows the exact
@@ -839,15 +903,13 @@ def run_init(
         stdout.write(statusline_fragment.rstrip("\n") + "\n\n")
 
     config = load_config(config_dir)
-    baseline_slugs = list(project) if project else None
-    if not all_projects and not project_family and not baseline_slugs:
-        baseline_slugs = [project_slug]
-    project_dirs = discovery.resolve_project_dirs(
-        discovery.projects_roots([projects_root_path, *(extra_projects_roots or ())], config.extra_projects_roots),
-        slugs=baseline_slugs,
+    project_dirs = baseline_project_dirs(
+        config,
+        projects_root_path=projects_root_path,
+        extra_projects_roots=extra_projects_roots,
         all_projects=all_projects,
-        family_regex=project_family,
-        exclude_projects=config.exclude_projects,
+        project=project,
+        project_family=project_family,
     )
     if not project_dirs:
         stdout.write(
@@ -855,21 +917,9 @@ def run_init(
             "skipping the initial baseline capture.\n"
         )
     else:
-        try:
-            pricing = load_pricing(path=config.pricing_path, config_dir=config_dir)
-        except PricingError as exc:
-            stdout.write(f"claude-token-lens init: {exc}\n")
-            pricing = None
-        if pricing is not None:
-            record, _model = baseline_mod.build_baseline(
-                config=config,
-                pricing=pricing,
-                config_dir=config_dir,
-                project_dirs=project_dirs,
-                now=now,
-            )
-            report_markdown = baseline_mod.render_onboarding_report(record)
-            baseline_path = baseline_mod.save_baseline(config_dir, record, report_markdown)
+        saved = run_baseline(config_dir, project_dirs, now=now, stdout=stdout)
+        if saved is not None:
+            record, baseline_path = saved
             stdout.write(f"Wrote initial baseline {_relative_label(baseline_path, config_dir)}\n")
             stdout.write(f"Sessions analysed: {record['sessions_analysed']}\n")
 

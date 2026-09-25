@@ -2522,65 +2522,10 @@ def _cmd_init_capture_step(
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
     now = now or datetime.now(timezone.utc)
-    try:
-        config = load_config(config_dir)
-        given = onboarding.capture_answer(args.answers, args.capture_level)
-    except (ConfigError, onboarding.OnboardingError) as exc:
-        stdout.write(f"Metrics capture: skipped ({exc}).\n")
+    choice = _init_capture_choice(args, config_dir=config_dir, stdin=stdin, stdout=stdout, now=now)
+    if choice is None:
         return
-    if config.capture.is_on and given is None:
-        stdout.write(
-            f"\nMetrics capture is {capture_view.describe(config.capture)}. "
-            "'claude-token-lens capture' shows what it costs and changes it.\n"
-        )
-        return
-
-    def estimates() -> list[str]:
-        past, units = _capture_history(args, config, config_dir)
-        return _capture_estimate_lines(past, units) if past is not None else []
-
-    level, notes = onboarding.ask_capture_level(
-        estimates=estimates,
-        preset=given,
-        non_interactive=args.non_interactive,
-        stdin=stdin,
-        stdout=stdout,
-    )
-    for note in notes:
-        stdout.write(f"(derived) {note}\n")
-    if level not in capture_catalogue.LEVELS:
-        stdout.write(
-            f"{level!r} isn't a level, so metrics capture is left as it is. "
-            "'claude-token-lens capture on --level LEVEL' turns it on.\n"
-        )
-        return
-    if level == "off" and not config.capture.is_on:
-        if not notes:
-            stdout.write("Metrics capture left off.\n")
-        return
-    until = None
-    if level != "off":
-        if args.capture_for and args.capture_no_limit:
-            stdout.write("--capture-for and --capture-no-limit can't both be given.\n")
-            return
-        if args.capture_for:
-            match = _DURATION_RE.fullmatch(args.capture_for)
-            if not match or int(match.group(1)) == 0:
-                stdout.write(f"--capture-for {args.capture_for!r}: use a number and h, d or w, such as 12h, 7d or 2w.\n")
-                return
-            hours = int(match.group(1)) * _DURATION_UNIT_HOURS[match.group(2).lower()]
-            until = (now + timedelta(hours=hours)).isoformat(timespec="seconds")
-        else:
-            until, timebox_notes = onboarding.ask_capture_until(
-                now=now,
-                preset=True if args.capture_no_limit else None,
-                answers_path=args.answers,
-                non_interactive=args.non_interactive,
-                stdin=stdin,
-                stdout=stdout,
-            )
-            for note in timebox_notes:
-                stdout.write(f"(derived) {note}\n")
+    level, until = choice
     try:
         capture = set_capture(config_dir, level=level, until=until, now=now)
     except ConfigError as exc:
@@ -2608,6 +2553,76 @@ def _cmd_init_capture_step(
         stdout.write("Until then the chosen metrics can't be captured.\n")
 
 
+def _init_capture_choice(
+    args: argparse.Namespace, *, config_dir: Path, stdin, stdout, now: datetime
+) -> tuple[str, str | None] | None:
+    """The metrics capture question and its time-box question, asked or
+    taken from ``--capture-level``/``--capture-for``/
+    ``--capture-no-limit`` and the answers file: the ``(level, until)``
+    to save, or ``None`` to leave capture as it is (said on ``stdout``).
+    Writes nothing."""
+    try:
+        config = load_config(config_dir)
+        given = onboarding.capture_answer(args.answers, args.capture_level)
+    except (ConfigError, onboarding.OnboardingError) as exc:
+        stdout.write(f"Metrics capture: skipped ({exc}).\n")
+        return None
+    if config.capture.is_on and given is None:
+        stdout.write(
+            f"\nMetrics capture is {capture_view.describe(config.capture)}. "
+            "'claude-token-lens capture' shows what it costs and changes it.\n"
+        )
+        return None
+
+    def estimates() -> list[str]:
+        past, units = _capture_history(args, config, config_dir)
+        return _capture_estimate_lines(past, units) if past is not None else []
+
+    level, notes = onboarding.ask_capture_level(
+        estimates=estimates,
+        preset=given,
+        non_interactive=args.non_interactive,
+        stdin=stdin,
+        stdout=stdout,
+    )
+    for note in notes:
+        stdout.write(f"(derived) {note}\n")
+    if level not in capture_catalogue.LEVELS:
+        stdout.write(
+            f"{level!r} isn't a level, so metrics capture is left as it is. "
+            "'claude-token-lens capture on --level LEVEL' turns it on.\n"
+        )
+        return None
+    if level == "off" and not config.capture.is_on:
+        if not notes:
+            stdout.write("Metrics capture left off.\n")
+        return None
+    until = None
+    if level != "off":
+        if args.capture_for and args.capture_no_limit:
+            stdout.write("--capture-for and --capture-no-limit can't both be given.\n")
+            return None
+        if args.capture_for:
+            match = _DURATION_RE.fullmatch(args.capture_for)
+            if not match or int(match.group(1)) == 0:
+                stdout.write(f"--capture-for {args.capture_for!r}: use a number and h, d or w, such as 12h, 7d or 2w.\n")
+                return None
+            hours = int(match.group(1)) * _DURATION_UNIT_HOURS[match.group(2).lower()]
+            until = (now + timedelta(hours=hours)).isoformat(timespec="seconds")
+        else:
+            until, timebox_notes = onboarding.ask_capture_until(
+                now=now,
+                preset=True if args.capture_no_limit else None,
+                answers_path=args.answers,
+                non_interactive=args.non_interactive,
+                stdin=stdin,
+                stdout=stdout,
+            )
+            for note in timebox_notes:
+                stdout.write(f"(derived) {note}\n")
+    return level, until
+
+
 def _cmd_init_feedback_step(
     args: argparse.Namespace, *, config_dir: Path, claude_root: Path, stdin=None, stdout=None, now=None
 ) -> None:
@@ -2623,40 +2638,13 @@ def _cmd_init_feedback_step(
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
     now = now or datetime.now(timezone.utc)
-    try:
-        config = load_config(config_dir)
-        given = onboarding.feedback_answer(args.answers, getattr(args, "feedback", None))
-    except (ConfigError, onboarding.OnboardingError) as exc:
-        stdout.write(f"Feedback: skipped ({exc}).\n")
+    choice = _init_feedback_choice(args, config_dir=config_dir, claude_root=claude_root, stdin=stdin, stdout=stdout)
+    if choice is None:
         return
-    current = config.capture
-    was_on = "feedback_skill" in current.feedback
-    if was_on and given is None:
-        from . import footprint
-
-        if footprint.read_feedback_skill(claude_root) == capture_catalogue.feedback_skill_text():
-            stdout.write("\nThe /tl-feedback skill is on. 'claude-token-lens capture feedback off' turns it off.\n")
-            return
-        # On in config.toml without its skill file: picking Deep just
-        # turned it on (config.set_capture), or the file went missing.
-        stdout.write(
-            "\nThe /tl-feedback survey is on"
-            + (", as part of Deep" if current.level == "deep" else "")
-            + ". 'claude-token-lens capture feedback off' turns it off.\n"
-        )
-        on, notes = True, []
-    else:
-        on, notes = onboarding.ask_feedback(
-            preset=given, non_interactive=args.non_interactive, stdin=stdin, stdout=stdout
-        )
-    for note in notes:
-        stdout.write(f"(derived) {note}\n")
+    on, was_on, notes = choice
     if on != was_on:
-        feedback = [i for i in current.feedback if i not in _FEEDBACK_OFF]
-        if on:
-            feedback = list(current.feedback) + [i for i in _FEEDBACK_ON if i not in current.feedback]
         try:
-            set_capture(config_dir, feedback=feedback, now=now)
+            set_capture(config_dir, feedback=_feedback_ids(load_config(config_dir).capture.feedback, on), now=now)
         except ConfigError as exc:
             stdout.write(f"{exc}\n")
             return
@@ -2677,6 +2665,48 @@ def _cmd_init_feedback_step(
     _capture_skill_step(
         on, claude_root=claude_root, dry_run=args.dry_run, assume_yes=args.connect, stdin=stdin, stdout=stdout
     )
+
+
+def _feedback_ids(current: list[str], on: bool) -> list[str]:
+    """``[capture] feedback`` with the ``/tl-feedback`` skill and its
+    notes switched on or off (:data:`_FEEDBACK_ON`/:data:`_FEEDBACK_OFF`)."""
+    if on:
+        return list(current) + [i for i in _FEEDBACK_ON if i not in current]
+    return [i for i in current if i not in _FEEDBACK_OFF]
+
+
+def _init_feedback_choice(
+    args: argparse.Namespace, *, config_dir: Path, claude_root: Path, stdin, stdout
+) -> tuple[bool, bool, list[str]] | None:
+    """The feedback question, asked or taken from ``--feedback`` and the
+    answers file: ``(on, was_on, derived notes)``, or ``None`` when
+    there's nothing to decide (said on ``stdout``). Writes nothing."""
+    try:
+        config = load_config(config_dir)
+        given = onboarding.feedback_answer(args.answers, getattr(args, "feedback", None))
+    except (ConfigError, onboarding.OnboardingError) as exc:
+        stdout.write(f"Feedback: skipped ({exc}).\n")
+        return None
+    current = config.capture
+    was_on = "feedback_skill" in current.feedback
+    if was_on and given is None:
+        from . import footprint
+
+        if footprint.read_feedback_skill(claude_root) == capture_catalogue.feedback_skill_text():
+            stdout.write("\nThe /tl-feedback skill is on. 'claude-token-lens capture feedback off' turns it off.\n")
+            return None
+        # On in config.toml without its skill file: picking Deep just
+        # turned it on (config.set_capture), or the file went missing.
+        stdout.write(
+            "\nThe /tl-feedback survey is on"
+            + (", as part of Deep" if current.level == "deep" else "")
+            + ". 'claude-token-lens capture feedback off' turns it off.\n"
+        )
+        return True, was_on, []
+    on, notes = onboarding.ask_feedback(preset=given, non_interactive=args.non_interactive, stdin=stdin, stdout=stdout)
+    for note in notes:
+        stdout.write(f"(derived) {note}\n")
+    return on, was_on, notes
 
 
 def _cmd_init_connect_step(
@@ -3806,10 +3836,8 @@ def _cmd_capture(args: argparse.Namespace, *, stdin=None, stdout=None, now: date
             if len(args.values) != 1 or args.values[0] not in ("on", "off"):
                 raise ValueError(f"'capture {action}' needs on or off")
             on = args.values[0] == "on"
-            if action == "feedback" and on:
-                changes["feedback"] = list(current.feedback) + [i for i in _FEEDBACK_ON if i not in current.feedback]
-            elif action == "feedback":
-                changes["feedback"] = [i for i in current.feedback if i not in _FEEDBACK_OFF]
+            if action == "feedback":
+                changes["feedback"] = _feedback_ids(current.feedback, on)
             elif on:
                 changes["coaching"] = list(current.coaching) + [
                     i for i in ("brief_templates",) if i not in current.coaching
