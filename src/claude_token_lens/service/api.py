@@ -31,7 +31,7 @@ Two kinds of route:
   :func:`~claude_token_lens.report.build_report`/
   :func:`~claude_token_lens.recommend.recommend` pipeline the CLI's
   ``report`` subcommand uses, then a renderer. Rebuilt once per
-  ``(window_days, since, until, store-change-token)`` key and cached in-process (see
+  ``(window_days, since, until, window_by, project, store-change-token)`` key and cached in-process (see
   ``_ReportCache``) so switching UI tabs (``docs/ui.md``) never re-parses
   the whole store for the same window.
 
@@ -505,17 +505,20 @@ def _window_query(
     routes' usual 30-day default (docs/api.md's "byte-equivalent to the
     CLI" parity requirement for ``/api/report.*``).
 
-    Returns ``((window_days, since, until), None)`` on success, or
-    ``(None, error)`` -- an already-built ``400 bad_request`` response.
+    Returns ``((window_days, since, until, window_by), None)`` on
+    success, or ``(None, error)`` -- an already-built ``400 bad_request``
+    response. ``window_by`` is ``"first-reply"`` for "since your last
+    change", whose sessions are the ones that started on the new
+    settings, and ``"last-reply"`` otherwise.
     """
     name = _str_query(query, "window")
     if name == "all":
-        return (None, None, None), None
+        return (None, None, None, "last-reply"), None
     if name is not None:
         since, reason = _named_window_since(name, config_dir, latest=latest)
         if since is None:
             return None, _bad_request(reason)
-        return (None, since, None), None
+        return (None, since, None, "first-reply" if name == "change" else "last-reply"), None
     since = _str_query(query, "since")
     until = _str_query(query, "until")
     for label, value in (("since", since), ("until", until)):
@@ -526,10 +529,12 @@ def _window_query(
     window_days, err = _int_query(query, "window_days", default_days, minimum=1)
     if err is not None:
         return None, err
-    return (window_days, since, until), None
+    return (window_days, since, until, "last-reply"), None
 
 
-def _period_text(window_days: int | None, since: str | None, until: str | None, *, name: str | None = None) -> str:
+def _period_text(
+    window_days: int | None, since: str | None, until: str | None, window_by: str = "last-reply", *, name: str | None = None
+) -> str:
     """The window as a phrase that follows an amount: "over the last 30
     days", "in the last hour", "since 2026-09-20T10:00:00Z", "over all
     time"."""
@@ -839,6 +844,7 @@ def make_handler(
         window_days: int | None,
         since: str | None = None,
         until: str | None = None,
+        window_by: str = "last-reply",
         project: tuple[str, ...] | None = None,
     ):
         # Local import: service.rebuild is a sibling work package's
@@ -849,7 +855,12 @@ def make_handler(
         config = load_config(options.config_dir)
         rates = load_pricing(path=config.pricing_path, config_dir=options.config_dir)
         corpus = rebuild.corpus_from_store(
-            store, days=window_days, since=since, until=until, project_slugs=list(project) if project else None
+            store,
+            days=window_days,
+            since=since,
+            until=until,
+            window_by=window_by,
+            project_slugs=list(project) if project else None,
         )
         snaps = _snapshots_from_store()
         projects = tuple(sorted({bundle.slug for bundle in corpus.sessions if bundle.slug}))
@@ -907,7 +918,7 @@ def make_handler(
     def _slot_for(cache_key):
         """The report cache slot for a key (see ``report_cache``). Call
         with ``report_lock`` held."""
-        window_days, since, until, project = cache_key
+        window_days, since, until, _window_by, project = cache_key
         if window_days is None and until is None and since is not None:
             for name, start in named_window_starts.items():
                 if start == since:
@@ -973,6 +984,7 @@ def make_handler(
         window_days: int | None,
         since: str | None = None,
         until: str | None = None,
+        window_by: str = "last-reply",
         project: tuple[str, ...] | None = None,
     ):
         """The report for a window, built at most once per store change.
@@ -992,10 +1004,11 @@ def make_handler(
         ``project`` values for the same window never share a report.
         """
         # Cache key widened from a bare window_days to the full
-        # (window_days, since, until, project) tuple so a since/until or
-        # project-filtered request never collides with (or is served
-        # from) an unfiltered entry for the same store change_token.
-        cache_key = (window_days, since, until, project)
+        # (window_days, since, until, window_by, project) tuple so a
+        # since/until or project-filtered request never collides with (or
+        # is served from) an unfiltered entry for the same store
+        # change_token.
+        cache_key = (window_days, since, until, window_by, project)
         token = _cache_token()
         now = time.monotonic()
         with report_lock:
@@ -1398,7 +1411,7 @@ def make_handler(
         window, err = _listing_window(query)
         if err is not None:
             return err
-        window_days, since, until = window
+        window_days, since, until, window_by = window
         project, err = _project_query(query)
         if err is not None:
             return err
@@ -1410,12 +1423,16 @@ def make_handler(
             since = _round_iso_to_minute(since)
         if until is not None:
             until = _round_iso_to_minute(until)
-        result = store.summary(window_days=window_days, since=since, until=until, project_slugs=project)
+        result = store.summary(
+            window_days=window_days, since=since, until=until, project_slugs=project, window_by=window_by
+        )
         # Additive: what cache reads saved against sending the same
         # tokens fresh as input, from turns_agg in the same window.
         config = load_config(options.config_dir)
         rates = _capture_rates(config)
-        by_model = store.cache_read_tokens_by_model(days=window_days, since=since, until=until, project_slugs=project)
+        by_model = store.cache_read_tokens_by_model(
+            days=window_days, since=since, until=until, project_slugs=project, window_by=window_by
+        )
         result["cache_read_tokens"] = sum(by_model.values())
         result["cache_saved"] = (
             cache_read_savings_usd(
@@ -1432,7 +1449,7 @@ def make_handler(
         request names one (``window``, ``window_days``, ``since`` or
         ``until``), then the same one the report uses."""
         if not any(key in query for key in ("window", "window_days", "since", "until")):
-            return (None, None, None), None
+            return (None, None, None, "last-reply"), None
         return _window_query(query)
 
     def route_sessions(store, query, body):
@@ -1445,13 +1462,19 @@ def make_handler(
         window, err = _listing_window(query)
         if err is not None:
             return err
-        window_days, since, until = window
+        window_days, since, until, window_by = window
         project, err = _project_query(query)
         if err is not None:
             return err
         return _ok(
             store.sessions(
-                limit=limit, offset=offset, window_days=window_days, since=since, until=until, project_slugs=project
+                limit=limit,
+                offset=offset,
+                window_days=window_days,
+                since=since,
+                until=until,
+                project_slugs=project,
+                window_by=window_by,
             )
         )
 
@@ -1508,29 +1531,38 @@ def make_handler(
             window, err = _window_query(query)
             if err is not None:
                 return err
-            window_days, since, until = window
+            window_days, since, until, window_by = window
         else:
             window_days, err = _int_query(query, "days", 30, minimum=1)
             if err is not None:
                 return err
             since = until = None
+            window_by = "last-reply"
         split = _str_query(query, "split")
         if split not in (None, "agent", "model"):
             return _bad_request("'split' must be 'agent' or 'model'")
         project, err = _project_query(query)
         if err is not None:
             return err
-        return _ok(store.daily_usage(days=window_days, since=since, until=until, split=split, project_slugs=project))
+        return _ok(
+            store.daily_usage(
+                days=window_days, since=since, until=until, split=split, project_slugs=project, window_by=window_by
+            )
+        )
 
     def route_compactions(store, query, body):
         window, err = _listing_window(query)
         if err is not None:
             return err
-        window_days, since, until = window
+        window_days, since, until, window_by = window
         project, err = _project_query(query)
         if err is not None:
             return err
-        return _ok(store.compactions(window_days=window_days, since=since, until=until, project_slugs=project))
+        return _ok(
+            store.compactions(
+                window_days=window_days, since=since, until=until, project_slugs=project, window_by=window_by
+            )
+        )
 
     def _latest_baseline_row(store) -> dict | None:
         rows = store.baselines()

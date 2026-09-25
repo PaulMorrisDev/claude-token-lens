@@ -169,7 +169,7 @@ def _install_fake_rebuild(monkeypatch, corpus: corpus_mod.Corpus) -> None:
 
     fake = types.ModuleType("claude_token_lens.service.rebuild")
 
-    def corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+    def corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         # project_slugs (additive, project-filter work): the one argument
         # this fake does *not* ignore -- api.py's own project filter
         # (_project_query/_build_report_model) is what a test in this
@@ -1548,7 +1548,7 @@ def test_report_json_forwards_since_until_to_rebuild_and_ignores_default_window(
     calls = []
     real_corpus = server.corpus
 
-    def recording_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+    def recording_corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         calls.append({"days": days, "since": since, "until": until, "window_by": window_by})
         return real_corpus
 
@@ -1568,7 +1568,7 @@ def test_report_json_forwards_since_until_to_rebuild_and_ignores_default_window(
             "days": None,
             "since": "2026-08-01T00:00:00+00:00",
             "until": "2026-08-31T00:00:00+00:00",
-            "window_by": "mtime",
+            "window_by": "last-reply",
         }
     ]
     body = json.loads(raw)
@@ -1579,7 +1579,7 @@ def test_report_json_since_until_is_a_separate_cache_key_from_window_days(server
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -1601,7 +1601,7 @@ def test_report_json_is_memoized_per_window(server, monkeypatch):
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -1631,7 +1631,7 @@ def test_requests_for_a_window_already_being_built_share_that_build(server, monk
     started, release = threading.Event(), threading.Event()
     real_corpus = server.corpus
 
-    def slow_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+    def slow_corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         calls["n"] += 1
         started.set()
         release.wait(10)
@@ -1671,7 +1671,7 @@ def test_report_json_cache_invalidates_when_store_change_token_changes(server, m
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -1711,7 +1711,7 @@ def _count_builds(server, monkeypatch) -> dict:
     calls = {"n": 0}
     real_corpus = server.corpus
 
-    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="mtime", project_slugs=None):
+    def counting_corpus_from_store(store, *, days=None, since=None, until=None, window_by="last-reply", project_slugs=None):
         calls["n"] += 1
         return real_corpus
 
@@ -2125,7 +2125,7 @@ def test_all_time_window_has_no_limit(server):
     resp, payload = server.get_json("/api/quick-actions?window=all")
     assert resp.status == 200
     assert payload["data"]["period"] == "over all time"
-    assert service_api._window_query({"window": "all"}) == ((None, None, None), None)
+    assert service_api._window_query({"window": "all"}) == ((None, None, None, "last-reply"), None)
     resp, payload = server.get_json("/api/summary?window=all")
     assert resp.status == 200
     assert "sessions" in payload["data"]
@@ -2137,6 +2137,32 @@ def test_since_last_change_window_needs_a_change(server):
     assert "No change recorded yet" in payload["error"]["message"]
     resp, payload = server.get_json("/api/summary?window=fortnight")
     assert resp.status == 400
+
+
+def test_the_change_window_counts_the_sessions_started_since(server, monkeypatch):
+    """"Since my last change" counts sessions by their first reply, on
+    every store read, so its figures match the "Without this change"
+    line; the other windows keep counting sessions by their last."""
+    monkeypatch.setattr(
+        service_api, "_named_window_since", lambda name, config_dir, now=None, *, latest=None: ("2026-09-18T12:30:00Z", "")
+    )
+    assert service_api._window_query({"window": "change"}) == ((None, "2026-09-18T12:30:00Z", None, "first-reply"), None)
+    assert service_api._window_query({"window": "today"}) == ((None, "2026-09-18T12:30:00Z", None, "last-reply"), None)
+    seen = {}
+    for name in ("summary", "sessions", "daily_usage", "compactions", "cache_read_tokens_by_model"):
+        real = getattr(server.store, name)
+
+        def spy(*args, _name=name, _real=real, **kwargs):
+            seen[_name] = kwargs.get("window_by")
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(server.store, name, spy)
+    for route in ("summary", "sessions", "daily-usage", "compactions"):
+        resp, payload = server.get_json(f"/api/{route}?window=change")
+        assert resp.status == 200, payload
+    assert seen == dict.fromkeys(seen, "first-reply") and len(seen) == 5
+    server.get_json("/api/summary?window=today")
+    assert seen["summary"] == "last-reply"
 
 
 def test_named_window_since_is_rounded_to_the_minute():

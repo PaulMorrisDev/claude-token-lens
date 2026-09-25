@@ -966,6 +966,36 @@ def test_sessions_listing_keeps_only_sessions_with_a_reply_in_the_window(store: 
     assert store.summary(since="2026-09-18T13:30:00Z")["sessions"] == 0
 
 
+def test_first_reply_windows_count_only_the_sessions_started_in_them(store: Store) -> None:
+    """The "since my last change" rule: session-a (12:00 to 13:00 on
+    2026-09-18) was already running at 12:30, so it is left out whole,
+    and only session-b's rows are counted, on every read."""
+    _seed(store)
+    _seed_second_project(store)  # session-b, 12:00 to 13:00 on 2026-09-19
+    since = "2026-09-18T12:30:00Z"
+    assert store.summary(since=since)["sessions"] == 2
+    started = store.summary(since=since, window_by="first-reply")
+    assert started["sessions"] == 1
+    assert started["total_cost"] == pytest.approx(5.0)
+    assert [s["id"] for s in store.sessions(since=since, window_by="first-reply")] == ["session-b"]
+    assert {row["day"] for row in store.daily_usage(since=since)} == {"2026-09-18", "2026-09-19"}
+    days = store.daily_usage(since=since, window_by="first-reply")
+    assert {row["day"] for row in days} == {"2026-09-19"}
+    assert sum(row["cost"] for row in days) == pytest.approx(started["total_cost"])
+    assert store.cache_read_tokens_by_model(since=since, window_by="first-reply") == {"claude-sonnet-5": 100}
+    assert len(store.compactions(since=since)) == 2
+    assert [row["ts"] for row in store.compactions(since=since, window_by="first-reply")] == ["2026-09-19T12:30:00Z"]
+    # Nothing started in the window: every read is empty.
+    later = "2026-09-20T00:00:00Z"
+    assert store.summary(since=later, window_by="first-reply")["sessions"] == 0
+    assert store.daily_usage(since=later, window_by="first-reply") == []
+    assert store.compactions(since=later, window_by="first-reply") == []
+    # With no bound there is nothing to window by.
+    assert store.daily_usage(days=None, window_by="first-reply") == store.daily_usage(days=None)
+    with pytest.raises(ValueError):
+        store.summary(since=since, window_by="mtime")
+
+
 def test_summary_accepts_an_until_bound(store: Store) -> None:
     _seed(store)  # session-a's last reply is 2026-09-18T13:00:00Z
     assert store.summary(since="2026-09-17T00:00:00Z", until="2026-09-18T12:30:00Z")["sessions"] == 0

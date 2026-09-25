@@ -520,7 +520,11 @@ status line, at the foot of the sidebar.
   precedence over the other three params. It is turned into a `since`
   rounded down to the minute, so repeat requests share one cached report.
   A session counts when its last reply falls inside the window (so it
-  was active then), and it then counts in full.
+  was active then), and it then counts in full. `change` is the
+  exception: it counts the sessions whose *first* reply falls inside it
+  (the ones that started on the new settings), and `/api/daily-usage`
+  and `/api/compactions` then keep only those sessions' rows, so the
+  daily figures add up to `/api/summary`'s total.
 - **`window_days`** (int, at least 1, optional) — the last N days;
   defaults to 30 when neither `since` nor `until` is given.
 - **`since`** / **`until`** (ISO 8601, optional) — when either is

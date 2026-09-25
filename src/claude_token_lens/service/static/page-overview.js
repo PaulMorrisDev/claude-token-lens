@@ -239,7 +239,10 @@ function renderTiles(container, facts, meta, dailyRows) {
   // by the day they were sent, and says so beside this figure.
   var spend = moneyTile("Spend", facts.cost, {
     delta: hasPrevious ? deltaChip(facts.cost, facts.previousCost, { period: period }) : null,
-    note: "Every session with a reply in this window, earlier replies included.",
+    note:
+      state.window === "change"
+        ? "Every session started since your last change, so all of it ran on the new settings."
+        : "Every session with a reply in this window, earlier replies included.",
     class: "overview-spend",
   });
   var available = saving > 0

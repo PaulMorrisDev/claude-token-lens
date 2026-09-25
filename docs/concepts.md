@@ -208,7 +208,11 @@ size. No text is kept (`context_files.py`).
 - **Since my last change**: starts at the latest change point: an
   `apply`, its undo, a settings change the snapshot hook saw, a change
   to metrics capture, or a model, effort or CLAUDE.md size change your
-  sessions show (`change_points.py`). With at least 3 sessions started
+  sessions show (`change_points.py`). Unlike the other windows, it
+  counts the sessions that *started* after the change, so every figure
+  on the page, the daily spend chart included, is work done wholly on
+  the new settings. A session already running at the change isn't
+  counted, however long it ran on. With at least 3 sessions started
   since, the Overview adds what those sessions would have cost without
   it (see "Without this change" below).
 - **What-if estimate** (`whatif.py`): what a change would have saved

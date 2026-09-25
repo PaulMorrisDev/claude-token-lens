@@ -66,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **"Since my last change" counts only the sessions started since.**
+  It counted every session with a reply after the change, whole, so a
+  session begun before the change brought its earlier cost in, and the
+  daily spend chart took in the whole of the change's day. Every figure
+  on the page, the chart included, now covers the same sessions as the
+  "Without your last change" sentence.
 - **Loading says what it's waiting for.** Each view shows what is
   loading in words over its skeleton, a view being refreshed keeps its
   figures under an "Updating…" label, and the status line says when the
