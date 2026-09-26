@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it is an estimate, and it says which servers were sized from their
   own tools. See [`docs/tool-search.md`](docs/tool-search.md). Every
   log is read again once to pick this up.
+- **Do ClaudeGlass's figures match Claude Code's own?** Claude Code
+  writes down what it thinks a session cost, now and then. A new section
+  on Data quality, and a new check (`claudeglass check cost-record`),
+  compare that with ClaudeGlass's cost for the same replies, and split
+  out the known reasons they differ: a reply stopped mid-stream (its
+  tokens were used, so ClaudeGlass counts it and Claude Code doesn't),
+  and small requests no log records, such as naming the session. The
+  check asks you to report it if more than 5% is left unexplained. On
+  three real sessions, $66 in all, 0.01% was left.
 
 ### Changed
 
@@ -69,6 +78,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A conversation summary's own request was left out of spend.**
+  Claude Code bills the request that writes a summary but logs only
+  that a summary happened. Each summary now adds an estimated request,
+  on the model of the reply before it: that reply's context read from
+  the cache once more (written again if the cache had expired), with
+  the summary as output. It counts in every spend total, but not as a
+  reply, and Conversation summaries shows what summaries cost. On a
+  real 780,000-token summary the estimate came within 2% of Claude
+  Code's own cost for it (about $0.33). Data quality counts summaries
+  estimated and any that couldn't be. Every log is read again once to
+  pick this up.
+- **The check against Claude Code's own cost found gaps that weren't
+  there.** It compared a whole session with Claude Code's last recorded
+  total, which can be hours old, so a session that went on showed
+  ClaudeGlass 5.6% over. It now stops where Claude Code's total stops.
 - **A session started with `/clear` in a web or mobile session was
   counted twice.** Claude Code writes the new session's lines to its own
   log and also into the earlier session's log, so every reply in it was

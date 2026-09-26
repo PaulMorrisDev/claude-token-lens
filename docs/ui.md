@@ -813,8 +813,11 @@ CLI commands instead.
 3. **Service health** (`/api/health`, `renderHealth`): status, version,
    "Code on disk" (the same as running, or when it changed and to which
    version), last scan, the watcher's counts and recent errors.
-4. Any report section no other view claims (`SECTION_PAGE_MAP`'s
-   fallback).
+4. **Claude Code's own cost record** (`cost_record`, mapped here): its
+   cost for each session against ClaudeGlass's for the same replies, with
+   the stopped replies and unlogged requests that explain part of any
+   difference, as `claudeglass check cost-record` reports it. Then any
+   report section no other view claims (`SECTION_PAGE_MAP`'s fallback).
 5. `/api/diagnostics`: whether the hook and the status line work, then
    the parse-quality counters, matching the CLI report's Diagnostics.
 

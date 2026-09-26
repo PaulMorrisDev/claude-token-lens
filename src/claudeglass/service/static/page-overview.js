@@ -357,6 +357,7 @@ var CHECK_NAMES = {
   "tool-search": "MCP tool search",
   habits: "Work habits",
   quality: "Agent quality",
+  "cost-record": "ClaudeGlass's own figures",
 };
 
 // A row's state, in the icon and word Actions uses for it: fix (a rule

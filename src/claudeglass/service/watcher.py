@@ -241,7 +241,8 @@ def _build_turns_agg(result: TranscriptResult, pricing: Pricing) -> list[dict]:
         )
         resolved = pricing.resolve_model(turn.model)
         breakdown = price_turn(turn, resolved)
-        bucket["turns"] += 1
+        # An estimated compaction call is spend, not a reply.
+        bucket["turns"] += not turn.is_synthetic
         bucket["input_tokens"] += turn.input_tokens
         bucket["cache_creation_tokens"] += turn.cache_creation_tokens
         bucket["cache_read_tokens"] += turn.cache_read_tokens
