@@ -1,14 +1,16 @@
 /* claudeglass service UI: page-overview.js
  *
- * The Overview page answers "What should I change next?": a sentence
- * saying how this window went, four headline numbers against the period
- * before, daily spend beside the next best actions, how the setup
- * scores, and the totals behind a disclosure.
+ * The Overview answers the three questions people open the dashboard
+ * with, in order: Anything wrong? (every check as one list, with what
+ * fixing it saves), Did your changes work? (the latest changes, before
+ * against after), and Where do your tokens go? (three headline numbers,
+ * daily spend, and spend by project and by model). A sentence above
+ * says how the window went; the scores and totals are folded below.
  */
 
 import { clear, el, goTo, state, WINDOW_OPTIONS } from "./core.js";
-import { formatCell, fraction, money, moneyParts, projectName, shortTs, thousands } from "./format.js";
-import { fetchJson, findSection, loadRecommendations, loadReport, prefetchActions, withProject, withWindow } from "./api.js";
+import { fraction, money, moneyParts, projectName, shortTs, thousands } from "./format.js";
+import { fetchJson, findSection, loadQuickActions, loadRecommendations, loadReport, prefetchActions, withProject, withWindow } from "./api.js";
 import {
   button,
   copyToClipboard,
@@ -18,28 +20,32 @@ import {
   enterInTurn,
   errorNotice,
   loadingNode,
-  severityChip,
   tile,
   tileRow,
   timesText,
   toast,
 } from "./ui.js";
-import { renderTable } from "./grid.js";
+import { dataGrid, headRow, renderTable } from "./grid.js";
+import { icon } from "./icons.js";
 import { pageLink, viewIntro } from "./links.js";
 import { renderSetupCard } from "./shell.js";
-import { chartError, holdChart, setChartHeight } from "./charts.js";
-import { dailyChanges, meter, renderChart, savingsLevers, sparkline, windowDays } from "./charts-types.js";
+import { chartError, holdChart } from "./charts.js";
+import { dailyChanges, renderChart, savingsLevers, sparkline, windowDays } from "./charts-types.js";
 import { groupRecommendations, groupSavingUsd, groupTitle, listSaving } from "./page-actions.js";
+import { changesLink, renderChangeCards } from "./page-changes.js";
 
 // A page draw that a newer one (a new window) has replaced: its late
 // answers are dropped, so they can't take the chart back.
 var overviewRun = 0;
 
 // The entrance (docs/ui.md, "Motion"): the headline figures count up,
-// the chart draws in 80ms after they start, and the next best actions
-// arrive in turn 80ms after that. Under reduced motion nothing moves.
+// the chart draws in 80ms after they start, and the checklist's rows
+// arrive in turn. Under reduced motion nothing moves.
 var CHART_AFTER_MS = 80;
-var ACTIONS_AFTER_MS = 160;
+var ROWS_AFTER_MS = 160;
+
+// How many changes "Did your changes work?" shows; Your changes has all.
+var CHANGES_SHOWN = 2;
 
 // The headline figures last drawn, by tile: a new window counts up from
 // them, the first draw from 0.
@@ -61,7 +67,7 @@ function lastChangeLine(impactBody) {
   if (change.project) when.push("in " + (change.project_name ? projectName(change.project_name) : "one project") + " only");
   return el("p", { class: "notes last-change-without" }, [
     el("span", { text: "Without your last change (" }),
-    pageLink("setup/settings", change.label || "a settings change", { day: String(change.ts || "").slice(0, 10) }),
+    pageLink("changes", change.label || "a settings change", { day: String(change.ts || "").slice(0, 10) }),
     el("span", { text: ", " + when.join(", ") + "), " + without.since_text }),
   ]);
 }
@@ -175,7 +181,7 @@ function firstRun(container, health) {
   );
 }
 
-// -- the four tiles --------------------------------------------------------------------
+// -- the headline numbers ----------------------------------------------------------------
 
 // The price of a cache read against fresh input on the model that read
 // the most from the cache in this window (report.meta.rates; the daily
@@ -232,10 +238,12 @@ function availableSaving(levers, groups) {
   return total;
 }
 
+// Spend, what cache reads saved and the sessions, against the period
+// before. What the ways to save come to is in the sentence above, and
+// each one on its row of "Anything wrong?".
 function renderTiles(container, facts, meta, dailyRows) {
   var period = facts.phrase;
   var hasPrevious = !!period;
-  var saving = facts.available;
   var ratio = cacheReadRatio(meta, dailyRows);
   var ratioWords = ratio ? fraction(ratio) : "";
   var subagentRuns = Math.max(0, (facts.summary.transcripts || 0) - (facts.summary.sessions || 0));
@@ -250,13 +258,6 @@ function renderTiles(container, facts, meta, dailyRows) {
         : "Every session with a reply in this window, earlier replies included.",
     class: "overview-spend",
   });
-  var available = saving > 0
-    ? moneyTile("Available saving", saving, {
-        basis: "ceiling",
-        note: "The ways to save overlap, so together they save less than this.",
-        link: pageLink("spend/savings", "See the ways to save"),
-      })
-    : tile({ label: "Available saving", value: "None found", note: "Nothing in this window stands out as a saving.", link: pageLink("spend/savings", "See the ways to save") });
   // Before the cost of writing to the cache: Cache › Rebuilds leads with
   // the saving after it, so the two figures differ and each says which.
   var cache = moneyTile("Saved by cache reads", facts.summary.cache_saved || 0, {
@@ -273,10 +274,9 @@ function renderTiles(container, facts, meta, dailyRows) {
     hint: subagentRuns ? "and " + thousands(subagentRuns) + (subagentRuns === 1 ? " subagent run" : " subagent runs") : "No subagent runs",
     link: pageLink("spend/sessions", "See the sessions"),
   });
-  container.appendChild(tileRow([spend, available, cache, sessions], { class: "overview-tiles" }));
+  container.appendChild(tileRow([spend, cache, sessions], { class: "overview-tiles" }));
   var counts = [tileCount(spend, "spend", facts.cost, moneyValue(facts.cost)), tileCount(cache, "cache", facts.summary.cache_saved || 0, moneyValue(facts.summary.cache_saved || 0)), tileCount(sessions, "sessions", facts.summary.sessions || 0, wholeNumber)];
-  if (saving > 0) counts.push(tileCount(available, "available", saving, moneyValue(saving)));
-  return { spend: spend, saving: saving, counts: counts };
+  return { spend: spend, counts: counts };
 }
 
 // A tile's figure as it counts up: its node, the value it ends on and how
@@ -325,11 +325,11 @@ function addSpendTrend(spendTile, rows) {
   if (line) spendTile.appendChild(el("div", { class: "metric-spark", title: "Daily spend, " + thousands(days.length) + " days" }, [line]));
 }
 
-// -- the next best actions ---------------------------------------------------------------
+// -- anything wrong? ------------------------------------------------------------------------
 
 // about: the action it copies for. The button shows "Copy prompt" and is
 // named "Copy prompt for <action>", as codeBlockWithCopy names its
-// buttons, so five of them read as five different things.
+// buttons, so several of them read as several different things.
 function copyPromptButton(prompt, about) {
   var node = button("Copy prompt", { variant: "quiet", icon: "prompt", class: "action-copy", label: "Copy prompt" + (about ? " for " + about : "") });
   node.addEventListener("click", function () {
@@ -342,110 +342,158 @@ function copyPromptButton(prompt, about) {
   return node;
 }
 
-// The first five items on Actions › Recommendations, as it lists them
-// (groupRecommendations): a rule for several agent types is one item,
-// titled for all of them, and opens as one.
-function renderActions(container, groups) {
-  clear(container);
-  if (!groups.length) {
-    container.appendChild(emptyState("Nothing stands out to change in this window.", null, "Pick a longer window, or check back after more sessions."));
-    return;
-  }
-  var list = el("ol", { class: "next-actions" });
-  groups.slice(0, 5).forEach(function (group) {
-    var many = group.members.length > 1;
-    var fix = (group.members[0].fixes || [])[0];
-    var title = groupTitle(group);
-    var text = el("div", { class: "next-action-text" }, [el("p", { class: "next-action-title" }, [pageLink("actions/recommendations", title, { id: group.key })])]);
-    // Every action row says what it saves, so the list compares at a
-    // glance; one Actions couldn't put a figure on says so, in the words
-    // its full story uses. A for-your-information item isn't a change.
-    var saving = listSaving(group);
-    if (saving) text.appendChild(el("p", { class: "next-action-saving", text: saving }));
-    else if (group.severity !== "info") text.appendChild(el("p", { class: "next-action-saving next-action-unestimated", text: "Saving not worked out: it depends on how you use it." }));
-    var item = el("li", { class: "next-action" }, [el("div", { class: "next-action-severity" }, [severityChip(group.severity)]), text]);
-    // Several agent types have a prompt each: Actions lists them.
-    if (many) item.appendChild(el("div", { class: "next-action-copy" }, [pageLink("actions/recommendations", "See the " + thousands(group.members.length) + " prompts", { id: group.key })]));
-    else if (fix && fix.prompt) item.appendChild(el("div", { class: "next-action-copy" }, [copyPromptButton(fix.prompt, title)]));
-    list.appendChild(item);
+// Each check's area in a few words (quick_actions.CHECKS), for the
+// checklist's rows.
+var CHECK_NAMES = {
+  models: "Models",
+  effort: "Thinking effort",
+  compaction: "Conversation summaries",
+  cache: "Cache lifetime",
+  tools: "Tools, MCP servers and skills",
+  skills: "Skills",
+  "claude-md": "CLAUDE.md files",
+  "tool-output": "Tool output",
+  hooks: "Hooks",
+  habits: "Work habits",
+  quality: "Agent quality",
+};
+
+// A row's state, in the icon and word Actions uses for it: fix (a rule
+// that says "Do this"), look (worth a look), fine (nothing to do) and
+// unknown (not enough data).
+var ROW_LOOK = {
+  fix: { cls: "severity-action", icon: "critical", word: "Do this" },
+  look: { cls: "severity-advice", icon: "warning", word: "Worth a look" },
+  fine: { cls: "severity-good", icon: "success", word: "Nothing to do" },
+  unknown: { cls: "severity-info", icon: "info", word: "Not enough data" },
+};
+
+function rowBadge(state) {
+  var look = ROW_LOOK[state];
+  return el("span", { class: "severity-badge " + look.cls }, [icon(look.icon, { size: 14 }), el("span", { text: look.word })]);
+}
+
+// The checklist's rows: one per check (/api/quick-actions), carrying the
+// Actions items (groupRecommendations) its rules raised, so a check and
+// the recommendation it leads to are one row. An item no check draws on
+// is a row of its own. For-your-information items aren't problems.
+export function checklistRows(checks, groups) {
+  var problems = groups.filter(function (group) {
+    return group.severity === "action" || group.severity === "advice";
   });
-  container.appendChild(list);
-  container.appendChild(
-    el("p", { class: "next-actions-more" }, [
-      pageLink("actions/recommendations", groups.length > 5 ? "See all " + thousands(groups.length) + " recommendations" : "See the recommendations in full"),
-    ])
+  var claimed = {};
+  var rows = checks.map(function (check) {
+    var ids = check.rule_ids || [];
+    var mine = problems.filter(function (group) {
+      return ids.indexOf(group.id) !== -1;
+    });
+    mine.forEach(function (group) {
+      claimed[group.key] = true;
+    });
+    var raised = mine.length ? (mine.some(isAction) ? "fix" : "look") : null;
+    var state = raised || (check.status === "act" ? "look" : check.status === "ok" ? "fine" : "unknown");
+    return { check: check, groups: mine, state: state };
+  });
+  problems.forEach(function (group) {
+    if (!claimed[group.key]) rows.push({ check: null, groups: [group], state: isAction(group) ? "fix" : "look" });
+  });
+  var order = { fix: 0, look: 1, fine: 2, unknown: 3 };
+  return rows
+    .map(function (row, i) {
+      row.saving = row.groups.reduce(function (most, group) {
+        return Math.max(most, groupSavingUsd(group));
+      }, 0);
+      row.index = i;
+      return row;
+    })
+    .sort(function (a, b) {
+      return order[a.state] - order[b.state] || b.saving - a.saving || a.index - b.index;
+    });
+}
+
+function isAction(group) {
+  return group.severity === "action";
+}
+
+// The first sentence of a check's answer, for its row.
+function firstSentence(text) {
+  var match = String(text || "").match(/^.*?[.!?](\s|$)/);
+  return (match ? match[0] : String(text || "")).trim();
+}
+
+// One row: its state, its area and what's wrong, what fixing it saves,
+// and the way to the fix (a prompt to copy when there's one, and a link
+// to the item or the check on Actions).
+function checklistRow(row) {
+  var check = row.check;
+  var lead = row.groups[0];
+  var name = check ? CHECK_NAMES[check.id] || check.question : "Other";
+  var finding = lead ? groupTitle(lead) + (row.groups.length > 1 ? " (and " + (row.groups.length - 1) + " more)" : "") : firstSentence(check && check.summary);
+  var text = el("div", { class: "check-row-text" }, [el("p", { class: "check-row-title" }, [el("strong", { text: name }), el("span", { text: finding })])]);
+  if (row.state === "fix" || row.state === "look") {
+    var saving = lead ? listSaving(lead) : "";
+    text.appendChild(
+      el("p", {
+        class: "check-row-detail" + (saving ? "" : " is-unestimated"),
+        text: saving || (lead ? "Saving not worked out: it depends on how you use it." : ""),
+      })
+    );
+  }
+  var action = el("div", { class: "check-row-action" });
+  var fix = lead && lead.members.length === 1 ? (lead.members[0].fixes || [])[0] : null;
+  if (fix && fix.prompt) action.appendChild(copyPromptButton(fix.prompt, groupTitle(lead)));
+  if (lead) action.appendChild(pageLink("actions/recommendations", lead.members.length > 1 ? "See the " + lead.members.length + " prompts" : "See the fix", { id: lead.key }));
+  else if (check && (row.state === "look" || row.state === "fix")) action.appendChild(pageLink("actions/checks", "See the check", { id: check.id }));
+  return el("li", { class: "check-row is-" + row.state }, [rowBadge(row.state), text, action]);
+}
+
+// A folded list of the rows that need nothing: their area and the first
+// sentence of their answer, each linked to its check.
+function quietRows(rows, summaryText) {
+  var list = el(
+    "ul",
+    { class: "check-quiet-list" },
+    rows.map(function (row) {
+      return el("li", null, [
+        rowBadge(row.state),
+        pageLink("actions/checks", CHECK_NAMES[row.check.id] || row.check.question, { id: row.check.id }),
+        el("span", { class: "check-quiet-text", text: " " + firstSentence(row.check.summary) }),
+      ]);
+    })
   );
+  return el("details", { class: "disclosure check-quiet" }, [el("summary", { text: summaryText }), list]);
 }
 
-// -- how the setup scores ----------------------------------------------------------------
-
-// Each area as a sentence about its number, and which way is better
-// (scorecard.py's metrics; helptext.py's "dimensions").
-var DIMENSION_TEXT = {
-  cache_efficiency: {
-    sentence: function (v) {
-      return formatCell(v, "pct") + " of cache writes rebuilt context that had expired or changed.";
-    },
-    better: "Lower is better: a rebuild pays again for context you already had.",
-    area: "cache/rebuilds",
-  },
-  context_hygiene: {
-    sentence: function (v) {
-      return "9 in 10 main session replies carried less than " + formatCell(v, "tokens") + " tokens of context.";
-    },
-    better: "Lower is better: every reply pays to re-read its whole context.",
-    area: "spend/usage",
-  },
-  agent_efficiency: {
-    sentence: function (v) {
-      return "Your costliest agent type costs " + formatCell(v, "float") + " times as much per run as a typical one.";
-    },
-    better: "Lower is better: a big gap points to one agent type worth trimming.",
-    area: "agents/subagents",
-  },
-  config_fit: {
-    sentence: function (v) {
-      return formatCell(v, "int") + (v === 1 ? " setting" : " settings") + " changed during this window.";
-    },
-    better: "Fewer is better: frequent changes make before-and-after comparisons unreliable.",
-    area: "setup/settings",
-  },
-  data_quality: {
-    sentence: function (v) {
-      return formatCell(v, "pct") + " of tokens have a known price.";
-    },
-    better: "Higher is better: tokens without a price count as free, so costs read low.",
-    area: "data",
-  },
-};
-
-// The recommendations that move each area, most direct first.
-var DIMENSION_ACTIONS = {
-  cache_efficiency: ["ttl-switch", "notification-invalidation", "cache-read-dominance", "env-disable-prompt-caching", "baseline-bloat"],
-  context_hygiene: ["compaction-churn", "long-context-share", "agent-report-size"],
-  agent_efficiency: [
-    "model-tier",
-    "spawn-cost",
-    "spawn-claude-md",
-    "spawn-shared-claude-md",
-    "spawn-unused-mcp",
-    "spawn-unused-skills",
-    "spawn-read-only-tools",
-    "spawn-task-prompt",
-    "effort-mismatch",
-    "subagent-volume",
-  ],
-  data_quality: ["data-quality", "pricing-coverage"],
-};
-
-// Level 5-4 good, 3 fair, 2 poor, 1 very poor; 0 is not measured.
-function levelStatus(level) {
-  if (level >= 4) return "good";
-  if (level === 3) return "warn";
-  if (level === 2) return "serious";
-  if (level === 1) return "critical";
-  return "";
+function countWord(n, one, many) {
+  return n === 1 ? "1 " + one : thousands(n) + " " + many;
 }
+
+// "Anything wrong?": what needs fixing first, then what's worth a look,
+// then the checks with nothing to do and those with too little data,
+// each folded into one line.
+function renderChecklist(container, head, rows) {
+  var by = { fix: [], look: [], fine: [], unknown: [] };
+  rows.forEach(function (row) {
+    by[row.state].push(row);
+  });
+  var parts = [];
+  if (by.fix.length) parts.push(countWord(by.fix.length, "thing to fix", "things to fix"));
+  if (by.look.length) parts.push(countWord(by.look.length, "worth a look", "worth a look"));
+  if (by.fine.length) parts.push(countWord(by.fine.length, "check fine", "checks fine"));
+  if (by.unknown.length) parts.push(countWord(by.unknown.length, "without enough data", "without enough data"));
+  head.appendChild(el("p", { class: "overview-answer-count", text: parts.join(" · ") }));
+  var problems = by.fix.concat(by.look);
+  if (!problems.length) {
+    container.appendChild(
+      el("p", { class: "check-none" }, [rowBadge("fine"), el("span", { text: " Nothing looks wrong in this window: every check with enough data found nothing to fix." })])
+    );
+  } else {
+    container.appendChild(el("ul", { class: "check-rows" }, problems.map(checklistRow)));
+  }
+  if (by.fine.length) container.appendChild(quietRows(by.fine, countWord(by.fine.length, "check found nothing to fix", "checks found nothing to fix")));
+  if (by.unknown.length) container.appendChild(quietRows(by.unknown, countWord(by.unknown.length, "check had too little data to answer", "checks had too little data to answer")));
+}
+
 
 function tableNamed(section, name) {
   return ((section && section.tables) || []).filter(function (t) {
@@ -453,87 +501,70 @@ function tableNamed(section, name) {
   })[0];
 }
 
-function renderScorecard(container, section, groups) {
-  var dimTable = tableNamed(section, "dimensions");
-  if (!dimTable || !dimTable.rows.length) {
-    container.appendChild(emptyState("No scores for this window: it had no sessions to rate.", null, "Pick a longer window."));
-    return;
-  }
-  var labels = dimTable.value_labels || {};
-  function plain(raw) {
-    return labels[raw] || String(raw).replace(/_/g, " ");
-  }
-  var overall = tableNamed(section, "overall");
-  var overallRow = overall && overall.rows[0]; // [metric, level, label]
-  if (overallRow) {
-    var lowest = dimTable.rows.filter(function (row) {
-      return row[0] !== "data_quality" && row[1] === overallRow[1];
-    });
-    var line = el("p", { class: "scorecard-overall" }, [
-      el("span", { text: "Overall: " }),
-      meter(overallRow[1], { label: "Overall score", status: levelStatus(overallRow[1]), text: overallRow[1] ? plain(overallRow[2]) + ", " + overallRow[1] + " of 5" : "Not measured" }),
-    ]);
-    if (lowest.length && overallRow[1]) {
-      line.appendChild(
-        el("span", {
-          class: "scorecard-overall-why",
-          text:
-            "Set by your lowest area" +
-            (lowest.length === 1 ? ", " : "s, ") +
-            lowest
-              .map(function (row) {
-                return plain(row[0]).toLowerCase();
-              })
-              .join(" and ") +
-            ".",
-        })
-      );
-    }
-    container.appendChild(line);
-  }
-  // A rule's first item on Actions: a rule for several agent types is
-  // one item there, named for all of them.
-  var byId = {};
-  groups.forEach(function (group) {
-    if (!byId[group.id]) byId[group.id] = group;
-  });
-  // Tagged like a report table, so evidence links from a recommendation
-  // find the row (evidence.js).
-  var strip = el("ul", { class: "scorecard-strip", "data-table-name": "dimensions" });
-  dimTable.rows.forEach(function (row) {
-    // [dimension, level, label, metric, value, threshold]
-    var dimension = row[0], level = row[1], value = row[4], threshold = row[5];
-    var copy = DIMENSION_TEXT[dimension];
-    var measured = typeof level === "number" && level > 0;
-    var item = el("li", { class: "score-item", "data-row-key": String(dimension) }, [
-      el("h3", { class: "score-name", text: plain(dimension) }),
-      meter(level, { label: plain(dimension), status: levelStatus(level), text: measured ? plain(row[2]) : "Not measured" }),
-    ]);
-    var noSnapshot = threshold === "no config snapshot available";
-    item.appendChild(
-      el("p", {
-        class: "score-sentence",
-        text: copy && typeof value === "number" && !noSnapshot ? copy.sentence(value) : plain(threshold || row[3]),
-      })
-    );
-    if (copy) item.appendChild(el("p", { class: "score-better", text: copy.better }));
-    var links = el("p", { class: "score-links" });
-    if (copy) links.appendChild(pageLink(copy.area));
-    var mover = (DIMENSION_ACTIONS[dimension] || [])
-      .map(function (id) {
-        return byId[id];
-      })
-      .filter(Boolean)[0];
-    if (mover && level < 5) {
-      links.appendChild(el("span", { class: "score-mover" }, [el("span", { text: "What moves it: " }), pageLink("actions/recommendations", groupTitle(mover), { id: mover.key })]));
-    }
-    if (links.childNodes.length) item.appendChild(links);
-    strip.appendChild(item);
-  });
-  container.appendChild(strip);
-}
 
 // -- the page ------------------------------------------------------------------------------------
+
+// One of the Overview's three answers: an h2 asking the question, a
+// line under it that answers in brief, then the body.
+function answerSection(id, question, extraClass) {
+  var head = el("div", { class: "overview-answer-head" }, [el("h2", { id: id + "-title", text: question })]);
+  var body = el("div", { class: "overview-answer-body" });
+  var section = el("section", { class: "overview-answer" + (extraClass ? " " + extraClass : ""), id: id, "aria-labelledby": id + "-title" }, [head, body]);
+  return { section: section, head: head, body: body };
+}
+
+// Where the window's tokens went, by model: the daily rows summed.
+function byModelRows(dailyRows) {
+  var cost = {};
+  dailyRows.forEach(function (row) {
+    if (row.model) cost[row.model] = (cost[row.model] || 0) + (Number(row.cost) || 0);
+  });
+  return Object.keys(cost)
+    .filter(function (model) {
+      return cost[model] > 0;
+    })
+    .sort(function (a, b) {
+      return cost[b] - cost[a];
+    })
+    .map(function (model) {
+      return [model, cost[model]];
+    });
+}
+
+// "Where do your tokens go?" under the chart: by project (the report's
+// usage table) and by model, each a short ranked list with bars. A list
+// of one says nothing a ranking would, so it isn't drawn.
+function renderBreakdown(container, report, dailyRows) {
+  clear(container);
+  var parts = [];
+  var byProject = report ? tableNamed(findSection(report, "usage"), "by_project") : null;
+  if (byProject && byProject.rows && byProject.rows.length > 1) {
+    // The table's "How to read this" sits beside this heading.
+    var head = headRow(el("h3", { text: "By project" }), null, "By project");
+    parts.push(el("div", { class: "overview-breakdown-part" }, [head, renderTable(byProject, "overview-by-project", state.currency, { heading: false, helpInto: head })]));
+  }
+  var models = byModelRows(dailyRows);
+  if (models.length > 1) {
+    parts.push(
+      el("div", { class: "overview-breakdown-part" }, [
+        el("h3", { text: "By model" }),
+        dataGrid({
+          id: "overview-by-model",
+          caption: "Spend by model",
+          columns: [
+            { key: "model", label: "Model", kind: "str" },
+            { key: "cost", label: "Cost", kind: "money" },
+          ],
+          rows: models,
+          sortable: false,
+        }),
+      ])
+    );
+  }
+  parts.forEach(function (part) {
+    container.appendChild(part);
+  });
+}
 
 export function renderOverview(panel) {
   var run = ++overviewRun;
@@ -545,34 +576,28 @@ export function renderOverview(panel) {
 
   var notices = el("div", { class: "overview-notices" });
   var sentence = el("div", { class: "overview-lead", "aria-live": "polite" }, [loadingNode("Loading this window", "lines")]);
+
+  // 1. Anything wrong?
+  var wrong = answerSection("overview-wrong", "Anything wrong?");
+  wrong.body.appendChild(loadingNode("Loading the checks", "rows"));
+  // 2. Did your changes work?
+  var changes = answerSection("overview-changes", "Did your changes work?");
+  changes.body.appendChild(loadingNode("Loading your changes", "rows"));
+  // 3. Where do your tokens go?
+  var tokens = answerSection("overview-tokens", "Where do your tokens go?");
   var tilesHost = el("div", { class: "overview-tiles-host" }, [loadingNode("Loading the headline numbers", "tiles")]);
   var chartHost = el("div", { class: "overview-chart" });
-  var actionsHost = el("div", { class: "panel-body" }, [loadingNode("Loading the next best actions", "rows")]);
-  var actionsPanel = el("section", { class: "panel overview-actions", "aria-labelledby": "overview-actions-title" }, [
-    el("header", { class: "panel-head" }, [
-      el("div", { class: "panel-title-row" }, [el("h2", { class: "panel-title", id: "overview-actions-title", text: "Next best actions" })]),
-      el("p", { class: "panel-intro", text: "The changes that matter most for this window, from your own sessions." }),
-    ]),
-    actionsHost,
-  ]);
-  var scoreHost = el("div", null, [loadingNode("Loading the scores", "tiles")]);
-  var scoreSection = el("section", { class: "overview-scores", "aria-labelledby": "overview-scores-title" }, [
-    el("h2", { id: "overview-scores-title", text: "How your setup scores" }),
-    el("p", { class: "section-intro", text: "Five areas rated 1 to 5 for this window. Each links to where to look and to the change that would help most." }),
-    scoreHost,
-  ]);
+  var breakdownHost = el("div", { class: "overview-breakdown" });
+  tokens.body.appendChild(tilesHost);
+  tokens.body.appendChild(chartHost);
+  tokens.body.appendChild(breakdownHost);
+
   var details = el("details", { class: "disclosure overview-details", id: "overview-details" });
-  details.appendChild(el("summary", { text: "Totals, and how amounts are counted" }));
+  details.appendChild(el("summary", { text: "Scores, totals, and how amounts are counted" }));
   var detailsBody = el("div", { class: "overview-details-body" });
   details.appendChild(detailsBody);
 
-  var main = el("div", { class: "overview-main" }, [chartHost, actionsPanel]);
-  var body = el("div", { class: "overview-body" }, [
-    tilesHost,
-    main,
-    scoreSection,
-    details,
-  ]);
+  var body = el("div", { class: "overview-body" }, [wrong.section, changes.section, tokens.section, details]);
   panel.appendChild(notices);
   panel.appendChild(sentence);
   panel.appendChild(body);
@@ -589,28 +614,23 @@ export function renderOverview(panel) {
     : Promise.resolve(null);
   var dailyLoad = fetchJson(withWindow("/api/daily-usage") + "&split=agent");
   var impactLoad = fetchJson("/api/impact");
-  // Recommendations are built from the report, so they follow it.
+  // Recommendations and checks are built from the report, so they follow it.
   var recsLoad = reportLoad.then(function () {
     return loadRecommendations();
   });
+  var checksLoad = reportLoad.then(function () {
+    return loadQuickActions();
+  });
   if (!holdChart(chartHost, "daily-spend", { slot: "overview" })) chartHost.appendChild(loadingNode("Loading daily spend", "chart"));
-  // Refit once both the chart and the actions are drawn, whichever lands last.
-  var actionsDrawn = false;
-  var chartDrawn = false;
   // When the headline figures began to count: the chart draws in after.
   var entrance = null;
-  function fitChart() {
-    if (!current() || !actionsDrawn || !chartDrawn) return;
-    chartHeight = fittedChartHeight(main, chartHost, actionsPanel);
-    setChartHeight("daily-spend", { slot: "overview" }, chartHeight);
-  }
 
   setupLoad.then(function (result) {
     if (!current()) return;
     renderSetupCard(result.body && result.body.ok ? result.body.data : null, notices);
   });
 
-  var figuresDrawn = Promise.all([reportLoad, summaryLoad, previousLoad, recsLoad, healthLoad, dailyLoad]).then(function (loaded) {
+  var figuresDrawn = Promise.all([reportLoad, summaryLoad, previousLoad, recsLoad, healthLoad, dailyLoad, checksLoad]).then(function (loaded) {
     if (!current()) return;
     var reportResult = loaded[0];
     var summaryBody = loaded[1].body;
@@ -618,6 +638,7 @@ export function renderOverview(panel) {
     var recsBody = loaded[3].body;
     var healthBody = loaded[4].body;
     var dailyBody = loaded[5].body;
+    var checksBody = loaded[6].body;
     var dailyRows = dailyBody && dailyBody.ok === true ? dailyBody.data || [] : [];
     clear(sentence);
     clear(tilesHost);
@@ -671,55 +692,72 @@ export function renderOverview(panel) {
       phrase: previous ? previous.phrase : null,
     };
     facts.previousCost = facts.previousSummary ? facts.previousSummary.total_cost || 0 : null;
-    facts.available = availableSaving(levers, groups);
+    facts.saving = availableSaving(levers, groups);
     var tiles = renderTiles(tilesHost, facts, meta, dailyRows);
     addSpendTrend(tiles.spend, dailyRows);
     countTiles(tiles.counts);
     entrance = performance.now();
-    facts.saving = tiles.saving;
-    facts.worth = groups.filter(function (group) {
-      return group.severity === "action" || group.severity === "advice";
-    }).length;
+    // 1. Anything wrong? Every check, with the Actions items its rules
+    // raised on the same row. The sentence counts the same rows.
+    var rows = checksBody && checksBody.ok === true ? checklistRows((checksBody.data && checksBody.data.checks) || [], groups) : null;
+    facts.worth = rows
+      ? rows.filter(function (row) {
+          return row.state === "fix" || row.state === "look";
+        }).length
+      : groups.filter(function (group) {
+          return group.severity === "action" || group.severity === "advice";
+        }).length;
     sentence.appendChild(el("p", { class: "overview-summary", text: summarySentence(facts) }));
-
-    if (recsBody && recsBody.ok === true) {
-      renderActions(actionsHost, groups);
-      enterInTurn(actionsHost.querySelectorAll(".next-action"), ACTIONS_AFTER_MS);
+    clear(wrong.body);
+    if (rows) {
+      renderChecklist(wrong.body, wrong.head, rows);
+      enterInTurn(wrong.body.querySelectorAll(".check-row"), ROWS_AFTER_MS);
     } else {
-      clear(actionsHost);
-      actionsHost.appendChild(errorNotice(recsBody && recsBody.error));
+      wrong.body.appendChild(errorNotice(checksBody && checksBody.error, function () {
+        goTo("overview", { force: true });
+      }));
     }
-    actionsDrawn = true;
-    fitChart();
+    renderBreakdown(breakdownHost, report, dailyRows);
 
-    clear(scoreHost);
     clear(detailsBody);
     if (reportResult.error) {
-      scoreHost.appendChild(errorNotice(reportResult.error));
       detailsBody.appendChild(errorNotice(reportResult.error));
       return;
     }
-    renderScorecard(scoreHost, findSection(report, "scorecard"), groups);
     renderDetails(detailsBody, report);
-
   });
 
-  // The chart waits for the headline figures, so it draws in after them
-  // and at the height of the actions beside it. Figures that failed to
-  // draw still let it draw; their error is thrown on its own, as it
-  // would have been.
+  // The figures failing to draw still let the rest draw; their error is
+  // thrown on its own, as it would have been.
   var figuresDone = figuresDrawn.then(null, function (err) {
     setTimeout(function () {
       throw err;
     });
   });
+
+  // 2. Did your changes work? The latest two, in short; the rest on
+  // Your changes.
+  Promise.all([impactLoad, figuresDone]).then(function (loaded) {
+    if (!current() || body.hidden) return;
+    clear(changes.body);
+    var impact = loaded[0].body;
+    if (!impact || impact.ok !== true) {
+      changes.body.appendChild(errorNotice(impact && impact.error));
+      return;
+    }
+    var count = renderChangeCards(changes.body, impact.data, { compact: true, limit: CHANGES_SHOWN });
+    if (count) changes.head.appendChild(el("p", { class: "overview-answer-count" }, [changesLink(count)]));
+  });
+
+  // 3. Where do your tokens go? The chart waits for the headline
+  // figures, so it draws in after them.
   var chartDone = Promise.all([dailyLoad, impactLoad, reportLoad, figuresDone, summaryLoad]).then(function (loaded) {
     if (!current() || body.hidden) return;
     var daily = loaded[0].body;
     if (!daily || daily.ok !== true) {
       chartError(chartHost, "daily-spend", daily && daily.error, function () {
         goTo("overview", { force: true });
-      }, { slot: "overview", titleTag: "h2" });
+      }, { slot: "overview", titleTag: "h3" });
       return;
     }
     var summaryBody = loaded[4].body;
@@ -734,8 +772,7 @@ export function renderOverview(panel) {
       ),
       {
         slot: "overview",
-        titleTag: "h2",
-        height: chartHeight,
+        titleTag: "h3",
         delay: entrance === null ? 0 : Math.max(0, entrance + CHART_AFTER_MS - performance.now()),
         // A day leads to the sessions active on it.
         open: function (day) {
@@ -743,8 +780,6 @@ export function renderOverview(panel) {
         },
       }
     );
-    chartDrawn = true;
-    fitChart();
   });
 
   // "Since my last change": what the sessions started since would have
@@ -762,36 +797,6 @@ export function renderOverview(panel) {
   });
 }
 
-// -- lining the chart up with the actions ------------------------------------------------
-
-var CHART_HEIGHT = 300;
-var CHART_MAX_HEIGHT = 560;
-// The height the chart last fitted to: a window change redraws at it, so
-// the morph doesn't shrink the chart and grow it again.
-var chartHeight = CHART_HEIGHT;
-
-// How tall a panel's content is, whatever height the grid stretched it to.
-function contentHeight(node) {
-  var top = node.getBoundingClientRect().top;
-  var bottom = top;
-  Array.prototype.forEach.call(node.children, function (child) {
-    var rect = child.getBoundingClientRect();
-    if (rect.height > 0) bottom = Math.max(bottom, rect.bottom);
-  });
-  var style = getComputedStyle(node);
-  return bottom - top + parseFloat(style.paddingBottom) + parseFloat(style.borderBottomWidth);
-}
-
-// From 1440 up the chart and the actions sit side by side. The chart
-// grows to the actions' height, so neither panel ends in a blank band.
-function fittedChartHeight(main, chartHost, actionsPanel) {
-  var chart = chartHost.querySelector(".chart");
-  var svg = chart && chart.querySelector(".chart-plot > svg");
-  if (!svg || getComputedStyle(main).gridTemplateColumns.split(" ").length < 2) return CHART_HEIGHT;
-  var drawn = Number(svg.getAttribute("height")) || CHART_HEIGHT;
-  var target = drawn + contentHeight(actionsPanel) - contentHeight(chart);
-  return Math.round(Math.max(CHART_HEIGHT, Math.min(CHART_MAX_HEIGHT, target)));
-}
 
 // The report's tables by name, across sections, for the savings levers.
 function tablesOf(report) {
@@ -804,7 +809,9 @@ function tablesOf(report) {
   return tables;
 }
 
-// Details: which billing mode the amounts follow and why, and the totals.
+// Details: which billing mode the amounts follow and why, how the setup
+// scores (the table a recommendation's evidence can point at), and the
+// totals.
 function renderDetails(container, report) {
   var meta = report.meta || {};
   // meta.amounts_basis says whether amounts are shares of the weekly
@@ -822,6 +829,8 @@ function renderDetails(container, report) {
         basis,
     })
   );
+  var scores = tableNamed(findSection(report, "scorecard"), "dimensions");
+  if (scores) container.appendChild(renderTable(scores, "overview-scores-table", state.currency));
   var totals = tableNamed(findSection(report, "overview"), "totals");
   // Cost by model is on Spend, Usage (links.js's TABLE_PAGE_MAP).
   if (totals) container.appendChild(renderTable(totals, "overview-totals-table", state.currency));

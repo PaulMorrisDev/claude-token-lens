@@ -51,19 +51,20 @@ def test_the_grouping_is_written_once_and_exported() -> None:
 def test_the_overview_counts_and_links_the_groups_actions_shows() -> None:
     render = _body("page-overview.js", "renderOverview")
     assert "var groups = groupRecommendations(recs);" in render
-    assert "facts.available = availableSaving(levers, groups);" in render
-    assert "facts.worth = groups.filter(" in render
-    assert "renderActions(actionsHost, groups);" in render
-    assert 'renderScorecard(scoreHost, findSection(report, "scorecard"), groups);' in render
-    actions = _body("page-overview.js", "renderActions")
-    assert "groups.slice(0, 5)" in actions
-    assert '"See all " + thousands(groups.length) + " recommendations"' in actions
-    assert 'pageLink("actions/recommendations", title, { id: group.key })' in actions
-    assert "listSaving(group)" in actions
+    assert "facts.saving = availableSaving(levers, groups);" in render
+    assert "facts.worth = rows" in render
+    # "Anything wrong?": every check, with the Actions items its rules
+    # raised on the same row; an item no check draws on is a row too.
+    assert "checklistRows((checksBody.data && checksBody.data.checks) || [], groups)" in render
+    # The sentence counts the checklist's rows, so the two agree.
+    assert 'return row.state === "fix" || row.state === "look";' in render
+    rows = _body("page-overview.js", "checklistRows")
+    assert "return ids.indexOf(group.id) !== -1;" in rows
+    assert "if (!claimed[group.key]) rows.push(" in rows
+    row = _body("page-overview.js", "checklistRow")
+    assert "listSaving(lead)" in row
     # A group for several agent types opens on Actions, where each has its prompt.
-    assert '"See the " + thousands(group.members.length) + " prompts", { id: group.key }' in actions
-    scorecard = _body("page-overview.js", "renderScorecard")
-    assert 'pageLink("actions/recommendations", groupTitle(mover), { id: mover.key })' in scorecard
+    assert '"See the " + lead.members.length + " prompts"' in row
 
 
 def test_each_copy_prompt_button_is_named_for_its_action() -> None:
@@ -73,10 +74,8 @@ def test_each_copy_prompt_button_is_named_for_its_action() -> None:
     copy = _body("page-overview.js", "copyPromptButton")
     assert 'button("Copy prompt", {' in copy
     assert 'label: "Copy prompt" + (about ? " for " + about : "")' in copy
-    actions = _body("page-overview.js", "renderActions")
-    assert "var title = groupTitle(group);" in actions
-    assert "copyPromptButton(fix.prompt, title)" in actions
-    assert re.findall(r"copyPromptButton\(([^)]*)\)", actions) == ["fix.prompt, title"]
+    row = _body("page-overview.js", "checklistRow")
+    assert row.count("copyPromptButton(") == 1 and "copyPromptButton(fix.prompt, groupTitle(lead))" in row
 
 
 def test_the_sidebar_count_is_the_inbox_count() -> None:

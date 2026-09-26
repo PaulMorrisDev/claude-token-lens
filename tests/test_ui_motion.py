@@ -188,7 +188,7 @@ def test_the_chart_draws_in_after_the_figures() -> None:
     assert "var delay = (animate && how.delay) || 0;" in context
 
 
-def test_the_next_best_actions_arrive_in_turn() -> None:
+def test_the_checklist_rows_arrive_in_turn() -> None:
     enter = _function("ui.js", "enterInTurn")
     assert "motionOK()" in enter
     assert "Math.min(i, 5) * 24" in enter
@@ -196,7 +196,7 @@ def test_the_next_best_actions_arrive_in_turn() -> None:
     assert '"animationcancel"' in enter
     # Rows drawn on a view you have left arrive as they are.
     assert "!rows[0].getClientRects().length" in enter
-    assert 'enterInTurn(actionsHost.querySelectorAll(".next-action"), ACTIONS_AFTER_MS)' in _text("page-overview.js")
+    assert 'enterInTurn(wrong.body.querySelectorAll(".check-row"), ROWS_AFTER_MS)' in _text("page-overview.js")
 
 
 def test_a_chart_resized_mid_draw_carries_its_draw_in_on() -> None:
@@ -205,7 +205,6 @@ def test_a_chart_resized_mid_draw_carries_its_draw_in_on() -> None:
     assert "ms: moving.ends - Math.max(now, moving.starts)" in carry
     # A settled chart is redrawn at once, anything still moving stopped.
     assert ".interrupt()" in carry
-    assert "redraw(frame)" in _function("charts.js", "setChartHeight")
     assert "else redraw(frame);" in _function("charts.js", "wireResize")
     # The session timeline, rebuilt on every draw, starts its line from as
     # much as was drawn rather than drawing it again from nothing.

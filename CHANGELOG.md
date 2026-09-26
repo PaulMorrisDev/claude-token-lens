@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Your changes: did each change work, and by how much?** A new page,
+  second in the sidebar. Its chart shows cost per reply a day with each
+  change marked and a flat line at the average between one change and
+  the next, so a saving shows as a step down. Under it, a card per
+  change: each measure before against after as bars, the change as a
+  percentage, how sure the difference is, what it saved so far, whether
+  quality held, and how to undo it. It takes over "Your changes and
+  what they did" and the estimates check from Setup › Settings.
+  `/api/impact`'s measures now carry `key`, `kind` and `better`.
+
 ### Changed
+
+- **The Overview answers three questions, in order.** *Anything
+  wrong?* is one checklist: every check, with the recommendation it
+  leads to on the same row, what fixing it saves and a prompt to copy;
+  the checks with nothing to do fold into one line. It replaces the
+  next best actions and the 1-to-5 score meters (the scores are a table
+  in the folded details). *Did your changes work?* shows the latest two
+  changes before against after. *Where do your tokens go?* has Spend,
+  cache and Sessions tiles, daily spend at full width, and spend by
+  project and by model.
+- **The sidebar puts the answers first.** Overview, Your changes and
+  Actions, then a **Details** heading over Spend, Cache, Agents &
+  context, Work habits and Setup. G then Y opens Your changes.
 
 - **The dashboard reads more easily at desktop width.**
   - A tile's unit sits on its own line under the number, so "of your

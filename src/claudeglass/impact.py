@@ -424,7 +424,13 @@ def _measure_row(measure: Measure, before: list[SessionFacts], after: list[Sessi
     new = _stratified_estimate(measure, before, after)
     change_pct = (new.value - old.value) / old.value * 100.0 if old.value and new.value is not None else None
     row = {
+        "key": measure.key,
         "label": measure.label,
+        # How to read the figures: the unit ("money", "pct", "tokens",
+        # "count") and which way is good ("lower", or None when neither
+        # is: more of your messages tagged is coverage, not a saving).
+        "kind": measure.kind,
+        "better": None if measure.key == _TAGGED.key else "lower",
         "before": _text(measure.kind, old.value, units),
         "after": _text(measure.kind, new.value, units),
         "before_value": old.value,

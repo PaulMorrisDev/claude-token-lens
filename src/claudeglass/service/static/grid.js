@@ -199,13 +199,18 @@ function cellContent(column, row, value, spec, rowKind) {
 // never breaks across lines. A column drawn by its own render is left alone.
 var PROSE_CHARS = 40;
 
-function proseColumns(columns, rows) {
+// labels: the table's value labels. A value shown by its label ("Context
+// size that 9 in 10 main session replies stay under") is judged by the
+// label, not by its short key.
+function proseColumns(columns, rows, labels) {
   var wraps = {};
   columns.forEach(function (column) {
     if (column.render || NUMERIC_KINDS[column.kind]) return;
     wraps[column.index] = rows.some(function (row) {
       var value = columnValue(column, row);
-      return typeof value === "string" && value.length > PROSE_CHARS;
+      if (typeof value !== "string") return false;
+      var shown = labels && Object.prototype.hasOwnProperty.call(labels, value) ? String(labels[value]) : value;
+      return shown.length > PROSE_CHARS;
     });
   });
   return wraps;
@@ -308,7 +313,7 @@ export function dataGrid(spec) {
       return !isTotal(row);
     })
   );
-  var proseCols = proseColumns(columns, rows);
+  var proseCols = proseColumns(columns, rows, spec.valueLabels);
   var bar = barColumn(columns, spec);
   if (rows.length < 2) bar = -1;
   // A ranking opens biggest first on its lead measure, the column with

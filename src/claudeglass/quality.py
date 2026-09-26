@@ -1217,8 +1217,8 @@ def build_section(runs: list[Run], units: "Units | None" = None) -> Section:
         f"Fewer than {MIN_RUNS} runs (or {MIN_DENOMINATOR} of what a rate counts) on either side is too little data. "
         f"A share that moved by less than {100 * MIN_SHARE_CHANGE:.1f} percentage points is not marked.",
         "Setups are compared across the whole window. So a setup used for different kinds of work, or in a "
-        "different week, can differ for that reason alone. \"Your changes and what they did\" on {{page:setup/settings}} "
-        "compares before and after each change you made.",
+        "different week, can differ for that reason alone. {{page:changes}} compares before and after "
+        "each change you made.",
         "The quality-by-setup table leaves out main sessions a scheduled or looped task started with no message of "
         f"yours ({sum(1 for run in runs if run.scheduled)} in this window). A check that runs and stops is a "
         "different job from the work you steer. A setup is tested against the most-used one only when their "

@@ -94,6 +94,17 @@ export var CHART_SPECS = {
     title: "What fills each agent's context before it starts?",
     summary: "{top} starts with the most context: {topTokens} tokens. The largest part is {topPart}.",
   },
+  "change-timeline": {
+    n: 9,
+    source: "/api/daily-usage",
+    form: "change-steps",
+    title: "Is each reply cheaper since your changes?",
+    summary: "Since {change} on {day}, a reply costs {after} on average, against {before} before it ({delta}).",
+    alt: {
+      none: "No change recorded in this window. A reply cost {average} on average {span}.",
+      early: "{change} on {day}: no replies since it yet, so there's nothing to compare.",
+    },
+  },
 };
 
 // Fill a reading's {names} from the drawn figures.
@@ -800,16 +811,6 @@ export function holdChart(container, key, opts) {
   }
   frame.node.classList.add("is-refreshing");
   return true;
-}
-
-// A drawn chart at a new height, redrawn in place: the Overview lines
-// its chart up with the panel beside it. A draw-in or morph still under
-// way carries on to the new height (redraw).
-export function setChartHeight(key, opts, height) {
-  var frame = framesBySlot[slotName(key, opts)];
-  if (!frame || !frame.drawn || !frame.opts || frame.opts.height === height) return;
-  frame.opts = Object.assign({}, frame.opts, { height: height });
-  redraw(frame);
 }
 
 // A chart whose figures couldn't load: the frame and its question stay,

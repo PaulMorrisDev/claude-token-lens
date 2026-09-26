@@ -303,6 +303,17 @@ export function moneyParts(usd, opts) {
   return { value: shareText(share), unit: "of your " + (unitsInfo.period_label || "weekly usage limit"), secondary: secondary };
 }
 
+// Mirrors units.Units.money_cell: an amount short enough for a table cell
+// or a chart's reading, "0.07% ($0.06)" on a plan with a known share of
+// the weekly limit, else the plain figure. Always a share, never weeks.
+export function moneyCell(usd) {
+  if (typeof usd !== "number" || !isFinite(usd) || usd <= 0) return currencyAmount(0);
+  var unitsInfo = state.units || {};
+  var sharePerUsd = unitsInfo.mode === "subscription" ? unitsInfo.share_per_usd : null;
+  if (sharePerUsd === null || sharePerUsd === undefined) return currencyAmount(usd);
+  return shareText(usd * sharePerUsd) + " (" + currencyAmount(usd) + ")";
+}
+
 // A value and its unit as a node: the unit in the quieter ink, one step
 // smaller ("12.4" "% of weekly limit").
 export function withUnit(value, unit) {

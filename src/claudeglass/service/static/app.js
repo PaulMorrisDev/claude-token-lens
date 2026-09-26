@@ -40,6 +40,7 @@ import { revealEvidence } from "./evidence.js";
 import { setSectionChart } from "./grid.js";
 import { sectionChart } from "./charts-types.js";
 import { renderOverview } from "./page-overview.js";
+import { renderChanges } from "./page-changes.js";
 import { groupRecommendations, renderQuickActions, renderRecommendations } from "./page-actions.js";
 import { renderSavings, renderSessions, renderUsage } from "./page-spend.js";
 import { renderCache, renderTtl } from "./page-cache.js";
@@ -54,6 +55,7 @@ import { initPalette } from "./palette.js";
 // One renderer per view key (links.js's VIEW_KEYS, in sidebar order).
 var VIEW_RENDERERS = {
   overview: renderOverview,
+  changes: renderChanges,
   "actions/recommendations": renderRecommendations,
   "actions/checks": renderQuickActions,
   "spend/usage": renderUsage,
@@ -310,7 +312,13 @@ function inAppClick(event) {
 function buildSidebar() {
   var main = document.getElementById("nav-main");
   var foot = document.getElementById("nav-foot");
+  var detailsHeaded = false;
   PAGES.forEach(function (page) {
+    // The evidence pages sit under a Details heading (a rule in the rail).
+    if (page.group === "details" && !detailsHeaded) {
+      detailsHeaded = true;
+      main.appendChild(el("li", { class: "nav-group", role: "presentation" }, [el("span", { class: "nav-group-label", text: "Details" })]));
+    }
     var link = el("a", { class: "nav-item", href: formatHash(page.id, {}), "data-page": page.id, "data-tip": page.label }, [
       icon(page.icon),
       el("span", { class: "nav-label", text: page.label }),

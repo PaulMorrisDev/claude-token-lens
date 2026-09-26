@@ -253,5 +253,8 @@ def test_fixed_window_chip_and_all_time_chips_say_what_is_true() -> None:
     section = _function_source(_static_text("page-setup.js"), "setupSection")
     assert 'chip(state.project ? "All time, all projects" : "All time", { icon: "clock", class: "all-time-chip" })' in section
     setup = _static_text("page-setup.js")
-    for title in ("Your changes and what they did", "Did your estimates come true?", "Latest baseline"):
-        assert re.search(re.escape(title) + r'", "[\w-]+", \{ allTime: true \}\)', setup), title
+    assert re.search(re.escape("Latest baseline") + r'", "[\w-]+", \{ allTime: true \}\)', setup)
+    changes = _static_text("page-changes.js")
+    assert 'chip(state.project ? "All time, all projects" : "All time", { icon: "clock", class: "all-time-chip" })' in _function_source(changes, "changesSection")
+    for title in ("Each change, before and after", "Did your estimates come true?"):
+        assert 'changesSection(panel, "' + title + '", true)' in changes, title

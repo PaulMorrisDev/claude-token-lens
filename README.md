@@ -62,7 +62,8 @@ answered from your own sessions:
   changing, with a rough saving for each.
 - **"Did my change work?"** It records your settings as each session
   starts, and compares the sessions before a change with those after
-  it.
+  it: Your changes shows each one's effect, how sure it is, and what it
+  saved so far.
 
 Amounts follow how you pay: a share of your usage limits on a Pro or Max
 plan, dollars on pay-per-token billing.
@@ -207,13 +208,16 @@ history, move `%USERPROFILE%\.claude\token-lens` to
 
 ## What each page answers
 
-The sidebar lists seven pages, with Data quality and the Glossary at its
-foot. A page with more than one part shows its segments beside its
-title.
+The sidebar opens with the three pages that answer what people come
+with: the Overview, Your changes and Actions. Under **Details** are the
+pages with the evidence behind them, and Data quality and the Glossary
+sit at its foot. A page with more than one part shows its segments
+beside its title.
 
 | Page | The question it answers |
 |---|---|
-| Overview | What should I change next, and where did my tokens go? |
+| Overview | Is anything wrong, did my changes work, and where do my tokens go? |
+| Your changes | Did each change I made work, by how much, and how sure is that? |
 | Actions › Recommendations | What exactly should I change, where, and what is the trade-off? |
 | Actions › Checks | For each way of saving (models, effort, summaries, cache, tools, skills, CLAUDE.md, tool output, hooks, habits), and whether any agent is struggling: is there anything to do, and what exactly? |
 | Spend › Usage | How is my usage spread over days, models, projects and five-hour blocks? |
@@ -226,7 +230,7 @@ title.
 | Agents & context › Context | What does each CLAUDE.md file and skill cost, who is it sent to, and what can be trimmed, moved or hidden? |
 | Agents & context › Hooks | Does each hook I set up work, and what do its failures, blocked calls and added context cost? |
 | Work habits | What habits are costing tokens, where did the evidence come from, and what would `/tl-feedback` and brief templates add? |
-| Setup › Settings | What are my settings, and did changing them change my costs? |
+| Setup › Settings | What are my settings, which layer set each one, and how does this window compare with my baseline? |
 | Setup › Profiles | Make a profile from a goal with an estimate of what it saves, compare it with my settings, and see what each change I made did. |
 | Setup › Capture | What does metrics capture cost so far, what would each level or metric add, and is it set up? |
 | Data quality | What did this tool install, what should I expect, and could every transcript be read and priced? |

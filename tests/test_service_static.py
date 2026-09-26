@@ -520,22 +520,28 @@ def test_capture_group_opens_for_a_metric_that_needs_you() -> None:
     assert "if (row.statusline_note) box.appendChild(" in _function_source(_app_js(), "renderMetricRow")
 
 
-def test_a_change_marker_leads_to_its_change_on_settings() -> None:
+def test_a_change_marker_leads_to_its_change_on_your_changes() -> None:
     """Phase 10 review (fedd805 gaps): a change marker on a daily spend
-    chart opens Setup > Settings with ?day=, which pulses that day's
-    change in "Your changes and what they did"; the marker's label is a
-    link the keyboard reaches too."""
+    chart, or on Your changes' timeline, opens Your changes with ?day=,
+    which pulses that day's card; the marker's label is a link the
+    keyboard reaches too."""
     source = _app_js()
     changes = _function_source(source, "dailyChanges")
-    assert 'goTo("setup/settings", { params: { day: day } })' in changes
+    assert 'goTo("changes", { params: { day: day } })' in changes
     assert 'String(change.ts || "").slice(0, 10)' in changes
-    config = _function_source(source, "renderConfig")
-    assert 'onParams("setup/settings", function (params)' in config
-    assert r'if (!/^\d{4}-\d\d-\d\d$/.test(params.day || "")) return;' in config
-    assert "impactLoaded.then(" in config
-    assert ".impact-card[data-day=\"' + params.day + '\"]" in config
-    assert 'pulseNode(card, "block-target")' in config
-    assert '"data-day": String(change.ts || "").slice(0, 10)' in _function_source(source, "renderImpact")
+    assert 'goTo("changes", { params: { day: day } })' in _function_source(source, "timelineChanges")
+    page = _function_source(source, "renderChanges")
+    assert 'onParams("changes", function (params)' in page
+    assert r'if (!/^\d{4}-\d\d-\d\d$/.test(params.day || "")) return;' in page
+    assert "cardsDrawn.then(" in page
+    assert ".change-card[data-day=\"' + params.day + '\"]" in page
+    assert 'pulseNode(card, "block-target")' in page
+    assert '"data-day": String(change.ts || "").slice(0, 10)' in _function_source(source, "changeCard")
+    # The timeline's own change labels are links the keyboard reaches.
+    steps = _function_source(source, "changeSteps")
+    assert 'ctx.layer("rule-links", { links: true })' in steps
+    for attr in ('.attr("tabindex", 0)', '.attr("role", "link")', ': see what it did"', '.on("click", lead.open)'):
+        assert attr in steps, attr
     # Keyboard: a Tab stop named for what it opens; Enter or Space opens it.
     columns = _function_source(source, "stackedColumns")
     assert 'ctx.layer("rule-links", { links: true })' in columns
@@ -1615,17 +1621,14 @@ def test_the_overview_leaves_the_health_detail_to_data_quality() -> None:
     assert "Service health" not in overview
 
 
-def test_the_overview_chart_lines_up_with_the_actions() -> None:
-    """Side by side, the Overview's chart grows to the actions' height,
-    redrawn in place; a draw-in still running carries on to the new
-    height, and anything else is stopped first so it can't finish at
-    the old height (docs/ui.md)."""
+def test_the_overview_chart_runs_the_width_of_where_your_tokens_go() -> None:
+    """The Overview's daily spend sits in "Where do your tokens go?" at
+    the page's width, not fitted to a panel beside it; a chart resized
+    mid-draw still carries its draw-in on, and anything else is stopped
+    first so it can't finish at the old size (docs/ui.md)."""
     overview = _function_source(_app_js(), "renderOverview")
-    assert "fittedChartHeight(main, chartHost, actionsPanel)" in overview
-    assert 'setChartHeight("daily-spend", { slot: "overview" }' in overview
-    assert "height: chartHeight" in overview
-    fit = _function_source(_app_js(), "setChartHeight")
-    assert "redraw(frame)" in fit
+    assert "tokens.body.appendChild(chartHost);" in overview
+    assert "fittedChartHeight" not in _app_js() and "setChartHeight" not in _app_js()
     carry = _function_source(_app_js(), "redraw")
     assert "now < moving.ends" in carry
     assert ".interrupt()" in carry
@@ -2165,28 +2168,35 @@ def test_a_signed_change_uses_a_true_minus_sign() -> None:
     wide as the plus, so signed columns line up."""
     helper = _function_source(_app_js(), "signedPercent")
     assert '"\u2212"' in helper and '"+"' in helper
-    assert "signedPercent(m.change_pct)" in _function_source(_app_js(), "renderImpact")
+    assert "signedPercent(measure.change_pct)" in _function_source(_app_js(), "measureRow")
     assert not re.search(r'> 0 \? "\+" : ""\)', _app_js())
 
 
-def test_an_impact_card_says_what_changed_where_and_each_measures_reading() -> None:
-    impact = _function_source(_app_js(), "renderImpact")
-    assert "change.summary ||" in impact
-    # Named as the project picker names it, not by its folder.
-    assert 'change.project ? "In " + (change.project_name ? projectName(change.project_name)' in impact
-    assert '{ label: "Reading" }' in impact and 'm.label_text || ""' in impact
-
-
-def test_an_impact_card_leads_with_what_the_sessions_since_would_have_cost_without_it() -> None:
+def test_a_change_card_says_what_changed_where_and_each_measures_reading() -> None:
     source = _app_js()
-    impact = _function_source(source, "renderImpact")
-    assert "renderWithout(item.without, card);" in impact
-    assert impact.index("renderWithout(") < impact.index("item.gate")
-    without = _function_source(source, "renderWithout")
-    assert "if (!without) return;" in without
-    assert "without.text" in without and "without.fidelity_text" in without
+    card = _function_source(source, "changeCard")
+    assert "change.summary ||" in card
+    # Named as the project picker names it, not by its folder.
+    assert 'change.project ? "In " + (change.project_name ? projectName(change.project_name)' in _function_source(source, "changeWhere")
+    # Each measure: before and after as bars on one scale, the change,
+    # and the ratio test's reading, coloured by which way is better.
+    row = _function_source(source, "measureRow")
+    assert "Math.max(isFinite(before) ? before : 0, isFinite(after) ? after : 0)" in row
+    assert "readingBadge(measure)" in row
+    tone = _function_source(source, "readingTone")
+    assert "if (!reading.side || !measure.better) return \"neutral\";" in tone
+    assert 'reading.side === measure.better ? "good" : "bad"' in tone
+
+
+def test_a_change_card_says_what_the_sessions_since_saved() -> None:
+    source = _app_js()
+    card = _function_source(source, "changeCard")
+    assert "savedLine(item.without)" in card
+    saved = _function_source(source, "savedLine")
+    assert 'if (!without || typeof without.saved_usd !== "number") return null;' in saved
+    assert '"Saved so far: "' in saved and '"Cost more so far: "' in saved and "without.fidelity_text" in saved
     # A row per setting only when the headline fell back to the sessions before.
-    assert 'without.fidelity === "before" ? without.per_key' in without
+    assert 'without.fidelity === "before" ? without.per_key' in _function_source(source, "perKeyTable")
 
 
 def test_the_last_change_window_says_what_it_would_have_cost_without_that_change() -> None:
@@ -2194,7 +2204,7 @@ def test_the_last_change_window_says_what_it_would_have_cost_without_that_change
     line = _function_source(source, "lastChangeLine")
     assert "(impactBody.data.changes || [])[0]" in line
     assert "without.since_text" in line and '"Without your last change ("' in line
-    assert 'pageLink("setup/settings"' in line
+    assert 'pageLink("changes"' in line
     assert "projectName(change.project_name)" in line
     overview = _function_source(source, "renderOverview")
     assert 'state.window !== "change" || state.project' in overview
@@ -2283,9 +2293,8 @@ def test_empty_state_helper_exists_and_is_used_for_not_enough_data_states() -> N
     check_detail = _function_source(app_js, "renderCheckDetail")
     assert "emptyState(check.summary)" in check_detail
 
-    impact = _function_source(app_js, "renderImpact")
-    assert "emptyState(item.verdict, item.gate)" in impact
-    assert "emptyState(\"No changes recorded yet" in impact
+    assert "emptyState(item.verdict, item.gate)" in _function_source(app_js, "changeCard")
+    assert "emptyState(\n        \"No changes recorded yet" in _function_source(app_js, "renderChangeCards")
 
     backtest_fn = _function_source(app_js, "renderBacktest")
     assert "emptyState(\"No estimates logged yet" in backtest_fn
@@ -2365,6 +2374,7 @@ _CHART_CATALOGUE = {
     "idle-gaps": 6,
     "lifetime-by-agent": 7,
     "startup-context": 8,
+    "change-timeline": 9,
 }
 
 
@@ -2379,7 +2389,7 @@ def _chart_forms() -> set[str]:
 
 
 def test_chart_specs_are_exactly_the_catalogue() -> None:
-    """The catalogue is closed: CHART_SPECS lists catalogue rows 1-8 and
+    """The catalogue is closed: CHART_SPECS lists catalogue rows 1-9 and
     nothing else, each titled with the question it answers and read out
     by a summary built from its figures."""
     specs = _chart_specs()
@@ -2587,10 +2597,11 @@ def test_every_evidence_source_resolves_to_a_page_or_the_table_drawer() -> None:
     # A page that doesn't draw the table (not for this window) hands the
     # link to the drawer too.
     assert "tableDrawer(sourceTable, rowKey)" in _function_source(app_js, "revealEvidence")
-    # Tables and the scorecard carry the name and row the links look for.
+    # Tables carry the name and row the links look for; the scorecard is
+    # one, folded under the Overview's answers.
     assert '"data-table-name": table.name || null' in _function_source(app_js, "renderTable")
-    scorecard = _function_source(app_js, "renderScorecard")
-    assert '"data-table-name": "dimensions"' in scorecard and '"data-row-key": String(dimension)' in scorecard
+    details = _function_source(app_js, "renderDetails")
+    assert 'tableNamed(findSection(report, "scorecard"), "dimensions")' in details and "renderTable(scores," in details
 
 
 def test_recommendations_and_checks_open_from_the_address() -> None:
@@ -2608,8 +2619,9 @@ def test_recommendations_and_checks_open_from_the_address() -> None:
     assert "paramsChanged(key, extra)" in _function_source(app_js, "resolveRoute")
     assert "params" in _function_source(app_js, "pageLink")
     assert "history.replaceState" in _function_source(app_js, "replaceParams")
-    overview = _function_source(app_js, "renderActions")
-    assert 'pageLink("actions/recommendations", title, { id: group.key })' in overview
+    overview = _function_source(app_js, "checklistRow")
+    assert 'pageLink("actions/recommendations", lead.members.length > 1 ? "See the " + lead.members.length + " prompts" : "See the fix", { id: lead.key })' in overview
+    assert 'pageLink("actions/checks", "See the check", { id: check.id })' in overview
     assert 'pageLink("actions/checks", check.question, { id: check.id })' in _function_source(app_js, "renderRecommendationDetail")
     assert 'pageLink("actions/recommendations", groupTitle(group), { id: group.key })' in _function_source(app_js, "renderCheckDetail")
     # An id this window doesn't have says so, instead of opening nothing.

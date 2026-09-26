@@ -61,6 +61,7 @@ class Page:
 #: name the same pages and segments, with the same labels).
 PAGES: tuple[Page, ...] = (
     Page("overview", "Overview"),
+    Page("changes", "Your changes"),
     Page(
         "actions",
         "Actions",
