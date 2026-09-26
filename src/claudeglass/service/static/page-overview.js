@@ -257,12 +257,14 @@ function renderTiles(container, facts, meta, dailyRows) {
         link: pageLink("spend/savings", "See the ways to save"),
       })
     : tile({ label: "Available saving", value: "None found", note: "Nothing in this window stands out as a saving.", link: pageLink("spend/savings", "See the ways to save") });
-  var cache = moneyTile("Saved by the cache", facts.summary.cache_saved || 0, {
+  // Before the cost of writing to the cache: Cache › Rebuilds leads with
+  // the saving after it, so the two figures differ and each says which.
+  var cache = moneyTile("Saved by cache reads", facts.summary.cache_saved || 0, {
     basis: "estimate",
     delta: hasPrevious ? deltaChip(facts.summary.cache_saved, facts.previousSummary && facts.previousSummary.cache_saved, { period: period, upIsGood: true }) : null,
     note: ratioWords
-      ? "On the model you use most, a cache read costs " + ratioWords + " the input price. This is what those reads would have cost sent fresh."
-      : "What your cache reads would have cost sent fresh.",
+      ? "On the model you use most, a cache read costs " + ratioWords + " the input price. This is what those reads saved against sending them fresh, before paying for the cache writes."
+      : "What your cache reads saved against sending them fresh, before paying for the cache writes.",
     link: pageLink("cache/rebuilds", "See how the cache is doing"),
   });
   var sessions = tile({
@@ -272,8 +274,8 @@ function renderTiles(container, facts, meta, dailyRows) {
     link: pageLink("spend/sessions", "See the sessions"),
   });
   container.appendChild(tileRow([spend, available, cache, sessions], { class: "overview-tiles" }));
-  var counts = [tileCount(spend, "spend", facts.cost, moneyValue), tileCount(cache, "cache", facts.summary.cache_saved || 0, moneyValue), tileCount(sessions, "sessions", facts.summary.sessions || 0, wholeNumber)];
-  if (saving > 0) counts.push(tileCount(available, "available", saving, moneyValue));
+  var counts = [tileCount(spend, "spend", facts.cost, moneyValue(facts.cost)), tileCount(cache, "cache", facts.summary.cache_saved || 0, moneyValue(facts.summary.cache_saved || 0)), tileCount(sessions, "sessions", facts.summary.sessions || 0, wholeNumber)];
+  if (saving > 0) counts.push(tileCount(available, "available", saving, moneyValue(saving)));
   return { spend: spend, saving: saving, counts: counts };
 }
 
@@ -283,8 +285,12 @@ function tileCount(tileNode, key, value, write) {
   return { node: tileNode.querySelector(".metric-value > span"), key: key, value: value, write: write };
 }
 
-function moneyValue(usd) {
-  return moneyParts(usd).value;
+// A writer for a tile counting up to final: each step in final's unit,
+// so a count past 200% of the weekly limit doesn't switch to weeks midway.
+function moneyValue(final) {
+  return function (usd) {
+    return moneyParts(usd, { like: final }).value;
+  };
 }
 
 function wholeNumber(n) {
@@ -351,8 +357,12 @@ function renderActions(container, groups) {
     var fix = (group.members[0].fixes || [])[0];
     var title = groupTitle(group);
     var text = el("div", { class: "next-action-text" }, [el("p", { class: "next-action-title" }, [pageLink("actions/recommendations", title, { id: group.key })])]);
+    // Every action row says what it saves, so the list compares at a
+    // glance; one Actions couldn't put a figure on says so, in the words
+    // its full story uses. A for-your-information item isn't a change.
     var saving = listSaving(group);
     if (saving) text.appendChild(el("p", { class: "next-action-saving", text: saving }));
+    else if (group.severity !== "info") text.appendChild(el("p", { class: "next-action-saving next-action-unestimated", text: "Saving not worked out: it depends on how you use it." }));
     var item = el("li", { class: "next-action" }, [el("div", { class: "next-action-severity" }, [severityChip(group.severity)]), text]);
     // Several agent types have a prompt each: Actions lists them.
     if (many) item.appendChild(el("div", { class: "next-action-copy" }, [pageLink("actions/recommendations", "See the " + thousands(group.members.length) + " prompts", { id: group.key })]));

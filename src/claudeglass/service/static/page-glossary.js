@@ -295,13 +295,16 @@ var CARD_NUMBERS = {
     var table = findTable(ctx.report, "model_swap", "model_swap_summary");
     var row = table && table.rows[0];
     var stats = row ? rowObject(table, row) : null;
+    // model_swap_summary counts subagent types on Fable or Opus only; the
+    // main session is priced on other models in the table the link opens.
     if (!stats || !stats.saving_usd) {
-      return "No agent type in this window is priced on a model with a cheaper tier available.";
+      return "No subagent type in this window runs on Fable or Opus, so none has a cheaper tier to move down to. The model-swap numbers also price your main session on cheaper models.";
     }
     return (
       "In this window, " +
       thousands(stats.agent_types) +
-      " agent types run on a pricier model than they need: moving them down one tier would come to " +
+      (Number(stats.agent_types) === 1 ? " subagent type runs" : " subagent types run") +
+      " on Fable or Opus: moving them down one tier would come to " +
       moneyText(stats.cost_after_tier_down_usd, { prefix: "about" }) +
       " instead of " +
       moneyText(stats.observed_cost_usd, { prefix: "about" }) +

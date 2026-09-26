@@ -120,21 +120,26 @@ def test_a_fold_never_hides_a_cited_row() -> None:
 # -- P1-6: headings wrap, edges say the grid scrolls ------------------------
 
 
-def test_headings_wrap_to_two_lines_never_mid_word() -> None:
+def test_headings_wrap_to_three_lines_never_mid_word() -> None:
     assert "white-space: normal;" in _css_rule(".data-grid thead th")
     label = _css_rule(".th-label")
-    assert "-webkit-line-clamp: 2;" in label and "line-clamp: 2;" in label and "overflow: hidden;" in label
+    assert "-webkit-line-clamp: 3;" in label and "line-clamp: 3;" in label and "overflow: hidden;" in label
     grid = _grid()
-    # Each heading keeps the longer line of its most even two-line split.
+    # Each heading keeps the longest line of its most even split into two
+    # or three lines, so a long heading grows down, not across.
     width = _function_source(grid, "labelWidth")
     assert "if (length <= LABEL_ONE_LINE) return length;" in width
-    assert "best = Math.min(best, Math.max(first, length - first - 1));" in width
+    assert "best = Math.min(best, Math.max(span(0, i), span(i, words.length)));" in width
+    assert "best = Math.min(best, Math.max(span(0, i), span(i, j), span(j, words.length)));" in width
     cell = _function_source(_data_grid(), "headerCell")
     assert 'label.style.minWidth = labelWidth(words) + "ch";' in cell
-    # A hyphenated word, and the last word with its unit, stay whole.
+    # A hyphenated word, and the last word with a short unit, stay whole;
+    # a long unit ("list-price $") is a line of its own when it needs one.
     assert 'if (!last && word.indexOf("-") === -1) {' in cell
     assert 'el("span", { class: "nowrap", text: word })' in cell
     assert 'if (last) whole.appendChild(el("span", { class: "unit", text: " " + unit }));' in cell
+    assert "var ownLine = unit.length > 3;" in cell
+    assert 'el("span", { class: "unit nowrap", text: unit })' in cell
     assert "white-space: nowrap;" in _css_rule(".nowrap")
     cut = _function_source(_data_grid(), "titleCutLabels")
     assert "label.scrollHeight > label.clientHeight + 1" in cut and "label.title = label.textContent;" in cut

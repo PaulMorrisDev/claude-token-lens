@@ -138,7 +138,8 @@ function cacheReadRule(facts) {
   var main = facts.main;
   var words = main ? priced(main.cache_read_ratio) : "";
   if (!words) return "";
-  return "Reading from the cache costs " + words + ", so most of what's already in the conversation goes at the cheapest rate on every later turn.";
+  // facts.main is the model you use most; others can differ.
+  return "On the model you use most, reading from the cache costs " + words + ", so most of what's already in the conversation goes at the cheapest rate on every later turn.";
 }
 
 function cacheWriteRule(facts) {

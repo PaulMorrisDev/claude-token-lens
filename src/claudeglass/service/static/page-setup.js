@@ -84,11 +84,15 @@ function renderConfigDiff(data, container) {
   } else if (Array.isArray(data) && data.length) {
     renderPlacedTables(container, data, state.currency, "config-diff");
   } else {
+    // Only changes the session-start hook saw in your settings files are
+    // listed here. A change found in your sessions (the model they ran
+    // on, say) is under "Your changes and what they did", so this can't
+    // say your settings didn't change.
     container.appendChild(
       emptyState(
-        "Your settings didn't change in this window.",
+        "No settings changes recorded in this window.",
         null,
-        "ClaudeGlass notes each change to your Claude Code settings as it happens, and lists it here."
+        "This lists the changes ClaudeGlass sees in your settings files as each session starts, once it's connected. A change your sessions show another way, such as a different model, is under Your changes and what they did."
       )
     );
   }
@@ -753,21 +757,16 @@ function renderProfileCreator(container, onSaved) {
   container.appendChild(goalsBox);
   container.appendChild(draftBox);
   loadInto(goalsBox, "/api/profile-goals", function (data, target) {
+    // "Start from my current settings" is the Save my current settings
+    // button at the top of the page, so it isn't a card here as well.
     (data.goals || []).forEach(function (goal) {
+      if (goal.id === "current") return;
       var card = el("article", { class: "profile-card goal-card" });
       card.appendChild(el("h3", { text: goal.title }));
       card.appendChild(el("p", { class: "profile-card-summary" }, prose(goal.what)));
       // Every goal card has this button: its name says which goal.
       var pick = button("Start here", { label: "Start here: " + goal.title });
       pick.addEventListener("click", function () {
-        if (goal.id === "current") {
-          var saveBtn = document.getElementById("profiles-save-current");
-          if (saveBtn) {
-            saveBtn.click();
-            saveBtn.scrollIntoView({ behavior: "smooth", block: "center" });
-          }
-          return;
-        }
         loadInto(draftBox, withWindow("/api/profile-goals?goal=" + encodeURIComponent(goal.id)), function (draft, box) {
           renderGoalDraft(draft, box, onSaved);
         });

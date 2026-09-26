@@ -4,7 +4,7 @@
  */
 
 import { clear, el, state } from "./core.js";
-import { formatCell, money, moneyText } from "./format.js";
+import { formatCell, moneyParts, moneyText } from "./format.js";
 import { findSection, loadReport } from "./api.js";
 import { chip, codeBlockWithCopy, emptyState, errorNotice, helpButton, loadingNode, prose, tile, tileRow } from "./ui.js";
 import { headRow, notesList, renderPlacedTables } from "./grid.js";
@@ -69,7 +69,15 @@ function renderHabitsSection(section, container) {
   tables.forEach(function (table) {
     byName[table.name] = table;
   });
-  if (byName.habits_digest) renderHabitsDigest(byName.habits_digest, container);
+  // The habits the playbook shows as cards, which the digest leaves to it.
+  var carded = byName.habits_playbook
+    ? tableRowsAsObjects(byName.habits_playbook)
+        .slice(0, PLAYBOOK_CARD_LIMIT)
+        .map(function (row) {
+          return String(labelFor(byName.habits_playbook, row.habit)).trim().toLowerCase();
+        })
+    : [];
+  if (byName.habits_digest) renderHabitsDigest(byName.habits_digest, container, carded);
   if (byName.habits_playbook) renderHabitsPlaybook(byName.habits_playbook, container);
   if (byName.habits_brief_templates) renderBriefTemplates(byName.habits_brief_templates, container);
   var rest = tables.filter(function (table) {
@@ -87,9 +95,16 @@ function habitsBlock(table, container) {
   return block;
 }
 
-function renderHabitsDigest(table, container) {
-  var block = habitsBlock(table, container);
+// carded: the habits the playbook below shows as cards (lower case). The
+// digest doesn't repeat them: it keeps what the cards don't say ("Already
+// saving"), and says nothing when that is none.
+function renderHabitsDigest(table, container, carded) {
   var rows = tableRowsAsObjects(table);
+  var own = rows.filter(function (row) {
+    return !row.what || (carded || []).indexOf(String(row.what).trim().toLowerCase()) === -1;
+  });
+  if (rows.length && !own.length) return;
+  var block = habitsBlock(table, container);
   if (!rows.length) {
     block.appendChild(
       emptyState("Nothing to show for this window yet: it needs a few prompt cycles to compare.", null, "Pick a longer window to include more sessions.")
@@ -97,24 +112,19 @@ function renderHabitsDigest(table, container) {
     return;
   }
   var tiles = [];
-  rows.forEach(function (row) {
+  own.forEach(function (row) {
     var kind = (table.row_kinds || {})[row.item] || "str";
-    // UX-1: a money card follows the billing mode (money() mirrors
-    // Units.money); the list-price figure goes underneath when the
-    // headline is a share of the weekly limit, and "list-price
-    // equivalent" does when there's no share to show.
-    var amount = kind === "money" ? money(Number(row.value)) : null;
-    var headline = amount ? amount.primary : formatCell(row.value, kind, state.currency);
-    var underneath = amount ? amount.secondary : "";
-    if (amount && !underneath && / list-price equivalent$/.test(headline)) {
-      headline = headline.replace(/ list-price equivalent$/, "");
-      underneath = "list-price equivalent";
-    }
+    // UX-1: a money card follows the billing mode (moneyParts mirrors
+    // Units.money): the figure at the tile's size, its unit ("of your
+    // weekly usage limit", or "list-price" with no share to show) on the
+    // line under it, and the list-price equivalent beneath.
+    var amount = kind === "money" ? moneyParts(Number(row.value)) : null;
     tiles.push(
       tile({
         label: labelFor(table, row.item),
-        value: headline,
-        hint: underneath || null,
+        value: amount ? amount.value : formatCell(row.value, kind, state.currency),
+        unit: amount ? amount.unit || null : null,
+        hint: amount ? amount.secondary || null : null,
         caption: row.what || null,
         note: row.detail || null,
       })

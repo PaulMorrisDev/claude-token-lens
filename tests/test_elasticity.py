@@ -169,7 +169,8 @@ def test_regression_recovers_known_slope_on_synthetic_data():
     cache_read_fit = stats.fit("seven_day", "cache_read")
     assert cache_read_fit.accepted is False
     assert cache_read_fit.n_pairs == 0
-    assert "cache_read" in cache_read_fit.reason
+    # The reason names the metric in words.
+    assert "cache reads" in cache_read_fit.reason
 
     # $1/M-token rates make usd volume numerically equal to the
     # new-tokens volume in millions, so the same slope is recoverable

@@ -877,7 +877,7 @@ def _rule_long_context_share(report: ReportModel, th: RecommendThresholds, snaps
     if fires_on_share:
         evidence.append(_evidence("Cache-read volume share from huge-context turns", share_pct, "recache", "recache_huge_context", row_key))
     if fires_on_p90:
-        evidence.append(_evidence("p90 top-level context size (proxy for median)", p90_ctx, "scorecard", "dimensions", "context_hygiene"))
+        evidence.append(_evidence("Context size 9 in 10 main-session replies stay under", p90_ctx, "scorecard", "dimensions", "context_hygiene"))
     return [
         Recommendation(
             id="long-context-share",

@@ -838,7 +838,7 @@ def test_long_context_share_fires_on_p90_ctx():
     recs = recommend_fn(r, config=_config(), archetype=None)
     rec = next(rec for rec in recs if rec.id == "long-context-share")
     assert (
-        "p90 top-level context size (proxy for median)",
+        "Context size 9 in 10 main-session replies stay under",
         200_000,
         "scorecard.dimensions",
         "context_hygiene",

@@ -167,8 +167,10 @@ def test_the_headline_figures_count_from_the_last_ones_shown() -> None:
     tiles = _function("page-overview.js", "countTiles")
     assert "shownFigures || {}" in tiles
     assert "countUp(count.node, from[count.key] || 0, count.value, count.write)" in tiles
-    # Money stays in the billing mode's units.
-    assert "return moneyParts(usd).value;" in _function("page-overview.js", "moneyValue")
+    # Money stays in the billing mode's units, each step in the unit the
+    # figure ends in: a count past 200% of the weekly limit doesn't switch
+    # to weeks midway.
+    assert "return moneyParts(usd, { like: final }).value;" in _function("page-overview.js", "moneyValue")
     assert "countTiles(tiles.counts);" in overview
 
 

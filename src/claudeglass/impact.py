@@ -403,8 +403,7 @@ def _text(kind: str, value: float | None, units: Units) -> str:
     if value is None:
         return "no data"
     if kind == "money":
-        amount = units.money(value)
-        return amount.text() if amount is not None else "none"
+        return units.money_cell(value)
     if kind == "pct":
         return f"{value:.0f}%"
     if kind == "count":

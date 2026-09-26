@@ -70,6 +70,13 @@ def _money(ctx: Context, usd, *, period: bool = False, prefix: str = "") -> str:
     return amount.phrase(prefix)
 
 
+def _cell(ctx: Context, usd) -> str:
+    """An amount for a table cell: the short form (Units.money_cell), so a
+    column doesn't wrap into a tall stack of words."""
+    value = whatif._num(usd)
+    return ctx.units.money_cell(value) if value else "none"
+
+
 def _short(text: str, limit: int = 160) -> str:
     """``text`` cut at a word to about ``limit`` characters, for a table
     cell; the full text is on the Context files tab."""
@@ -183,9 +190,9 @@ def _models(ctx: Context) -> dict:
         [("agent", "Agent"), ("model", "Model used"), ("cost", "Cost"), ("set_by", "Model set by"),
          ("cheaper", "Cheapest alternative"), ("saving", "Would save")],
         [
-            [_who(r.get("agent_type")), r.get("observed_model") or "", _money(ctx, r.get("observed_cost")),
+            [_who(r.get("agent_type")), r.get("observed_model") or "", _cell(ctx, r.get("observed_cost")),
              _model_set_by(r), r.get("best_cheaper_alternative_model") or "none cheaper",
-             f"{_money(ctx, r.get('saving_usd'))} ({_pct(r.get('saving_pct'))})" if whatif._num(r.get("saving_usd"))
+             f"{_cell(ctx, r.get('saving_usd'))}, {_pct(r.get('saving_pct'))} less" if whatif._num(r.get("saving_usd"))
              else ""]
             for r in rows
         ],
@@ -332,7 +339,7 @@ def _compaction(ctx: Context) -> dict:
     table = _table(
         [("window", "Summarise at (tokens)"), ("summaries", "Summaries per session"), ("cost", "Cost"),
          ("change", "Against your sessions as they ran")],
-        [[r.get("window"), f"{whatif._num(r.get('compactions_per_session')) or 0:.1f}", _money(ctx, r.get("cost")),
+        [[r.get("window"), f"{whatif._num(r.get('compactions_per_session')) or 0:.1f}", _cell(ctx, r.get("cost")),
           _pct(r.get("delta_pct"))] for r in rows],
     )
     draft = _goal(ctx, "compaction")
@@ -387,8 +394,8 @@ def _cache(ctx: Context) -> dict:
     table = _table(
         [("agent", "Agent"), ("gaps", "Pauses over 5 minutes"), ("now", "Cost now"), ("m5", "All 5 minutes"),
          ("h1", "All 1 hour"), ("best", "Cheaper")],
-        [[_who(r.get("agent_type")), r.get("gaps_over_5m"), _money(ctx, r.get("cost_observed")),
-          _money(ctx, r.get("cost_all_5m")), _money(ctx, r.get("cost_all_1h")), r.get("best_policy") or ""]
+        [[_who(r.get("agent_type")), r.get("gaps_over_5m"), _cell(ctx, r.get("cost_observed")),
+          _cell(ctx, r.get("cost_all_5m")), _cell(ctx, r.get("cost_all_1h")), r.get("best_policy") or ""]
          for r in rows],
     )
     draft = _goal(ctx, "cache")
@@ -448,7 +455,7 @@ def _skills(ctx: Context) -> dict:
     kept = [r for r in rows if r["status"] == "needed by a tool"]
     table = _table(
         [("name", "Skill"), ("source", "From"), ("description", "What it is"), ("cost", "Listing cost")],
-        [[r["name"], r["source_label"], _short(r["description"]), _money(ctx, r["listing_cost_usd"])]
+        [[r["name"], r["source_label"], _short(r["description"]), _cell(ctx, r["listing_cost_usd"])]
          for r in unused[:20]],
     )
     tips = [
@@ -521,7 +528,7 @@ def _claude_md(ctx: Context) -> dict:
     summaries = [summary for _item, summary in pairs]
     table = _table(
         [("file", "File"), ("tokens", "Tokens"), ("sent", "Sent to"), ("cost", "Cost"), ("findings", "Findings")],
-        [[s["path"], f"{s['tokens']:,}", s["reach_text"], _money(ctx, s["cost_usd"]), len(s["findings"])]
+        [[s["path"], f"{s['tokens']:,}", s["reach_text"], _cell(ctx, s["cost_usd"]), len(s["findings"])]
          for s in summaries[:10]],
     )
     if not any(summary["seen"] for summary in summaries):
@@ -595,7 +602,7 @@ def _tool_output(ctx: Context) -> dict:
          ("cost", "Cost of carrying them")],
         [[r.get("key"), f"{int(whatif._num(r.get('result_count')) or 0):,}",
           f"{int(whatif._num(r.get('tokens_entered')) or 0):,}", f"{whatif._num(r.get('mean_turns_carried')) or 0:.0f}",
-          _money(ctx, r.get("carry_cost_usd"))] for r in rows[:10]],
+          _cell(ctx, r.get("carry_cost_usd"))] for r in rows[:10]],
     )
     fixes, tips = [], []
     savings = {r.get("setting"): r for r in tables.rows("carry", "carry_output_cap_savings")}
@@ -676,7 +683,7 @@ def _hooks(ctx: Context) -> dict:
          ("resent", "Sent again unchanged"), ("context", "Context added"), ("cost", "Cost of its context and blocks")],
         [[r.get("hook"), f"{count(r, 'failed'):,}", str(r.get("cause") or "")[:1].upper() + str(r.get("cause") or "")[1:],
           f"{count(r, 'blocks'):,}", f"{count(r, 'resent'):,}", f"{count(r, 'context_tokens'):,} tokens",
-          _money(ctx, (whatif._num(r.get("carry_usd")) or 0) + (whatif._num(r.get("block_usd")) or 0))]
+          _cell(ctx, (whatif._num(r.get("carry_usd")) or 0) + (whatif._num(r.get("block_usd")) or 0))]
          for r in rows[:10]],
     )
     recs = _recommendations(ctx, _HOOK_RECS)
@@ -704,7 +711,7 @@ def _habits(ctx: Context) -> dict:
     causes = [r for r in tables.rows("waste", "waste_by_cause") if whatif._num(r.get("turns"))]
     table = _table(
         [("cause", "Replies that went nowhere"), ("turns", "Replies"), ("cost", "Cost"), ("lever", "What helps")],
-        [[r.get("cause"), r.get("turns"), _money(ctx, r.get("cost_usd")), r.get("lever") or ""] for r in causes],
+        [[r.get("cause"), r.get("turns"), _cell(ctx, r.get("cost_usd")), r.get("lever") or ""] for r in causes],
     )
     recs = _recommendations(ctx, _HABIT_RECS)
     tips = [{"title": rec.title, "text": rec.action or rec.why} for rec in recs]

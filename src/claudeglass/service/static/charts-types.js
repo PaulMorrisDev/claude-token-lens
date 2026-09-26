@@ -18,7 +18,7 @@ import { el, escapeHtml, goTo, highlight, state } from "./core.js";
 import { actionIndex } from "./api.js";
 import { MINUS, compactNumber, formatDuration, moneyAxis, moneyText, projectName, shortTs, thousands } from "./format.js";
 import { BASIS } from "./ui.js";
-import { CHART_SPECS, bandAxis, dayLabel, drawChart, entityColour, modelTier, roundedBar, tokenTick, valueAxis } from "./charts.js";
+import { CHART_SPECS, bandAxis, dayLabel, drawChart, entityColour, modelTier, moneyTicks, roundedBar, tokenTick, valueAxis } from "./charts.js";
 
 // Fewer points than this and a chart says less than a table would: the
 // page shows tiles instead (docs/ui.md, "Admission rule"). Daily spend
@@ -341,9 +341,8 @@ function stackedColumns(ctx, data) {
         return c.total;
       }) || 1,
     ])
-    .nice(4)
     .range([inner.h, 0]);
-  valueAxis(ctx.layer("axis-y"), y, { orient: "left", span: inner.w, ticks: 4, format: axis.tick });
+  valueAxis(ctx.layer("axis-y"), y, { orient: "left", span: inner.w, values: moneyTicks(y, axis, 4, true), format: axis.tick });
   bandAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, {
     minGap: 56,
     format: function (day) {
@@ -679,9 +678,8 @@ function bars(ctx, data) {
         return num(d.usd);
       }),
     ])
-    .nice(4)
     .range([0, inner.w]);
-  valueAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, { orient: "bottom", span: inner.h, ticks: 4, format: axis.tick });
+  valueAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, { orient: "bottom", span: inner.h, values: moneyTicks(x, axis, 4, true), format: axis.tick });
   ctx.unit(axis.unit, "bottom");
   var ox = ctx.margin.left;
   var oy = ctx.margin.top;
@@ -851,9 +849,8 @@ function line(ctx, data) {
   var y = d3
     .scaleLinear()
     .domain([Math.max(0, low - pad), cap + pad])
-    .nice(4)
     .range([inner.h, 0]);
-  valueAxis(ctx.layer("axis-y"), y, { orient: "left", span: inner.w, ticks: 4, format: axis.tick });
+  valueAxis(ctx.layer("axis-y"), y, { orient: "left", span: inner.w, values: moneyTicks(y, axis, 4, true), format: axis.tick });
   valueAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, { orient: "bottom", span: 0, ticks: 6, format: tokenTick });
   ctx.unit(axis.unit);
   ctx.unit("Conversation size when summarised (tokens)", "bottom");
@@ -1018,12 +1015,17 @@ export function modeColour(mode) {
 
 // Tick values for a log scale: 1, 2 and 5 per decade, or only the
 // powers of ten when that's too many.
-function logTicks(domain) {
+function logTicks(domain, factor) {
+  // Stepped in the axis's own unit (factor per USD): 1%, 2%, 5% of the
+  // weekly limit rather than $1, $2, $5 written as shares.
+  var k = factor || 1;
+  var low = domain[0] * k;
+  var high = domain[1] * k;
   var ticks = [];
-  for (var power = Math.floor(Math.log10(domain[0])); power <= Math.ceil(Math.log10(domain[1])); power++) {
+  for (var power = Math.floor(Math.log10(low)); power <= Math.ceil(Math.log10(high)); power++) {
     [1, 2, 5].forEach(function (step) {
       var value = step * Math.pow(10, power);
-      if (value >= domain[0] && value <= domain[1]) ticks.push({ value: value, step: step });
+      if (value >= low && value <= high) ticks.push({ value: value / k, step: step });
     });
   }
   if (ticks.length > 6) {
@@ -1084,7 +1086,7 @@ function scatter(ctx, data) {
     .range([inner.h, 0]);
   var short = span[1] - span[0] < 2 * DAY_MS;
   var timeFormat = d3.utcFormat("%H:%M");
-  valueAxis(ctx.layer("axis-y"), y, { orient: "left", span: inner.w, values: logTicks(y.domain()), format: axis.tick });
+  valueAxis(ctx.layer("axis-y"), y, { orient: "left", span: inner.w, values: logTicks(y.domain(), axis.factor), format: axis.tick });
   valueAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, {
     orient: "bottom",
     span: 0,
@@ -1899,7 +1901,7 @@ function diverging(ctx, data) {
     .domain([low < 0 ? low - pad : 0, high > 0 ? high + pad : 0])
     .range([0, inner.w]);
   var zero = Math.round(x(0)) + 0.5;
-  valueAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, { orient: "bottom", span: inner.h, ticks: 4, format: axis.tick });
+  valueAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, { orient: "bottom", span: inner.h, values: moneyTicks(x, axis, 4, false), format: axis.tick });
   ctx.unit("Saving with a 1-hour lifetime (" + axis.unit + ")", "bottom");
   var ox = ctx.margin.left;
   var oy = ctx.margin.top;
@@ -1997,12 +1999,14 @@ function diverging(ctx, data) {
     return d.key;
   });
 
+  // Which lifetime is cheaper, not a change to make: an agent type may
+  // already be on the cheaper one, as the table under the chart says.
   var gainers = rows.filter(function (d) {
     return d.margin > 0;
   }).length;
   var legend = [];
-  if (gainers) legend.push({ label: "Saves with a 1-hour lifetime", colour: "var(--div-pos)" });
-  if (gainers < rows.length) legend.push({ label: "Costs more with a 1-hour lifetime", colour: "var(--div-neg)" });
+  if (gainers) legend.push({ label: "Cheaper on a 1-hour lifetime", colour: "var(--div-pos)" });
+  if (gainers < rows.length) legend.push({ label: "Dearer on a 1-hour lifetime", colour: "var(--div-neg)" });
   return {
     facts: { gainers: gainers ? thousands(gainers) : "None", count: thousands(rows.length) },
     points: rows.map(function (d) {

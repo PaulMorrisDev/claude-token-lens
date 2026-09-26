@@ -468,7 +468,10 @@ def test_cache_tiles_count_what_they_cost() -> None:
     assert "avoidableSentence(times, isFinite(total) ? total : times)" in explainer
     assert "var total = Number(rebuilds.recache_turns);" in explainer
     assert "The cache was rebuilt" not in explainer
-    assert 'moneyTile("Saved by the cache",' in source
+    # The Overview's figure is before the cache writes; Cache's is after,
+    # so each label says which (design review: 1197.3% beside 1147.1%).
+    assert 'moneyTile("Saved by cache reads",' in source
+    assert "before paying for the cache writes" in source
     # Phase 10 review: "...where reading it would have cost a tenth of."
     assert 'readWords + " the input price."' in explainer
 
@@ -658,13 +661,17 @@ def test_habits_playbook_caps_featured_cards_and_collapses_the_rest() -> None:
 
 def test_habits_digest_money_cards_follow_the_billing_mode() -> None:
     """UX-1 (F1): the Work habits digest's money cards go through
-    ``money()`` (the ``Units.money`` mirror), not a bare "X USD" from
+    ``moneyParts()`` (the ``Units.money`` mirror), not a bare "X USD" from
     ``formatCell``, so a Pro or Max plan sees a weekly-limit share or a
-    list-price equivalent instead of plain dollars."""
+    list-price equivalent instead of plain dollars -- at a tile's size,
+    its unit on the line under the figure, not the whole phrase as the
+    headline."""
     app_js = _app_js()
     body = _function_source(app_js, "renderHabitsDigest")
-    assert 'kind === "money" ? money(' in body
-    assert "amount.secondary" in body and "list-price equivalent" in body
+    assert 'kind === "money" ? moneyParts(' in body
+    assert "unit: amount ? amount.unit || null : null" in body and "amount.secondary" in body
+    # The habits the playbook shows as cards aren't repeated above them.
+    assert "carded" in body and "if (rows.length && !own.length) return;" in body
 
 
 def test_a_profile_estimate_scales_by_its_normalised_tasks() -> None:
@@ -2728,7 +2735,9 @@ def test_long_table_notes_fold_away() -> None:
     notes = _function_source(_app_js(), "notesList")
     assert "var NOTES_IN_VIEW_CHARS = 240;" in _app_js()
     assert "notes.length <= 2 && length <= NOTES_IN_VIEW_CHARS" in notes
-    assert '"How these figures are worked out ("' in notes
+    assert '"How these figures are worked out"' in notes
+    # A table's own notes say so, so they don't read like its section's.
+    assert '"How this table is worked out"' in notes
 
 
 def test_links_inside_a_drawer_work_and_close_it() -> None:

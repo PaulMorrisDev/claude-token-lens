@@ -1565,6 +1565,16 @@ details.disclosure[open] > summary {
   margin: 0 0 var(--space-2);
 }
 
+/* The Overview's setup card: one line naming what's left, the steps
+   folded beneath it. */
+.setup-card-line {
+  margin: 0;
+}
+
+.setup-steps {
+  margin-top: var(--space-2);
+}
+
 .setup-item-head {
   display: flex;
   flex-wrap: wrap;
@@ -1679,6 +1689,11 @@ details.disclosure[open] > summary {
   margin: var(--space-2) 0 0;
   color: var(--ink-2);
   font-size: var(--text-sm);
+}
+
+.view .next-action-unestimated,
+.next-action-unestimated {
+  color: var(--ink-3);
 }
 
 .view .next-actions-more,
@@ -2991,8 +3006,13 @@ th .unit {
   overflow-wrap: anywhere;
 }
 
+/* The unit is a line of its own under the number, so a long one ("of
+   your weekly usage limit") never splits across the 28px line height. */
 .metric-value .unit {
+  display: block;
+  margin-top: var(--space-1);
   font-size: var(--text-base);
+  line-height: 1.4;
   letter-spacing: 0;
 }
 
@@ -4225,6 +4245,23 @@ details.disclosure {
   box-shadow: 1px 0 0 var(--border), 8px 0 8px -6px color-mix(in srgb, var(--backdrop) 80%, transparent);
 }
 
+/* A grid that would scroll sideways at its natural spacing draws tighter
+   first (grid.js): less room either side of each cell and a shorter
+   inline bar, so a table fits the desktop width before it scrolls. */
+.grid-snug th,
+.grid-snug td {
+  padding-right: var(--space-3);
+  padding-left: var(--space-3);
+}
+
+.grid-snug .bar-cell {
+  gap: var(--space-3);
+}
+
+.grid-snug .bar-svg {
+  width: 2.4em;
+}
+
 .grid-scroll.grid-tall {
   max-height: min(70vh, 640px);
   overflow-y: auto;
@@ -4286,8 +4323,8 @@ details.disclosure {
   border: none;
 }
 
-/* A header wraps to two lines at most, never mid-word: its label keeps
-   room for the longer line of its most even split in two (grid.js's
+/* A header wraps to three lines at most, never mid-word: its label keeps
+   room for the longest line of its most even split (grid.js's
    labelWidth, set as its min-width), and one still longer ends in an
    ellipsis with its full text in a title. The (?) and the sort arrow
    sit on its last line. */
@@ -4308,8 +4345,8 @@ th.num .th-inner {
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
   text-wrap: balance;
 }
 

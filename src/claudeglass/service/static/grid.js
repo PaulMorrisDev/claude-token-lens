@@ -16,9 +16,9 @@
  */
 
 import { clear, cli, el, highlight, listenHighlight, state, storageGet, storageSet } from "./core.js";
-import { cellSortValue, formatCell, fullValue, modelNames, moneyParts, moneyText, moneyUnit, NUMERIC_KINDS, PROJECT_KEYS, projectName } from "./format.js";
+import { cellSortValue, formatCell, fullValue, modelNames, moneyParts, moneyText, moneyUnit, NUMERIC_KINDS, PROJECT_KEYS, projectName, wholeKind } from "./format.js";
 import { actionIndex, findSection } from "./api.js";
-import { COST_CARDS, pageLink, plainText, viewForSection, viewForTable } from "./links.js";
+import { COST_CARDS, pageLink, plainText, viewFor, viewForSection, viewForTable } from "./links.js";
 import { button, emptyState, helpButton, motionOK, popoverButton, prose, swatch, tile, tileRow } from "./ui.js";
 import { icon } from "./icons.js";
 
@@ -62,7 +62,7 @@ function resolveEvidenceColumnKind(report, sourceTable, rowKey, value) {
 }
 
 export function formatEvidenceValue(report, value, sourceTable, rowKey, currency) {
-  var kind = resolveEvidenceColumnKind(report, sourceTable, rowKey, value);
+  var kind = wholeKind(value, resolveEvidenceColumnKind(report, sourceTable, rowKey, value));
   if (kind === "money" && typeof value === "number") return moneyText(value);
   return formatCell(value, kind, currency);
 }
@@ -84,20 +84,27 @@ var REPORT_ROWS = 10;
 export var NEWEST_LAST = { by_day: true, by_week: true, by_month: true, five_hour_blocks: true };
 
 // The width a header's label keeps, in ch: all of a short label, which
-// stays on one line; else the longer line of its most even split into
-// two at a space. A line of words sets narrower than its count of ch
-// (at most 94% of it across the report's headers), and a label is never
-// narrower than its longest word. words: the label's words, a unit
-// joined to the last (it never wraps alone), hyphenated words whole.
+// stays on one line; else the longest line of its most even split into
+// two or three lines at spaces, so a long header grows down, not across,
+// and a table of them fits the desktop width. A line of words sets
+// narrower than its count of ch (at most 94% of it across the report's
+// headers), and a label is never narrower than its longest word. words:
+// the label's words, a short unit joined to the last (it never wraps
+// alone), hyphenated words whole.
 var LABEL_ONE_LINE = 12;
 
 function labelWidth(words) {
   var length = words.join(" ").length;
   if (length <= LABEL_ONE_LINE) return length;
+  function span(from, to) {
+    return words.slice(from, to).join(" ").length;
+  }
   var best = length;
   for (var i = 1; i < words.length; i++) {
-    var first = words.slice(0, i).join(" ").length;
-    best = Math.min(best, Math.max(first, length - first - 1));
+    best = Math.min(best, Math.max(span(0, i), span(i, words.length)));
+    for (var j = i + 1; j < words.length; j++) {
+      best = Math.min(best, Math.max(span(0, i), span(i, j), span(j, words.length)));
+    }
   }
   return best;
 }
@@ -242,6 +249,17 @@ export function dataGrid(spec) {
     return Object.assign({ index: i, kind: column.kind || "str" }, column);
   });
   var rows = spec.rows || [];
+  // A float column of whole numbers ("Typical prompts from you") reads
+  // as counts, "3" rather than "3.00"; one fraction keeps the decimals
+  // for every row, so the digits line up.
+  columns.forEach(function (column) {
+    if (column.kind !== "float" || column.render || !rows.length) return;
+    var whole = rows.every(function (row) {
+      var value = columnValue(column, row);
+      return value === null || value === undefined || (typeof value === "number" && Number.isInteger(value));
+    });
+    if (whole) column.kind = "int";
+  });
   var gridId = spec.id;
   var sortable = spec.sortable !== false && rows.length > 1;
   var wrap = el("div", { class: "grid" + (spec.class ? " " + spec.class : ""), "data-grid": gridId });
@@ -443,8 +461,8 @@ export function dataGrid(spec) {
     });
   }
 
-  // A header wraps to two lines at most (app.css): its label keeps room
-  // for the longer line of its most even split (labelWidth), and one
+  // A header wraps to three lines at most (app.css): its label keeps room
+  // for the longest line of its most even split (labelWidth), and one
   // still cut says the rest in a title (titleCutLabels). Its accessible name is
   // the label and unit alone, not the (?)'s. Column help opens from the
   // (?) or, on a heading that sorts, its ? key, so a column is one Tab
@@ -452,17 +470,23 @@ export function dataGrid(spec) {
   function headerCell(column) {
     var name = column.label || column.key;
     var unit = column.kind === "money" ? moneyUnit() : "";
+    // A label that names its unit already, for the CLI's tables ("Cost
+    // (list-price equivalent)"), drops it: the heading's unit says it.
+    if (unit) name = name.replace(/\s*\((list-price equivalent|\$|USD)\)$/, "");
     var th = el("th", {
       scope: "col",
       class: (headerNumeric(column) ? "num" : "") + (column.key === "__select" ? " col-select" : ""),
       "data-key": column.key,
       "aria-label": unit ? name + " (" + unit + ")" : name,
     });
-    // A hyphenated word, and the last word with the unit, don't break.
+    // A hyphenated word, and the last word with a short unit ("$"),
+    // don't break. A long unit ("list-price $") is a line of its own
+    // when it needs one, so it doesn't widen the column it heads.
     var words = name.split(/\s+/).filter(Boolean);
+    var ownLine = unit.length > 3;
     var label = el("span", { class: "th-label" });
     words.forEach(function (word, i) {
-      var last = unit && i === words.length - 1;
+      var last = unit && !ownLine && i === words.length - 1;
       if (i) label.appendChild(document.createTextNode(" "));
       if (!last && word.indexOf("-") === -1) {
         label.appendChild(document.createTextNode(word));
@@ -471,7 +495,11 @@ export function dataGrid(spec) {
       var whole = label.appendChild(el("span", { class: "nowrap", text: word }));
       if (last) whole.appendChild(el("span", { class: "unit", text: " " + unit }));
     });
-    if (unit && words.length) words[words.length - 1] += " " + unit;
+    if (unit && ownLine) {
+      label.appendChild(document.createTextNode(" "));
+      label.appendChild(el("span", { class: "unit nowrap", text: unit }));
+      words.push(unit);
+    } else if (unit && words.length) words[words.length - 1] += " " + unit;
     label.style.minWidth = labelWidth(words) + "ch";
     var inner = el("span", { class: "th-inner" }, [label]);
     th.appendChild(inner);
@@ -604,7 +632,9 @@ export function dataGrid(spec) {
       // Same rule as the header (headerNumeric): in a table whose rows
       // carry their own kinds, a number is right-aligned even in a row
       // with no kind listed.
-      var numeric = isNumeric(column) || (!!spec.rowKinds && column.index > 0 && typeof value === "number");
+      // A metric-and-value table's empty value ("-") lines up with the
+      // numbers above and below it.
+      var numeric = isNumeric(column) || (!!spec.rowKinds && column.index > 0 && (typeof value === "number" || value === null || value === undefined));
       var wrapClass = numeric ? "num" : proseCols[column.index] ? "cell-prose" : column.nowrap || proseCols[column.index] === false ? "nowrap" : "";
       var td = el("td", { class: wrapClass + " col-" + column.key, "data-sort": cellSortValue(value) });
       var content = cellContent(column, row, value, spec, rowKind);
@@ -834,6 +864,14 @@ export function dataGrid(spec) {
   // tables" is checked when it opens.
   if (typeof ResizeObserver === "function") {
     var observer = new ResizeObserver(function () {
+      // Before it scrolls, a grid too wide for its box draws tighter
+      // (app.css's .grid-snug), which fits most tables at the desktop
+      // width. The class then stays: the change of size it makes calls
+      // back here to judge the tighter table.
+      if (!scroller.classList.contains("grid-snug") && scroller.clientWidth > 0 && scroller.scrollWidth > scroller.clientWidth + 1) {
+        scroller.classList.add("grid-snug");
+        return;
+      }
       var wide = scroller.clientWidth > 0 && scroller.scrollWidth > scroller.clientWidth + 1;
       scroller.classList.toggle("grid-wide", wide);
       if (wide && scroller.tabIndex !== 0) {
@@ -980,7 +1018,10 @@ export function headRow(heading, help, subject, card) {
 // page short.
 var NOTES_IN_VIEW_CHARS = 240;
 
-export function notesList(notes, seen) {
+// ofTable: the notes are one table's, under it. Folded, they say "How
+// this table is worked out", so they don't read like the section's own
+// "How these figures are worked out" a few lines further down.
+export function notesList(notes, seen, ofTable) {
   var list = el(
     "ul",
     { class: "notes" },
@@ -993,7 +1034,7 @@ export function notesList(notes, seen) {
   }, 0);
   if (notes.length <= 2 && length <= NOTES_IN_VIEW_CHARS) return list;
   return el("details", { class: "disclosure notes-detail" }, [
-    el("summary", { text: "How these figures are worked out (" + (notes.length === 1 ? "1 note" : notes.length + " notes") + ")" }),
+    el("summary", { text: (ofTable ? "How this table is worked out" : "How these figures are worked out") + " (" + (notes.length === 1 ? "1 note" : notes.length + " notes") + ")" }),
     list,
   ]);
 }
@@ -1075,7 +1116,7 @@ function summaryColumns(table) {
 function factValue(table, column, value) {
   if (column.kind === "money" && typeof value === "number") return moneyText(value);
   if (typeof value === "string" && table.value_labels && table.value_labels[value]) return table.value_labels[value];
-  return plainText(formatCell(value, column.kind));
+  return plainText(formatCell(value, wholeKind(value, column.kind)));
 }
 
 function summaryTile(table, column, value) {
@@ -1140,10 +1181,23 @@ function ranking(table) {
     return typeof name === "string" && !SCALE_VALUE.test(name);
   });
   if (!named) return null;
+  // A row for all of them ("all", read "All projects") is the total
+  // wherever the server's A to Z put it, so it stays last.
+  var total = names.filter(function (name) {
+    return TOTAL_KEY.test(name);
+  })[0];
+  if (total !== undefined) {
+    var others = names.filter(function (name) {
+      return name !== total;
+    });
+    if (others.length >= 2 && aToZ(others)) return { total: total };
+  }
   if (aToZ(names)) return { total: null };
   if (names.length > 3 && aToZ(names.slice(0, -1))) return { total: names[names.length - 1] };
   return null;
 }
+
+var TOTAL_KEY = /^(all|total)$/i;
 
 // A table's own empty state where "a longer window" is the wrong reason:
 // [what happened, why or what next].
@@ -1152,6 +1206,32 @@ var EMPTY_TEXT = {
   habits_outcomes: ["No feedback on your work in this window.", "Answer /tl-feedback, or rate a session on {{page:spend/sessions}}, to fill this table."],
   habits_by_shape: ["No main sessions with a message of yours in this window.", "A longer window may include some."],
 };
+
+// A table whose every figure is zero or blank says nothing its rows of
+// zeros would: it shows as the grid's own "Nothing to show" note, not
+// as tiles or rows of zeros. Text cells (a cause, a label) aren't
+// figures, and a table without any figures is judged by its rows alone.
+function tableIsEmpty(table) {
+  var rows = table.rows || [];
+  if (!rows.length) return true;
+  var byRow = hasKeys(table.row_kinds);
+  // A summary is judged by its tiles' figures: its other figures are
+  // often totals it is a share of ("of 3,107 replies").
+  var strip = summaryColumns(table);
+  var figures = 0;
+  for (var r = 0; r < rows.length; r++) {
+    for (var c = 0; c < table.columns.length; c++) {
+      if (strip && strip.indexOf(c) === -1) continue;
+      var value = rows[r][c];
+      var blank = value === null || value === undefined || value === "" || value === "-";
+      var figure = NUMERIC_KINDS[table.columns[c].kind] || (byRow && c > 0 && (typeof value === "number" || blank));
+      if (!figure) continue;
+      figures += 1;
+      if (!blank && value !== 0) return false;
+    }
+  }
+  return figures > 0;
+}
 
 function emptyText(table) {
   // Five-hour blocks come only with a plan's usage limits.
@@ -1181,6 +1261,13 @@ export function renderTable(table, tableId, currency, options) {
     var helpNode = helpButton(table.help, table.title || table.name);
     if (helpNode) head = wrap.appendChild(el("div", { class: "block-head block-head-help" }, [helpNode]));
   }
+  if (tableIsEmpty(table)) {
+    var none = emptyText(table);
+    wrap.classList.add("table-empty");
+    wrap.appendChild(emptyState(none[0], null, none[1]));
+    if (table.name) markFeeds(wrap, head, null, table.name, table.title || table.name);
+    return wrap;
+  }
   var strip = summaryColumns(table);
   if (strip) {
     // A summary (one row): its headline figures as tiles, every figure
@@ -1198,7 +1285,7 @@ export function renderTable(table, tableId, currency, options) {
     wrap.appendChild(
       el("details", { class: "disclosure summary-details" }, [el("summary", { text: "All figures (" + facts.querySelectorAll("dt").length + ")" }), facts])
     );
-    if (table.notes && table.notes.length) wrap.appendChild(notesList(table.notes, (options && options.seen) || new Set()));
+    if (table.notes && table.notes.length) wrap.appendChild(notesList(table.notes, (options && options.seen) || new Set(), true));
     if (table.name) markFeeds(wrap, head, null, table.name, table.title || table.name);
     return wrap;
   }
@@ -1226,7 +1313,7 @@ export function renderTable(table, tableId, currency, options) {
       tint: TINT_TABLES.indexOf(table.name) !== -1,
     })
   );
-  if (table.notes && table.notes.length) wrap.appendChild(notesList(table.notes, (options && options.seen) || new Set()));
+  if (table.notes && table.notes.length) wrap.appendChild(notesList(table.notes, (options && options.seen) || new Set(), true));
   if (table.name) markFeeds(wrap, head, gridNode, table.name, table.title || table.name);
   return wrap;
 }
@@ -1307,6 +1394,13 @@ export function setSectionChart(draw) {
   sectionChart = draw;
 }
 
+// The intro the view a section belongs on opens with (links.js's
+// viewIntro): a section with the same words doesn't say them again.
+function pageIntro(sectionKey) {
+  var view = viewFor(viewForSection(sectionKey));
+  return view ? (view.segment ? view.segment.intro : view.page.intro) || "" : "";
+}
+
 export function renderSectionGeneric(container, section, currency, idPrefix) {
   if (!section) return;
   var block = el("section", { class: "report-section", "data-section": section.key || null });
@@ -1316,10 +1410,37 @@ export function renderSectionGeneric(container, section, currency, idPrefix) {
   );
   // Each glossary term is explained once per section: its first use.
   var seen = new Set();
-  if (section.intro) block.appendChild(el("p", { class: "section-intro" }, prose(section.intro, seen)));
+  if (section.intro && section.intro !== pageIntro(section.key)) block.appendChild(el("p", { class: "section-intro" }, prose(section.intro, seen)));
   var chart = sectionChart ? sectionChart(section) : null;
+  // A section with nothing in any table it shows is one "Nothing to
+  // show" note under its heading: no zero tiles, no tables of zeros, no
+  // notes on how figures it doesn't have were worked out.
+  // (Its "More tables" count too: a section is empty only when they are.)
+  var shown = (section.tables || []).filter(function (table) {
+    return (table.dashboard || "keep") !== "report";
+  });
+  if (!chart && shown.length && shown.every(tableIsEmpty)) {
+    var none = emptyText(shown[0]);
+    block.classList.add("section-empty");
+    block.appendChild(emptyState(none[0], null, none[1]));
+    container.appendChild(block);
+    return;
+  }
   if (chart) block.appendChild(chart);
-  renderPlacedTables(block, section.tables || [], currency, idPrefix || section.key, section.title || section.key, seen);
+  // Its shown tables all empty, only "More tables" with figures: one note
+  // says so for all of them, then the rest as usual.
+  var tables = section.tables || [];
+  var kept = shown.filter(function (table) {
+    return (table.dashboard || "keep") === "keep";
+  });
+  if (kept.length > 1 && kept.every(tableIsEmpty)) {
+    var noneKept = emptyText(kept[0]);
+    block.appendChild(emptyState(noneKept[0], null, noneKept[1]));
+    tables = tables.filter(function (table) {
+      return kept.indexOf(table) === -1;
+    });
+  }
+  renderPlacedTables(block, tables, currency, idPrefix || section.key, section.title || section.key, seen);
   if (section.notes && section.notes.length) block.appendChild(notesList(section.notes, seen));
   container.appendChild(block);
 }
@@ -1343,8 +1464,10 @@ export function renderMappedSections(report, viewKey, container, skip) {
     }
     here.forEach(function (table, i) {
       var block = el("section", { class: "report-section" });
-      block.appendChild(el("h2", { class: "section-title", text: table.title || table.name }));
-      block.appendChild(renderTable(table, "report-" + section.key + "-" + table.name + "-" + i, state.currency, { heading: false }));
+      // The table's "How to read this" sits beside this heading, not on a
+      // line of its own under it.
+      var head = block.appendChild(headRow(el("h2", { class: "section-title", text: table.title || table.name }), null, table.title || table.name));
+      block.appendChild(renderTable(table, "report-" + section.key + "-" + table.name + "-" + i, state.currency, { heading: false, helpInto: head }));
       container.appendChild(block);
     });
   });

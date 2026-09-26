@@ -84,8 +84,8 @@ export var CHART_SPECS = {
     n: 7,
     source: "ttl.ttl_break_even_share",
     form: "diverging",
-    title: "Which agent types gain from a 1-hour cache lifetime?",
-    summary: "{gainers} of {count} agent types would save with a 1-hour cache lifetime.",
+    title: "Which agent types are cheaper on a 1-hour cache lifetime?",
+    summary: "{gainers} of {count} agent types cost less on a 1-hour cache lifetime than on 5 minutes. The table below says whether that needs a change.",
   },
   "startup-context": {
     n: 8,
@@ -171,6 +171,31 @@ export function dayLabel(day, long) {
 }
 
 // -- axes -----------------------------------------------------------------------------
+
+// A money scale's ticks, stepped in the unit its axis is written in
+// (moneyAxis): a share of the weekly limit reads 5%, 10%, 15%, not the
+// 5.5%, 11%, 16% that round dollars come to. With nice, the scale's
+// domain first widens to whole steps of that unit, as .nice(count) would
+// in dollars.
+export function moneyTicks(scale, axis, count, nice) {
+  var k = axis.factor || 1;
+  var shown = d3.scaleLinear().domain(
+    scale.domain().map(function (d) {
+      return d * k;
+    })
+  );
+  if (nice) {
+    shown.nice(count);
+    scale.domain(
+      shown.domain().map(function (d) {
+        return d / k;
+      })
+    );
+  }
+  return shown.ticks(count).map(function (d) {
+    return d / k;
+  });
+}
 
 // A value axis in the house style: solid 1px hairline grid lines across
 // the plot, ticks in the quietest ink, no domain line (the chart draws
@@ -614,7 +639,10 @@ function drawFrame(frame, how) {
     frame.points = [];
     frame.pickRange = null;
     frame.table = null;
+    // The box says it; the summary keeps the words for a screen reader
+    // (the chart is described by it) without printing them twice.
     frame.summaryNode.textContent = result.empty;
+    frame.summaryNode.classList.add("visually-hidden");
     setLegend(frame, []);
     frame.noteNode.hidden = true;
     return;
@@ -624,6 +652,7 @@ function drawFrame(frame, how) {
   frame.table = result.table || null;
   var template = (result.variant && frame.spec.alt && frame.spec.alt[result.variant]) || frame.spec.summary;
   frame.summaryNode.textContent = frame.opts.summary || fillSummary(template, result.facts || {});
+  frame.summaryNode.classList.remove("visually-hidden");
   setLegend(frame, result.legend || []);
   frame.noteNode.hidden = !result.note;
   frame.noteNode.textContent = result.note || "";

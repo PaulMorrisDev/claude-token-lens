@@ -40,8 +40,9 @@ function setupItem(item) {
 // working yet: how you pay, the connection to Claude Code, the dashboard
 // at logon (Claude Code deletes transcripts after cleanupPeriodDays, and
 // only a running dashboard keeps their figures: that item's text says
-// so), and capture when it's on. Only those parts are listed; Data
-// quality has the whole checklist.
+// so), and capture when it's on. One line names the parts, so the
+// Overview's own answer still comes first; the steps, each with its
+// command, open beneath it. Data quality has the whole checklist.
 export function renderSetupCard(setup, container) {
   if (!setup || setup.done) return;
   var pending = (setup.items || []).filter(function (item) {
@@ -51,14 +52,25 @@ export function renderSetupCard(setup, container) {
   var toFix = pending.some(function (item) {
     return item.state !== "waiting";
   });
+  var names = pending.map(function (item) {
+    return item.label;
+  });
+  var steps = el("details", { class: "disclosure setup-steps" }, [
+    el("summary", { text: pending.length === 1 ? "Show the step" : "Show the " + pending.length + " steps" }),
+    el("ul", { class: "setup-list" }, pending.map(setupItem)),
+  ]);
   container.appendChild(
     callout({
       tone: toFix ? "warning" : "info",
       class: "setup-card",
-      title: toFix ? "Setup isn't finished." : "Setup is almost done.",
       children: [
-        el("ul", { class: "setup-list" }, pending.map(setupItem)),
-        el("p", { class: "notes" }, [pageLink("data", "Data quality"), " has the whole checklist."]),
+        el("p", { class: "setup-card-line" }, [
+          el("strong", { text: toFix ? "Setup isn't finished: " : "Setup is almost done: " }),
+          el("span", { text: names.join(", ") + ". " }),
+          pageLink("data", "Data quality"),
+          " has the whole checklist.",
+        ]),
+        steps,
       ],
     })
   );
