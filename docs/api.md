@@ -889,7 +889,7 @@ been captured. `capture_status.summary` is the same one-line status
 
 One answer per way of saving tokens (`quick_actions.CHECKS`): models,
 effort, compaction, cache, tools, skills, claude-md, tool-output,
-hooks, habits and quality. Each check always answers, including "nothing to
+hooks, tool-search, habits and quality. Each check always answers, including "nothing to
 do".
 
 Query: the windowing params above.

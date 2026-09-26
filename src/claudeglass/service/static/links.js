@@ -98,7 +98,7 @@ export var PAGES = [
         id: "context",
         label: "Context",
         intro:
-          "What Claude reads at the start of every session and subagent: your CLAUDE.md files and the skills list. How often each is sent, what it costs, and how to trim it.",
+          "What Claude reads at the start of every session and subagent: your CLAUDE.md files and the skills list. How often each is sent, what it costs, and how to trim it. Also what tool search saves by keeping MCP tool definitions out.",
       },
       { id: "hooks", label: "Hooks", intro: "Whether each hook you set up works, and what it costs in kept context, blocked calls and waiting." },
     ],
@@ -303,6 +303,7 @@ export var SECTION_PAGE_MAP = {
   workflows: "agents/quality",
   workstyle: "agents/quality",
   context_budget: "agents/context",
+  tool_search: "agents/context",
   hooks: "agents/hooks",
   habits: "habits",
   // Setup. Settings draws the config section's tables once, from

@@ -716,6 +716,10 @@ is shaded against its column's largest, with the value shown.
   "Show only skills Claude never used". A row opens a drawer with the
   skill's description, facts and fixes.
 - The `context_budget` section.
+- The `tool_search` section ([tool search](tool-search.md)): what MCP
+  tool search saved by keeping tool definitions out of each request,
+  overall and by MCP server. The same question is a check on
+  Actions › Checks.
 
 The terminal equivalent is `claudeglass review claude-md|skills`.
 

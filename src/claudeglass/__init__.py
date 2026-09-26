@@ -181,7 +181,16 @@ __version__ = "0.9.0"
 #: (``detail["coach"]``/``["coach_chars"]``). Notes on a message you send
 #: (``UserPromptSubmit``) keep that hook name. A pre-25 digest counted
 #: neither.
-PARSER_VERSION = 25
+#:
+#: Bumped to 26: a top-level transcript skips the lines of another
+#: session whose own file sits beside it (``Diagnostics.copied_lines``),
+#: so a session ``/clear`` copied into an earlier one's file is priced
+#: once. A pre-26 digest priced it twice. Each turn also keeps how many
+#: tools tool search listed by name only, by MCP server
+#: (``Turn.deferred_tools_by_server``, ``deferred_list_chars``), and each
+#: transcript the size of every definition it loaded
+#: (``TranscriptResult.tool_definition_chars``); a pre-26 digest has none.
+PARSER_VERSION = 26
 
 #: Bump when the model.py contract changes in a way that invalidates the
 #: on-disk digest cache (see model.py's module docstring for the contract

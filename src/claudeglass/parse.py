@@ -32,6 +32,26 @@ counted in ``Diagnostics.replayed_lines`` the second and later time its
 ``uuid`` is seen; lines with no ``uuid`` (``queue-operation``,
 ``bridge-session``) are never subject to this check.
 
+Copied sessions: after ``/clear`` in a web or mobile session, Claude Code
+writes the new session's lines both to that session's own file and into
+the earlier session's file, keeping the new session's ``sessionId``. In a
+top-level transcript, a line whose ``sessionId`` names another session
+is skipped and counted in ``Diagnostics.copied_lines`` when that
+session's own ``<sessionId>.jsonl`` sits in the same folder, so its
+replies are priced once, from its own file. When there is no such file
+the line is kept: many logs (and fixtures) carry a ``sessionId`` that
+isn't their file name, and a copy with no original is the only record.
+
+Tool search: Claude Code lists deferred tools by name
+(``deferred_tools_delta``: ``addedNames``/``removedNames``) and records
+each full definition it loads (``deferred_tools_record``: ``entries``).
+Each turn keeps how many listed tools had no definition loaded when it
+was requested, by MCP server (``Turn.deferred_tools_by_server``), and the
+size of the name list (``deferred_list_chars``); the transcript keeps
+each loaded definition's size by tool name
+(``TranscriptResult.tool_definition_chars``). ``tool_search.py`` prices
+what that kept out of each request.
+
 ``gap_s`` is measured request-start to request-start: the interval between
 the *first* JSONL line's timestamp of one priced turn and the first line's
 timestamp of the previous priced turn, not (say) a turn's finalisation
@@ -704,6 +724,82 @@ class _PendingTurn:
     call_keys: dict[str, int] = field(default_factory=dict)
     hook_blocks: dict[str, int] = field(default_factory=dict)
     hook_resends: dict[str, int] = field(default_factory=dict)
+    #: Tool-search addition (see model.py's ``Turn.deferred_tools_by_server``/
+    #: ``deferred_list_chars``): set once, when the reply is requested.
+    deferred_tools_by_server: dict[str, int] = field(default_factory=dict)
+    deferred_list_chars: int = 0
+
+
+#: A tool name kept as a key (``TranscriptResult.tool_definition_chars``):
+#: the API's own tool-name alphabet, so never a path or free text.
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+#: The server of a deferred tool that isn't an MCP tool.
+BUILT_IN_TOOLS = "built-in"
+
+
+def tool_server(name: str) -> str:
+    """The MCP server a tool comes from (``mcp__<server>__<tool>``), or
+    :data:`BUILT_IN_TOOLS` for one of Claude Code's own."""
+    parts = name.split("__")
+    if len(parts) >= 3 and parts[0] == "mcp" and parts[1]:
+        return parts[1][:64]
+    return BUILT_IN_TOOLS
+
+
+class _DeferredTools:
+    """Tool search, as a transcript records it (see the module docstring):
+    the tools listed by name only, and the full definitions loaded since."""
+
+    __slots__ = ("names", "loaded", "definition_chars", "_snapshot")
+
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+        self.loaded: set[str] = set()
+        #: Tool name -> characters of its full definition, as loaded.
+        self.definition_chars: dict[str, int] = {}
+        self._snapshot: tuple[dict[str, int], int] | None = ({}, 0)
+
+    def note(self, attachment: dict) -> None:
+        kind = attachment.get("type")
+        if kind == "deferred_tools_delta":
+            for name in _tool_names(attachment.get("removedNames")):
+                self.names.discard(name)
+            for name in _tool_names(attachment.get("addedNames")):
+                self.names.add(name)
+        elif kind == "deferred_tools_record":
+            entries = attachment.get("entries")
+            for entry in entries if isinstance(entries, list) else ():
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                if not isinstance(name, str) or not _TOOL_NAME_RE.match(name):
+                    continue
+                self.loaded.add(name)
+                definition = {key: entry.get(key) for key in ("name", "description", "input_schema")}
+                chars = len(json.dumps(definition, ensure_ascii=False, separators=(",", ":"), default=str))
+                self.definition_chars[name] = max(chars, self.definition_chars.get(name, 0))
+        else:
+            return
+        self._snapshot = None
+
+    def snapshot(self) -> tuple[dict[str, int], int]:
+        """Tools listed by name only when a reply is requested, by server,
+        and the characters of the name list sent in their place."""
+        if self._snapshot is None:
+            by_server: dict[str, int] = {}
+            for name in self.names - self.loaded:
+                server = tool_server(name)
+                by_server[server] = by_server.get(server, 0) + 1
+            self._snapshot = (by_server, sum(len(name) + 1 for name in self.names))
+        by_server, list_chars = self._snapshot
+        return dict(by_server), list_chars
+
+
+def _tool_names(value) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [name for name in value if isinstance(name, str) and _TOOL_NAME_RE.match(name)]
 
 
 def _plan_stats(plan: str) -> PlanStats:
@@ -1487,8 +1583,27 @@ def _finalize_turn(
         hook_context_chars=hook_context_chars,
         hook_blocks=dict(pending.hook_blocks),
         hook_resends=dict(pending.hook_resends),
+        deferred_tools_by_server=dict(pending.deferred_tools_by_server),
+        deferred_list_chars=pending.deferred_list_chars,
     )
     return turn, new_prev_ts, new_priced_count
+
+
+#: A session id safe to use as a file name: Claude Code's are UUIDs. A
+#: ``sessionId`` with a path separator or a dot is never looked up.
+_SESSION_FILE_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _has_own_file(folder: Path, session_id: str) -> bool:
+    """Whether ``session_id``'s own transcript sits in ``folder``, so a
+    copy of its lines in another transcript can be skipped (see the
+    module docstring's copied sessions)."""
+    if not _SESSION_FILE_RE.match(session_id):
+        return False
+    try:
+        return (folder / f"{session_id}.jsonl").is_file()
+    except OSError:
+        return False
 
 
 def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult:
@@ -1566,6 +1681,15 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     #: (see ``_annotate_hook_event``).
     blocked_calls: dict[int, str] = {}
     hook_context_queue: dict[tuple[str, str], list[str]] = {}
+    #: Copied sessions (see module docstring): only a top-level
+    #: transcript is named after its session. Other session id -> whether
+    #: that session's own file is beside this one, looked up once each.
+    own_session_id = meta.session_id if meta.kind == "top-level" else ""
+    session_folder = Path(path).parent
+    copied_from: dict[str, bool] = {}
+    #: Tool search (see module docstring): the deferred list and the
+    #: definitions loaded from it so far.
+    deferred_tools = _DeferredTools()
 
     current: _PendingTurn | None = None
     current_key: str | None = None
@@ -1574,6 +1698,16 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
     priced_turn_count = 0
 
     for _line_no, d in jsonl.iter_lines(path, stats=line_stats):
+        if own_session_id:
+            line_session = d.get("sessionId")
+            if isinstance(line_session, str) and line_session and line_session != own_session_id:
+                copied = copied_from.get(line_session)
+                if copied is None:
+                    copied = copied_from[line_session] = _has_own_file(session_folder, line_session)
+                if copied:
+                    diagnostics.copied_lines += 1
+                    continue
+
         uuid_val = d.get("uuid")
         if isinstance(uuid_val, str) and uuid_val:
             if uuid_val in seen_uuids:
@@ -1625,6 +1759,7 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
             events_since_current = []
             attachments_since_current = []
             current = _new_pending(d, tool_use_names, blocked_calls)
+            current.deferred_tools_by_server, current.deferred_list_chars = deferred_tools.snapshot()
             current_key = key
             # Usage-limits addition (see module docstring): a usage-cap
             # hit lives on the synthetic assistant line's own text, which
@@ -1677,6 +1812,8 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
                 names = attachment.get("names")
                 if isinstance(names, list):
                     skill_names.update(name for name in names if isinstance(name, str))
+            elif isinstance(attachment, dict):
+                deferred_tools.note(attachment)
 
         event = events_mod.classify_line(d)
         if event is None:
@@ -1814,6 +1951,7 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
         tool_result_chars=tool_result_chars,
         tool_result_calls=tool_result_calls,
         parser_notes=parser_notes,
+        tool_definition_chars=dict(deferred_tools.definition_chars),
     )
 
 
@@ -1824,9 +1962,10 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
 #: Base keys are read for *every* line regardless of type: ``type``/
 #: ``uuid`` (dedup, in ``parse_transcript``'s main loop) and
 #: ``entrypoint``/``version`` (first-seen capture, also in the main loop,
-#: before any type dispatch). A type not listed here (every other
+#: before any type dispatch) and ``sessionId`` (copied sessions, first of
+#: all). A type not listed here (every other
 #: ``events._IGNORABLE_TYPES`` member, plus the ``file-history-*``/
-#: ``artifact-*`` prefix families) is read no further than those four
+#: ``artifact-*`` prefix families) is read no further than those five
 #: base keys -- ``classify_line`` returns ``None`` for them before even
 #: computing ``timestamp``/``message``.
 #:
@@ -1838,7 +1977,7 @@ def parse_transcript(path: str | Path, meta: TranscriptMeta) -> TranscriptResult
 #: classify_line's later, type-unguarded ``origin`` read; ``system``
 #: (when its ``subtype`` matches none of the earlier checks) and ``user``
 #: can both fall through as far as that ``origin`` read, so both list it.
-_BASE_READ_KEYS = frozenset({"type", "uuid", "entrypoint", "version"})
+_BASE_READ_KEYS = frozenset({"type", "uuid", "entrypoint", "version", "sessionId"})
 
 READ_KEYS: dict[str, frozenset[str]] = {
     "assistant": _BASE_READ_KEYS

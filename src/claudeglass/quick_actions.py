@@ -700,6 +700,46 @@ def _hooks(ctx: Context) -> dict:
     return _result("act", summary, table=table, fixes=_rec_fixes(recs))
 
 
+def _tool_search(ctx: Context) -> dict:
+    tables = whatif._Tables(ctx.model)
+    summary = tables.rows("tool_search", "tool_search_summary")
+    row = summary[0] if summary else {}
+
+    def count(r, key) -> int:
+        return int(round(whatif._num(r.get(key)) or 0))
+
+    replies, most, mcp = count(row, "replies"), count(row, "most_deferred"), count(row, "most_deferred_mcp")
+    if not replies:
+        return _result("no_data", f"No reply {ctx.period} had tools deferred by tool search.")
+    net = whatif._num(row.get("net_usd"))
+    if net is None:
+        return _result(
+            "no_data",
+            f"Tool search deferred up to {most:,} tools a reply {ctx.period}, but none was loaded, so their size "
+            "isn't known.",
+        )
+    table = _table(
+        [("server", "MCP server"), ("deferred", "Most tools deferred"), ("kept", "Kept out of each reply"),
+         ("saving", "Saved")],
+        [["Claude Code's own tools" if r.get("server") == "built-in" else r.get("server"),
+          f"{count(r, 'most_deferred'):,}", f"{count(r, 'kept_per_reply'):,} tokens", _cell(ctx, r.get("saving_usd"))]
+         for r in tables.rows("tool_search", "tool_search_by_server")[:10]],
+    )
+    kept = count(row, "kept_per_reply")
+    if net > 0:
+        text = (
+            f"Tool search kept about {kept:,} tokens of tool definitions out of each reply, from up to {most:,} "
+            f"deferred tools ({mcp:,} of them MCP tools). That saved {_money(ctx, net)} {ctx.period}, after the "
+            "replies spent searching for tools."
+        )
+    else:
+        text = (
+            f"Tool search saved nothing {ctx.period}: the replies spent searching for tools cost more than keeping "
+            f"up to {most:,} tool definitions out of each reply saved."
+        )
+    return _result("ok", text, table=table)
+
+
 _HABIT_RECS = {
     "batch-instructions", "long-tool-waits", "notification-invalidation", "agent-report-size", "spawn-task-prompt",
     "cache-read-dominance", "limit-pressure", "long-context-share", "subagent-volume", "discovery-share",
@@ -1136,6 +1176,9 @@ CHECKS: tuple[Check, ...] = (
     Check("hooks", "Do your hooks work, and what do they cost?",
           "A failing hook doesn't do its job, and context a hook adds is re-read on every later reply.", _hooks,
           tuple(sorted(_HOOK_RECS))),
+    Check("tool-search", "What does MCP tool search save you?",
+          "Claude Code lists MCP tools by name and loads a full definition only when Claude needs it, so the rest "
+          "aren't re-read on every reply.", _tool_search),
     Check("habits", "Do any habits cost tokens?",
           "Pauses, retries and long reports cost tokens that no setting can save.", _habits, tuple(sorted(_HABIT_RECS))),
     Check("quality", "Is any agent struggling?",

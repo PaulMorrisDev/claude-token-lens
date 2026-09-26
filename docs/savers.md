@@ -1,5 +1,9 @@
 # Third-party token-saver tool ROI (v4-saver-roi)
 
+> Claude Code's own MCP tool search is measured separately, and is part
+> of the report: see [`tool-search.md`](tool-search.md). This page is
+> about third-party servers that claim to save tokens.
+
 An increasing number of installed MCP servers, plugins and skills claim
 to save tokens: context compressors, log/output suppressors, "delegate
 simple tasks to a local model" servers, memory/knowledge-graph servers,

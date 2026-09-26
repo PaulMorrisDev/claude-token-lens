@@ -354,6 +354,7 @@ var CHECK_NAMES = {
   "claude-md": "CLAUDE.md files",
   "tool-output": "Tool output",
   hooks: "Hooks",
+  "tool-search": "MCP tool search",
   habits: "Work habits",
   quality: "Agent quality",
 };

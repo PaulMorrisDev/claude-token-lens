@@ -141,6 +141,9 @@ PLACEMENT: dict[str, str] = {
     # your hooks
     "hooks_summary": "keep",
     "hooks_by_script": "keep",
+    # what tool search saves
+    "tool_search_summary": "keep",
+    "tool_search_by_server": "keep",
     # quality signals
     "quality_by_agent": "keep",
     "quality_by_setup": "keep",
@@ -567,6 +570,18 @@ SECTION_COPY: dict[str, SectionCopy] = {
             "read again on every later reply.",
             act="Fix failing hooks first. A script named by a relative path works only from the project root, so "
             "start it with ${CLAUDE_PROJECT_DIR}. Hooks don't expand a Windows %VAR% path, so use $HOME instead.",
+        ),
+    ),
+    "tool_search": SectionCopy(
+        title="What tool search saves",
+        intro="With tool search on, Claude Code lists tools by name and loads a tool's full definition only when "
+        "Claude needs it. This is what keeping the rest out saved.",
+        help=Help(
+            shows="How many tool definitions tool search kept out of each request, what that saved, and what the "
+            "searches themselves cost.",
+            read="Definitions that were never loaded are sized from the ones that were, so the saving is an "
+            "estimate. A loaded definition counts as sent either way.",
+            act="",
         ),
     ),
     "model_swap": SectionCopy(
@@ -3969,6 +3984,73 @@ TABLE_COPY: dict[str, TableCopy] = {
         },
         lead_columns=["hook", "failed", "cause", "blocks", "resent", "context_tokens", "carry_usd"],
     ),
+    # -- what tool search saves ------------------------------------------------------
+    "tool_search_summary": TableCopy(
+        title="What tool search saves",
+        help=Help(
+            shows="Every reply sent while tools were deferred, how much that kept out of each request, and the net "
+            "saving.",
+            read="Net saving is the saving less the name list and the replies that only searched for a tool.",
+            act="",
+        ),
+        columns={
+            "scope": ("Scope", "Which replies this row covers."),
+            "replies": ("Replies with tools deferred", "Replies requested while some tools were listed by name only."),
+            "most_deferred": (
+                "Most tools deferred in one reply",
+                "The most tools listed by name only, without their definitions, in one request.",
+            ),
+            "most_deferred_mcp": ("Of them MCP tools", "How many of those came from MCP servers."),
+            "definitions_measured": (
+                "Definitions measured",
+                "Tools whose full definition was loaded in this window, so its size is known.",
+            ),
+            "definition_tokens": ("Average definition", "The average size of those definitions, in tokens."),
+            "kept_per_reply": ("Kept out of each reply", "Tokens of definitions left out of each request, on average."),
+            "gross_usd": (
+                "Saved by keeping them out",
+                "What those tokens would have cost in every request, at list price.",
+            ),
+            "list_usd": ("Cost of the name list", "The list of tool names sent in their place, at list price."),
+            "search_replies": ("Replies that only searched", "Replies whose only tool call loaded tool definitions."),
+            "search_usd": (
+                "Cost of those replies",
+                "Those replies in full, at list price. Without tool search they wouldn't have happened.",
+            ),
+            "net_usd": ("Net saving", "The saving less the name list and the search replies, at list price."),
+        },
+        value_labels={"all replies": "All replies"},
+        lead_columns=["net_usd", "kept_per_reply", "most_deferred", "search_replies"],
+    ),
+    "tool_search_by_server": TableCopy(
+        title="By MCP server",
+        help=Help(
+            shows="Each MCP server whose tools were deferred, and Claude Code's own tools, with what keeping their "
+            "definitions out saved.",
+            read="A server with no loaded tool is sized at the average of every server. The name list and the "
+            "searches aren't split by server.",
+            act="",
+        ),
+        columns={
+            "server": ("MCP server", "The server the tools come from, or Claude Code's own tools."),
+            "most_deferred": ("Most tools deferred", "The most of its tools listed by name only in one request."),
+            "measured": ("Definitions measured", "Its tools whose full definition was loaded in this window."),
+            "definition_tokens": ("Average definition", "The size each of its deferred tools was counted at, in tokens."),
+            "sized_from": ("Sized from", "Whether that size comes from its own loaded tools or from every server's."),
+            "replies": ("Replies", "Replies requested while some of its tools were deferred."),
+            "kept_per_reply": (
+                "Kept out of each reply",
+                "Tokens of its definitions left out of each of those requests, on average.",
+            ),
+            "saving_usd": ("Saved by keeping them out", "What those tokens would have cost, at list price."),
+        },
+        value_labels={
+            "built-in": "Claude Code's own tools",
+            "its own tools": "Its own tools",
+            "all servers": "All servers",
+        },
+        lead_columns=["server", "most_deferred", "definition_tokens", "kept_per_reply", "saving_usd"],
+    ),
     # -- savings: wasted replies --------------------------------------------------
     "waste_summary": TableCopy(
         title="Wasted replies at a glance",
@@ -4354,6 +4436,7 @@ DIAGNOSTIC_LABELS: dict[str, tuple[str, str]] = {
     "oversized_lines": ("Lines too large to read", "Lines over the size limit, skipped without reading."),
     "trailing_events": ("Events after the last reply", "Events logged after a session's last reply, so attached to none."),
     "replayed_lines": ("Lines copied from an earlier session", "Lines a resumed session repeated. Counted once."),
+    "copied_lines": ("Lines copied from another session", "Lines another session's log also holds, as after /clear in a web or mobile session. Counted once, in their own session."),
     "timestamp_parse_failures": ("Unreadable timestamps", "Replies whose time could not be read. They are left out of time-based tables."),
     "agent_settings": ("Agent settings seen", "Agent settings recorded in the logs, with counts."),
     "modes": ("Permission modes seen", "Permission modes recorded in the logs, with counts."),
