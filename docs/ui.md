@@ -18,6 +18,10 @@ changes Claude Code itself.
 
 ### Constraints (binding on every file under `static/`)
 
+- **Desktop only.** The dashboard is built for a desktop browser window,
+  1280px wide or more. There is no phone or tablet layout and none is
+  planned, so don't add narrow-screen breakpoints or report sideways
+  scrolling on a narrow screen as a bug.
 - **No framework and no build step.** Plain DOM APIs
   (`document.createElement`, `fetch`, `addEventListener`), no bundler or
   transpiler. `static/` is served as it is in the repo.
@@ -211,14 +215,21 @@ so a screen reader moving by headings hears it before the title.
 | Kind | Rule | Example |
 |---|---|---|
 | Money | 2 decimals under 10, 1 under 100, none above; "<$0.01" for a tiny positive amount | "$12.34", "$56.7", "$1,962" |
-| Share | 1 decimal | "12.4%" |
+| Share | 1 decimal; of the weekly limit, from 200% up as weeks of it | "12.4%", "about 2.5 weeks' worth of your usage limit" |
+| Whole number | no decimals, even in a float column that holds only whole numbers | "24", "3" |
 | Tokens | 3 significant figures, compacted, full count in the tooltip | "1.24M" |
 | Duration | hours and minutes | "2h 14m" |
 | Time | one absolute form (`shortTs`), or relative where freshness matters (`relativeTime`, absolute on hover) | "2026-09-23 10:44 UTC", "5 min ago" |
 | Signed change | `signedPercent`, with a true minus sign (U+2212) as wide as the plus | "+12%", "−3%" |
 
 Every amount outside a grid goes through `money`, `moneyText`,
-`moneyNode` or `moneyParts`, the mirror of `units.Units.money`. A grid's
+`moneyNode` or `moneyParts`, the mirror of `units.Units.money`. A tile
+puts the unit on its own line under the number ("248.7%" over "of your
+weekly usage limit"). A table cell that quotes an amount uses the short
+form, `units.Units.money_cell` ("222.4% ($202.33)"), always a share so a
+column's rows compare. A money chart steps its ticks in the unit its
+axis is written in (`moneyTicks`): 5%, 10%, 15% of the weekly limit, not
+the 5.5%, 11%, 16% that round dollars come to. A grid's
 money column stays a plain, sortable number with its unit once in the
 header (`moneyUnit`: "$", or "list-price $" on a plan). The service
 writes amounts the CLI's way ("1,962.05 USD"); `fetchJson` runs every
@@ -243,15 +254,19 @@ ends in an ellipsis rather than wrapping in a grid cell.
 
 ### Pages and segments
 
-The sidebar lists seven main pages, then two at its foot. A page with
-more than one part shows them as segments: a segmented control beside
-the page title. Each page, or page and segment, is a *view* with its own
+The sidebar opens with the three pages that answer what people come
+with (Overview, Your changes, Actions), then, under a **Details**
+heading (a rule in the rail), the five pages with the evidence behind
+them (`group: "details"`), then two at its foot. A page with more than
+one part shows them as segments: a segmented control beside the page
+title. Each page, or page and segment, is a *view* with its own
 address. `PAGES` in `links.js` is the one list; the sidebar, the router,
 search and the README's page table all follow it.
 
 | Page | Segments | Window |
 |---|---|---|
 | Overview | none | follows |
+| Your changes | none | the chart follows; the cards cover all time |
 | Actions | Recommendations, Checks | follows |
 | Spend | Usage, Savings, Sessions | follows |
 | Cache | Rebuilds, Lifetime (TTL) | follows |
@@ -261,7 +276,7 @@ search and the README's page table all follow it.
 | Data quality (foot) | none | follows |
 | Glossary (foot) | Terms, How costs work | follows, except Terms |
 
-That makes nineteen views. In text a place is written "Page › Segment"
+That makes twenty views. In text a place is written "Page › Segment"
 with U+203A (`viewLabel`), such as "Spend › Sessions".
 
 ### The sidebar
@@ -366,9 +381,9 @@ pickers hide and the chip "Same for every window" takes their
 place. Setup › Capture and Glossary › Terms are fixed. A page without
 segments marked the same way would show neither; none ships.
 
-Some panels on views that follow the window cover all history: on
-Setup › Settings, "Your changes and what they did", the estimates check
-and the baseline. Each carries an "All time" chip ("All time, all
+Some panels on views that follow the window cover all history: on Your
+changes, each change's card and the estimates check; on Setup ›
+Settings, the baseline. Each carries an "All time" chip ("All time, all
 projects" while a project is picked).
 
 ### The project picker
@@ -427,12 +442,13 @@ notes until they change.
 **The Setup card** tops the Overview while a part that matters isn't
 working yet (`/api/setup/status`, `renderSetupCard`): how you pay, the
 connection to Claude Code, the dashboard at logon, and capture when it's
-on. Each part says what's wrong and gives the command that fixes it to
-copy. The dashboard at logon says why it matters: Claude Code deletes
-transcripts after `cleanupPeriodDays`. It shows before any session is
-read too, and says "Setup is almost done." when all that's left is
-waiting for the first Claude Code session. Data quality has the whole
-checklist.
+on. It is one line naming those parts, so the Overview's own answer
+still comes first; "Show the steps" opens each part's problem and the
+command that fixes it to copy. The dashboard at logon says why it
+matters: Claude Code deletes transcripts after `cleanupPeriodDays`. It
+shows before any session is read too, and says "Setup is almost done"
+when all that's left is waiting for the first Claude Code session. Data
+quality has the whole checklist.
 
 ## Pages
 
@@ -440,7 +456,9 @@ Each view opens with its one-line intro from `PAGES` (`viewIntro`).
 
 ### Overview
 
-**Answers:** "What should I change next?"
+**Answers:** "Is anything wrong, did my changes work, and where do my
+tokens go?" The three questions people open the dashboard with, in
+that order, each as a heading with a one-line answer beside it.
 
 1. **The summary sentence** (18px): what the window cost, the change on
    the period of the same length before, and what the changes worth
@@ -452,34 +470,74 @@ Each view opens with its one-line intro from `PAGES` (`viewIntro`).
    recorded yet, and, before any session is read, **What ClaudeGlass
    does for you** (saying the first scan is running while
    `scan.scanning` is true).
-2. **Four tiles**, each linking to its page: Spend, every session with a
-   reply in the window at its whole cost, with its change and a daily
-   sparkline; Available saving, the four ways to save plus any priced
-   Actions item no lever counts, marked "At most" because they overlap
-   (never less than any one action); Saved by the cache (`cache_saved`,
-   an estimate); and Sessions, with the subagent runs.
-3. **Daily spend** (chart 1) with your settings changes from
-   `/api/impact` as labelled rules. It counts replies by the UTC day they
-   were sent, over every day of the window (`windowDays`); when the
-   window's whole sessions come to a different figure, its reading gives
-   that too and says why. A day opens Spend › Sessions and a change
-   Setup › Settings. Beside it from 1440px (under it at 1280px), **Next
-   best actions**: the first five items on Actions › Recommendations, in
-   its order and with its titles (`groupRecommendations`), each with its
-   severity, title, saving and a Copy prompt button named for it, or a
-   link to the prompts of a rule for several agent types. Side by side,
-   the chart grows from 300px to 560px to the actions' height
-   (`setChartHeight`), so neither panel ends in a blank band.
-4. **How your setup scores**: the overall level, set by the lowest area,
-   then the five scorecard areas as meters (5 and 4 good, 3 fair, 2 poor,
-   1 very poor, 0 not measured). Each says what its number means, which
-   way is better, where to look, and below 5 "What moves it:" with a
-   recommendation from this window.
-5. **Totals, and how amounts are counted** (folded): the billing mode and
-   why (`report.meta`), and `overview.totals`.
+2. **Anything wrong?** One checklist (`checklistRows`): a row for each
+   of Actions' checks (`/api/quick-actions`), carrying the Actions items
+   (`groupRecommendations`) its `rule_ids` raised, so a check and the
+   recommendation it leads to are one row; an item no check draws on is
+   a row of its own. Each row has its state in Actions' icon and word
+   (Do this, Worth a look), its area and what's wrong, what fixing it
+   saves ("Saving not worked out" when nothing priced it), a **Copy
+   prompt** named for it when it has one prompt, and a link to the fix
+   or the check. Rows to fix come first, then those worth a look, by
+   saving. The checks with nothing to do, and those with too little
+   data, fold into one line each. Beside the heading: "1 thing to fix ·
+   3 worth a look · 5 checks fine · 3 without enough data".
+3. **Did your changes work?** The latest two changes from `/api/impact`
+   as short cards (`renderChangeCards` with `compact`): what changed and
+   where, the lead measure before against after, how sure the
+   difference is, and what it saved so far. Beside the heading, a link
+   to all of them on Your changes.
+4. **Where do your tokens go?** Three tiles, each linking to its page:
+   Spend, every session with a reply in the window at its whole cost,
+   with its change and a daily sparkline; Saved by cache reads
+   (`cache_saved`, an estimate, before paying for the cache writes:
+   Cache › Rebuilds leads with the saving after them, so its figure is
+   smaller and its label says so); and Sessions, with the subagent runs.
+   Then **Daily spend** (chart 1) at the page's width, with your
+   settings changes from `/api/impact` as labelled rules. It counts
+   replies by the UTC day they were sent, over every day of the window
+   (`windowDays`); when the window's whole sessions come to a different
+   figure, its reading gives that too and says why. A day opens Spend ›
+   Sessions and a change Your changes. Under it, spend **by project**
+   (the usage section's `by_project` table) and **by model** (the daily
+   rows summed), side by side, each left out when it has one row.
+5. **Scores, totals, and how amounts are counted** (folded): the billing
+   mode and why (`report.meta`), the scorecard's five areas as a table
+   (`scorecard.dimensions`, which a recommendation's evidence can point
+   at), and `overview.totals`.
 
 Every load starts at once; the drawing waits for the report, which sets
 the billing mode. A newer draw drops an older one's answers.
+
+### Your changes
+
+**Answers:** "Did each change I made work, by how much, and how sure is
+that?"
+
+1. **Is each reply cheaper since your changes?** (chart 9): cost per
+   reply a day over the window, as dots, with each change from
+   `/api/impact` as a labelled rule and a flat line at the average of
+   each period between two changes. A change's label carries its step
+   ("Model changed: −21% a reply") and opens its card; a change made in
+   another project than the one picked names it. The lines are the
+   chart's own sums over the projects shown, and a change's own day
+   counts after it. A day opens Spend › Sessions.
+2. **Each change, before and after** (All time): a card per change
+   (`changeCard`), newest first. What changed, when and where
+   (`modelNames` for the values); its lead measure's reading as a chip;
+   each measure the change should move as two bars on one scale
+   (`before_value` and `after_value`), the change as a signed percent,
+   and the ratio test's reading coloured by the measure's `better`
+   (Lower is good news for a cost; the share of messages tagged has no
+   better side and reads neutral). Then **Saved so far** from
+   `without.saved_usd` ("Cost more so far" when it's negative) with how
+   it was priced, a row per setting when several changed at once, the
+   quality verdicts with every signal folded, and the command that
+   undoes an `apply` or a capture change. Until each side has
+   `min_sessions`, the card is the "not enough data yet" box with how
+   many it has (`item.gate`). A `?day=` pulses that day's card.
+3. **Did your estimates come true?** (`/api/backtest`, All time): each
+   estimate Profiles showed, against what happened.
 
 ### Actions › Recommendations
 
@@ -517,7 +575,7 @@ detail scrolls) and the one picked.
   where and under which profile it was ignored, with **Stop ignoring**
   (**Stop ignoring in every project** when an every-project ignore is
   seen from one project). Ignored items leave every other list: the
-  Overview's next best actions, the Actions badge, search, "Feeds N
+  Overview's checklist, the Actions badge, search, "Feeds N
   actions" and the checks' links (`groupRecommendations` leaves them out
   unless asked), and **Start from my recommendations**. The Overview's
   available saving comes from the report's tables, so it still counts
@@ -685,18 +743,13 @@ the notes. Nothing here changes a setting.
 
 ### Setup › Settings
 
-**Answers:** "What did my changes do, and what is set where?"
+**Answers:** "What is set, where, and how does this window compare with
+my baseline?" What each change did is on Your changes, which a line at
+the top links to.
 
-1. **Your changes and what they did** (`/api/impact`): each `apply`,
-   undo or settings change the hook saw, sessions before against after,
-   and a folded quality table per agent it touched. An apply gives "To
-   undo it: `claudeglass apply --revert <backup_ts>`". A `?day=`
-   pulses that day's change.
-2. **Did your estimates come true?** (`/api/backtest`): each estimate
-   Profiles showed, against what happened.
-3. `/api/config-diff?auto_keys=1`: which layer supplied each key, which
+1. `/api/config-diff?auto_keys=1`: which layer supplied each key, which
    projects share one effective config, and the per-key diffs.
-4. **Latest baseline** (`/api/baseline`): the capture window's status,
+2. **Latest baseline** (`/api/baseline`): the capture window's status,
    the latest baseline and the history, marked provisional while a
    capture window is open.
 
@@ -825,7 +878,11 @@ Every table on every page is `dataGrid`.
 - **Lead columns.** A table of more than 8 columns shows its first 7 (or
   its `lead_columns`), with a chooser for the rest (`tls:cols:<table>`)
   and a pinned first column while it scrolls sideways. Headings wrap to
-  two lines, and a shadow marks each edge with more to scroll to.
+  three lines, a long unit ("list-price $") on a line of its own, so a
+  heading grows down rather than across. A table still too wide for its
+  box first draws tighter (`.grid-snug`: less padding, a shorter bar),
+  which fits every report table at 1280px; only then does it scroll,
+  with a shadow at each edge with more to scroll to.
 - **Inline bars.** The lead measure carries a thin bar, so a ranking
   needs no chart. A table in `TINT_TABLES` shades values instead.
 - **Long tables.** A report table of more than 12 rows opens on its
@@ -840,12 +897,21 @@ Every table on every page is `dataGrid`.
 - **Summaries and notes.** A one-row table with `lead_columns` reads as
   up to four tiles, with **All figures (N)** under them. One or two short
   notes stay in view; more fold into **How these figures are worked out
-  (N notes)**.
+  (N notes)**, or **How this table is worked out (N notes)** for one
+  table's own, so the two don't read alike a few lines apart. A section
+  intro the page already opens with isn't repeated, and an empty chart
+  says why once, in its box (its summary stays for a screen reader).
 - **Placement.** `Table.dashboard`: `keep` shows a table, `advanced` puts
   it in one folded **More tables (N)** per section, and `report` leaves
   it to the CLI report with a note whose buttons open it in the table
   drawer. A table empty for a known reason says it (five-hour blocks on
   API billing).
+- **Nothing to show.** A table whose every figure is zero or blank (a
+  summary is judged by its tiles) shows the grid's "Nothing to show"
+  note, not tiles or rows of zeros (`tableIsEmpty`). A section whose
+  tables are all like that is its heading, intro and that one note; one
+  whose shown tables are, but whose **More tables** aren't, says it once
+  above them.
 - **Help and labels.** A column's (?) is a real `<button>` that never
   sorts; on a heading that sorts it leaves the Tab order and **?** opens
   it. The heading's name is its label and unit. Controls every grid has
@@ -893,7 +959,7 @@ the count.
 | Keys | What they do |
 |---|---|
 | Ctrl+K | Search |
-| G, then O, A, S, C, E, H or U | Overview, Actions, Spend, Cache, Agents & context, Work habits, Setup (`GO_KEYS`, within 1.5 seconds) |
+| G, then O, Y, A, S, C, E, H or U | Overview, Your changes, Actions, Spend, Cache, Agents & context, Work habits, Setup (`GO_KEYS`, within 1.5 seconds) |
 | `[` and `]` | The previous or next segment |
 | J and K | The next or previous item: the Actions inbox, or the first grid whose rows open something. Enter opens it |
 | `?` | The shortcut sheet |
@@ -920,7 +986,7 @@ Every chart is inline SVG drawn by d3 from JSON the API already returns.
 
 ### The catalogue and the rule for adding a chart
 
-`CHART_SPECS` in `charts.js` is closed at these eight rows.
+`CHART_SPECS` in `charts.js` is closed at these nine rows.
 `tests/test_service_static.py` fails if a row is added or removed without
 its own list changing too.
 
@@ -932,8 +998,9 @@ its own list changing too.
 | 4 | `session-outliers` | Which sessions are the expensive outliers? | `/api/sessions` | log-scale scatter by work mode, with a time brush | Spend › Sessions |
 | 5 | `session-context` | Where in this session did context grow or reset? | `/api/session/<id>` | a line with a marker shape per event, limit events above | the session drawer |
 | 6 | `idle-gaps` | Do idle gaps outlast the cache? | `recache.recache_gap_buckets` | histogram with 5-minute and 1-hour rules | Cache › Rebuilds |
-| 7 | `lifetime-by-agent` | Which agent types gain from a 1-hour cache lifetime? | `ttl.ttl_break_even_share` | diverging bars around zero | Cache › Lifetime (TTL) |
+| 7 | `lifetime-by-agent` | Which agent types are cheaper on a 1-hour cache lifetime? | `ttl.ttl_break_even_share` | diverging bars around zero | Cache › Lifetime (TTL) |
 | 8 | `startup-context` | What fills each agent's context before it starts? | `agent_startup.agent_startup_breakdown` | stacked bars, at most 12 agent types | Agents & context › Subagents |
+| 9 | `change-timeline` | Is each reply cheaper since your changes? | `/api/daily-usage` and `/api/impact` | cost per reply a day as dots, a flat line at each period's average between changes, a rule per change with its step | Your changes |
 
 A new chart needs a new row, and a row must pass both tests:
 
@@ -1023,9 +1090,9 @@ Every number leads to its evidence, and every table says what it feeds.
   The link opens the view `TABLE_PAGE_MAP` names for the table, else the
   one `SECTION_PAGE_MAP` names for its section, with `?t=&row=`.
   `revealEvidence` waits for the table, opens the More tables or detail
-  that hides it, scrolls to the row and pulses it. The Overview's
-  scorecard is tagged like a table (`data-table-name="dimensions"`), so
-  its areas pulse the same way.
+  that hides it, scrolls to the row and pulses it. The scorecard is a
+  table in the Overview's folded details, so its areas pulse the same
+  way.
 - **The table drawer.** A table no page shows (placed `report`, a section
   no page shows such as `savers`, or a table not drawn for this window)
   opens in a drawer (`tableDrawer`): the table, the row pulsed, and
@@ -1098,7 +1165,7 @@ and no dialog is open.
   end, or the browser tab being hidden, finishes the count, so the final
   text always stays.
 - The daily spend chart draws in 80ms after the figures start.
-- The next best actions arrive 24ms apart from 160ms (`enterInTurn`,
+- The checklist's rows arrive 24ms apart from 160ms (`enterInTurn`,
   `.is-entering` with `--enter-delay`). A seventh row or later arrives
   with the sixth.
 - The count-up and the stagger do nothing on a view with no layout box.

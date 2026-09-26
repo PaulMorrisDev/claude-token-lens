@@ -641,7 +641,7 @@ export function closePalette() {
 
 // G then a letter opens a page. E for Agents & context, U for Setup:
 // their first letters are taken.
-export var GO_KEYS = { o: "overview", a: "actions", s: "spend", c: "cache", e: "agents", h: "habits", u: "setup" };
+export var GO_KEYS = { o: "overview", y: "changes", a: "actions", s: "spend", c: "cache", e: "agents", h: "habits", u: "setup" };
 
 var SHORTCUTS = [
   {

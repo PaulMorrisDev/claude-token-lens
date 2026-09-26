@@ -84,8 +84,8 @@ export var CHART_SPECS = {
     n: 7,
     source: "ttl.ttl_break_even_share",
     form: "diverging",
-    title: "Which agent types gain from a 1-hour cache lifetime?",
-    summary: "{gainers} of {count} agent types would save with a 1-hour cache lifetime.",
+    title: "Which agent types are cheaper on a 1-hour cache lifetime?",
+    summary: "{gainers} of {count} agent types cost less on a 1-hour cache lifetime than on 5 minutes. The table below says whether that needs a change.",
   },
   "startup-context": {
     n: 8,
@@ -93,6 +93,17 @@ export var CHART_SPECS = {
     form: "stacked-bars",
     title: "What fills each agent's context before it starts?",
     summary: "{top} starts with the most context: {topTokens} tokens. The largest part is {topPart}.",
+  },
+  "change-timeline": {
+    n: 9,
+    source: "/api/daily-usage",
+    form: "change-steps",
+    title: "Is each reply cheaper since your changes?",
+    summary: "Since {change} on {day}, a reply costs {after} on average, against {before} before it ({delta}).",
+    alt: {
+      none: "No change recorded in this window. A reply cost {average} on average {span}.",
+      early: "{change} on {day}: no replies since it yet, so there's nothing to compare.",
+    },
   },
 };
 
@@ -171,6 +182,31 @@ export function dayLabel(day, long) {
 }
 
 // -- axes -----------------------------------------------------------------------------
+
+// A money scale's ticks, stepped in the unit its axis is written in
+// (moneyAxis): a share of the weekly limit reads 5%, 10%, 15%, not the
+// 5.5%, 11%, 16% that round dollars come to. With nice, the scale's
+// domain first widens to whole steps of that unit, as .nice(count) would
+// in dollars.
+export function moneyTicks(scale, axis, count, nice) {
+  var k = axis.factor || 1;
+  var shown = d3.scaleLinear().domain(
+    scale.domain().map(function (d) {
+      return d * k;
+    })
+  );
+  if (nice) {
+    shown.nice(count);
+    scale.domain(
+      shown.domain().map(function (d) {
+        return d / k;
+      })
+    );
+  }
+  return shown.ticks(count).map(function (d) {
+    return d / k;
+  });
+}
 
 // A value axis in the house style: solid 1px hairline grid lines across
 // the plot, ticks in the quietest ink, no domain line (the chart draws
@@ -614,7 +650,10 @@ function drawFrame(frame, how) {
     frame.points = [];
     frame.pickRange = null;
     frame.table = null;
+    // The box says it; the summary keeps the words for a screen reader
+    // (the chart is described by it) without printing them twice.
     frame.summaryNode.textContent = result.empty;
+    frame.summaryNode.classList.add("visually-hidden");
     setLegend(frame, []);
     frame.noteNode.hidden = true;
     return;
@@ -624,6 +663,7 @@ function drawFrame(frame, how) {
   frame.table = result.table || null;
   var template = (result.variant && frame.spec.alt && frame.spec.alt[result.variant]) || frame.spec.summary;
   frame.summaryNode.textContent = frame.opts.summary || fillSummary(template, result.facts || {});
+  frame.summaryNode.classList.remove("visually-hidden");
   setLegend(frame, result.legend || []);
   frame.noteNode.hidden = !result.note;
   frame.noteNode.textContent = result.note || "";
@@ -771,16 +811,6 @@ export function holdChart(container, key, opts) {
   }
   frame.node.classList.add("is-refreshing");
   return true;
-}
-
-// A drawn chart at a new height, redrawn in place: the Overview lines
-// its chart up with the panel beside it. A draw-in or morph still under
-// way carries on to the new height (redraw).
-export function setChartHeight(key, opts, height) {
-  var frame = framesBySlot[slotName(key, opts)];
-  if (!frame || !frame.drawn || !frame.opts || frame.opts.height === height) return;
-  frame.opts = Object.assign({}, frame.opts, { height: height });
-  redraw(frame);
 }
 
 // A chart whose figures couldn't load: the frame and its question stay,

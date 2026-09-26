@@ -27,6 +27,7 @@ var PATHS = {
   spend:
     '<ellipse cx="8" cy="4.5" rx="5" ry="2"/><path d="M3 4.5V8c0 1.1 2.24 2 5 2s5-.9 5-2V4.5"/>' +
     '<path d="M3 8v3.5c0 1.1 2.24 2 5 2s5-.9 5-2V8"/>',
+  changes: '<path d="M2 3.5h4v4.5h4v4.5h4"/><path d="M6 2v3M10 6.5v3"/>',
   cache: '<path d="M8 2.5l5.5 3L8 8.5l-5.5-3z"/><path d="M2.5 8.25 8 11.25l5.5-3"/><path d="M2.5 10.75 8 13.75l5.5-3"/>',
   agents:
     '<rect x="3" y="5" width="10" height="8" rx="2"/><path d="M8 5V3"/>' +

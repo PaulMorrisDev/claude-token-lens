@@ -12,7 +12,10 @@ import { el, goTo, state, withCli } from "./core.js";
 // ======================================================================
 
 // The sidebar, in order. A page with segments shows them as a segmented
-// control under its title; a page without shows its own intro. `foot`
+// control under its title; a page without shows its own intro. The
+// first pages answer the questions people come with (am I doing
+// something wrong? did my changes work?); `group: "details"` pages, the
+// evidence behind those answers, sit under a Details heading. `foot`
 // pages sit at the bottom of the sidebar. `window: false` marks a page
 // whose figures don't depend on the window, so the header says so
 // instead of offering the picker. Ids are lower-case words joined by
@@ -22,7 +25,13 @@ export var PAGES = [
     id: "overview",
     label: "Overview",
     icon: "overview",
-    intro: "What to change next, and where your tokens went in this window.",
+    intro: "Anything wrong, did your changes work, and where your tokens went in this window.",
+  },
+  {
+    id: "changes",
+    label: "Your changes",
+    icon: "changes",
+    intro: "Did the changes you made work, and by how much? Cost per reply around each change, then each change's sessions before against after.",
   },
   {
     id: "actions",
@@ -46,6 +55,7 @@ export var PAGES = [
     id: "spend",
     label: "Spend",
     icon: "spend",
+    group: "details",
     segments: [
       { id: "usage", label: "Usage", intro: "Usage over time, by model and project, and in five-hour blocks." },
       {
@@ -61,6 +71,7 @@ export var PAGES = [
     id: "cache",
     label: "Cache",
     icon: "cache",
+    group: "details",
     segments: [
       {
         id: "rebuilds",
@@ -79,6 +90,7 @@ export var PAGES = [
     id: "agents",
     label: "Agents & context",
     icon: "agents",
+    group: "details",
     segments: [
       { id: "subagents", label: "Subagents", intro: "What your subagents cost, what each one is given when it starts, and whether long runs should be split." },
       { id: "quality", label: "Quality", intro: "How subagent work went: runs that were retried, workflows, and how you split the work." },
@@ -95,6 +107,7 @@ export var PAGES = [
     id: "habits",
     label: "Work habits",
     icon: "habits",
+    group: "details",
     intro:
       "How the way you work shapes what it costs. The habits that would have saved the most in your own sessions, each with an example to copy.",
   },
@@ -102,6 +115,7 @@ export var PAGES = [
     id: "setup",
     label: "Setup",
     icon: "setup",
+    group: "details",
     segments: [
       {
         id: "settings",
@@ -393,7 +407,7 @@ export var GLOSSARY = [
   ["Context", "Everything Claude reads on a reply: system prompt, tools, CLAUDE.md files and the conversation so far."],
   ["Startup context", "What Claude reads before your first message, or before a subagent's task: system prompt, tool list, CLAUDE.md files, skills and more."],
   ["Prompt cache", "A copy of the start of the context kept on Anthropic's side, so the next reply can re-read it cheaply instead of paying full price."],
-  ["Cache read", "Re-reading context from the prompt cache. About a tenth of the normal input price."],
+  ["Cache read", "Re-reading context from the prompt cache, for a small part of the normal input price: a tenth or a twentieth, depending on the model."],
   ["Cache write", "Putting context into the prompt cache. Costs more than normal input: 1.25 times for a 5-minute lifetime, 2 times for 1 hour."],
   ["Cache rebuild", "Writing context to the cache again because the cached copy expired or something early in the conversation changed."],
   ["Cache lifetime (TTL)", "How long the prompt cache stays warm after a reply: 5 minutes or 1 hour. On a Pro or Max plan within its usage limits, the main session gets 1 hour by default. Otherwise, and for subagents, the default is 5 minutes. A pause longer than this means a rebuild."],

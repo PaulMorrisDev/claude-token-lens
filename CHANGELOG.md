@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Your changes: did each change work, and by how much?** A new page,
+  second in the sidebar. Its chart shows cost per reply a day with each
+  change marked and a flat line at the average between one change and
+  the next, so a saving shows as a step down. Under it, a card per
+  change: each measure before against after as bars, the change as a
+  percentage, how sure the difference is, what it saved so far, whether
+  quality held, and how to undo it. It takes over "Your changes and
+  what they did" and the estimates check from Setup › Settings.
+  `/api/impact`'s measures now carry `key`, `kind` and `better`.
+
+### Changed
+
+- **The Overview answers three questions, in order.** *Anything
+  wrong?* is one checklist: every check, with the recommendation it
+  leads to on the same row, what fixing it saves and a prompt to copy;
+  the checks with nothing to do fold into one line. It replaces the
+  next best actions and the 1-to-5 score meters (the scores are a table
+  in the folded details). *Did your changes work?* shows the latest two
+  changes before against after. *Where do your tokens go?* has Spend,
+  cache and Sessions tiles, daily spend at full width, and spend by
+  project and by model.
+- **The sidebar puts the answers first.** Overview, Your changes and
+  Actions, then a **Details** heading over Spend, Cache, Agents &
+  context, Work habits and Setup. G then Y opens Your changes.
+
+- **The dashboard reads more easily at desktop width.**
+  - A tile's unit sits on its own line under the number, so "of your
+    weekly usage limit" no longer splits across the figure's line.
+  - From 200% of the weekly limit, an amount reads as weeks ("about 2.5
+    weeks' worth of your usage limit", in the CLI too). A table cell
+    that quotes an amount uses a short form ("222.4% ($202.33)"), not a
+    sentence that wrapped the column into a tall stack.
+  - Money charts step their ticks in the unit shown (5%, 10%, 15%, not
+    5.5%, 11%, 16%).
+  - Every report table fits at 1280px. Headings wrap to three lines,
+    with "list-price $" on a line of its own, and a table still too wide
+    draws tighter before it scrolls.
+  - A table or section with nothing but zeros shows one "Nothing to
+    show" note instead of zero tiles and rows of zeros, so the long
+    pages (Spend › Savings most) are shorter.
+  - The Overview's setup card is one line, with its steps folded
+    beneath it. Every next best action says what it saves, or that the
+    saving isn't worked out.
+  - Work habits no longer repeats, above its cards, the habits the cards
+    show, and its "Already saving" figure is tile-sized, not a headline.
+- `docs/ui.md` says the dashboard is desktop only: no phone or tablet
+  layout is planned.
+
+### Fixed
+
+- Figures that seemed to disagree now say which they are: the
+  Overview's "Saved by cache reads" is before paying for the cache
+  writes (Cache › Rebuilds leads with the saving after them); the
+  glossary gives a cache read as a tenth or a twentieth of the input
+  price, by model; How costs work's model card says it counts subagents
+  on Fable or Opus only; the cache lifetime chart asks which lifetime is
+  cheaper, not which would save, since an agent type can already be on
+  it; and Setup › Settings no longer says your settings didn't change
+  when it only has no record of them.
+- A whole-number figure in a float column reads "24", not "24.00"; a
+  metric's empty value lines up with the numbers; a total row ("All
+  projects") stays last; a moved table's help sits beside its heading;
+  an empty chart states why once; a table's own folded notes read "How
+  this table is worked out"; and "CACHE_SIGNAL subkind histogram",
+  "pair(s) with usable new_tokens volume" and "R²=" read in plain words.
+- Profiles no longer shows a "Start from my current settings" card that
+  only pressed the "Save my current settings" button above it, and a
+  section intro the page already opens with isn't said twice (Hooks).
+
 ## [0.9.0] - 2026-09-26
 
 ### Changed

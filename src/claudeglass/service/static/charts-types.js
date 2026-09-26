@@ -16,9 +16,9 @@
 import d3 from "./d3.js";
 import { el, escapeHtml, goTo, highlight, state } from "./core.js";
 import { actionIndex } from "./api.js";
-import { MINUS, compactNumber, formatDuration, moneyAxis, moneyText, projectName, shortTs, thousands } from "./format.js";
+import { MINUS, compactNumber, formatDuration, moneyAxis, moneyCell, moneyText, projectName, shortTs, signedPercent, thousands } from "./format.js";
 import { BASIS } from "./ui.js";
-import { CHART_SPECS, bandAxis, dayLabel, drawChart, entityColour, modelTier, roundedBar, tokenTick, valueAxis } from "./charts.js";
+import { CHART_SPECS, bandAxis, dayLabel, drawChart, entityColour, modelTier, moneyTicks, roundedBar, tokenTick, valueAxis } from "./charts.js";
 
 // Fewer points than this and a chart says less than a table would: the
 // page shows tiles instead (docs/ui.md, "Admission rule"). Daily spend
@@ -202,8 +202,7 @@ function dayRange(first, last) {
 }
 
 // The settings changes to mark on a daily spend chart, from /api/impact's
-// body. Each leads to what it did: its row in "Your changes and what
-// they did".
+// body. Each leads to what it did: its card on Your changes.
 export function dailyChanges(impact) {
   var rows = (impact && impact.ok === true && impact.data && impact.data.changes) || [];
   return rows.map(function (row) {
@@ -212,9 +211,9 @@ export function dailyChanges(impact) {
     return {
       day: day,
       label: change.label || "A settings change",
-      // Setup, Settings pulses that day's change in its impact list.
+      // Your changes pulses that day's card.
       open: function () {
-        goTo("setup/settings", { params: { day: day } });
+        goTo("changes", { params: { day: day } });
       },
     };
   });
@@ -341,9 +340,8 @@ function stackedColumns(ctx, data) {
         return c.total;
       }) || 1,
     ])
-    .nice(4)
     .range([inner.h, 0]);
-  valueAxis(ctx.layer("axis-y"), y, { orient: "left", span: inner.w, ticks: 4, format: axis.tick });
+  valueAxis(ctx.layer("axis-y"), y, { orient: "left", span: inner.w, values: moneyTicks(y, axis, 4, true), format: axis.tick });
   bandAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, {
     minGap: 56,
     format: function (day) {
@@ -550,6 +548,288 @@ function stackedColumns(ctx, data) {
   };
 }
 
+// -- 9. change timeline: cost per reply, stepped at each change ---------------------------
+
+// data: {rows, changes, first, last}. rows are /api/daily-usage's (day,
+// turns, cost; any split: the day's rows are summed). changes: [{day,
+// label, open}] from /api/impact, drawn as labelled rules. first and last
+// (windowDays) widen the axis to the whole window.
+//
+// Each day is a dot at its cost per reply. The days between one change
+// and the next are one period, drawn as a flat line at its own average
+// (the period's cost over its replies), so a step down at a change is
+// the saving at a glance. A change's own day counts after it, so each
+// step sits on its change's rule. The flat lines are this chart's own
+// sums, over every project picked; a change's card compares it like
+// with like.
+function changeSteps(ctx, data) {
+  var opts = ctx.opts;
+  var rows = (data && data.rows) || [];
+  var byDay = {};
+  rows.forEach(function (row) {
+    if (!row.day) return;
+    var day = byDay[row.day] || (byDay[row.day] = { cost: 0, turns: 0 });
+    day.cost += num(row.cost);
+    day.turns += num(row.turns);
+  });
+  var seen = Object.keys(byDay)
+    .filter(function (day) {
+      return byDay[day].turns > 0;
+    })
+    .sort();
+  if (seen.length < 2) return { empty: opts.empty || "Fewer than two days with replies in this window, so there's no trend to show." };
+
+  var first = data.first && data.first < seen[0] ? data.first : seen[0];
+  var last = data.last && data.last > seen[seen.length - 1] ? data.last : seen[seen.length - 1];
+  var days = dayRange(first, last);
+  var changes = ((data && data.changes) || [])
+    .filter(function (change) {
+      return change.day > days[0] && days.indexOf(change.day) !== -1;
+    })
+    .sort(function (a, b) {
+      return a.day < b.day ? -1 : a.day > b.day ? 1 : 0;
+    });
+
+  // The periods: from the window's start to the first change, from each
+  // change to the next, and from the last to the window's end.
+  var starts = [days[0]].concat(
+    changes.map(function (change) {
+      return change.day;
+    })
+  );
+  var periods = [];
+  starts.forEach(function (start, i) {
+    if (periods.length && periods[periods.length - 1].from === start) {
+      // Two changes the same day: one period after both.
+      periods[periods.length - 1].changes.push(changes[i - 1]);
+      return;
+    }
+    periods.push({ from: start, changes: i ? [changes[i - 1]] : [] });
+  });
+  periods.forEach(function (period, i) {
+    var next = periods[i + 1];
+    period.days = days.filter(function (day) {
+      return day >= period.from && (!next || day < next.from);
+    });
+    var cost = 0;
+    var turns = 0;
+    period.days.forEach(function (day) {
+      if (!byDay[day]) return;
+      cost += byDay[day].cost;
+      turns += byDay[day].turns;
+    });
+    period.turns = turns;
+    period.value = turns > 0 ? cost / turns : null;
+    var before = i ? periods[i - 1] : null;
+    period.delta = before && before.value && period.value !== null ? ((period.value - before.value) / before.value) * 100 : null;
+    period.name = i ? "After " + period.changes.map(function (c) { return c.label; }).join(" and ") : changes.length ? "Before " + changes[0].label : "This window";
+  });
+  var points = days.map(function (day) {
+    var totals = byDay[day];
+    return { day: day, value: totals && totals.turns > 0 ? totals.cost / totals.turns : null, turns: totals ? totals.turns : 0, cost: totals ? totals.cost : 0 };
+  });
+
+  var axis = moneyAxis();
+  var inner = ctx.size(opts.height || 260, { top: changes.length ? 40 : 24, right: 72 });
+  var x = d3.scaleBand().domain(days).range([0, inner.w]).paddingInner(0.3).paddingOuter(0.15);
+  var high = d3.max(points, function (p) {
+    return p.value || 0;
+  });
+  var y = d3.scaleLinear().domain([0, high * 1.1 || 1]).range([inner.h, 0]);
+  valueAxis(ctx.layer("axis-y"), y, { orient: "left", span: inner.w, values: moneyTicks(y, axis, 4, true), format: axis.tick });
+  bandAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, {
+    minGap: 56,
+    format: function (day) {
+      return dayLabel(day);
+    },
+  });
+  ctx.unit(axis.unit + ", per reply");
+  var cx = function (day) {
+    return x(day) + x.bandwidth() / 2;
+  };
+
+  // The days, as dots joined where they follow each other.
+  var marks = ctx.layer("marks");
+  var trail = marks.selectAll("path.chart-line.change-trail").data([points]);
+  trail
+    .enter()
+    .append("path")
+    .attr("class", "chart-line change-trail")
+    .merge(trail)
+    .attr(
+      "d",
+      d3
+        .line()
+        .defined(function (p) {
+          return p.value !== null;
+        })
+        .x(function (p) {
+          return cx(p.day);
+        })
+        .y(function (p) {
+          return y(p.value);
+        })
+    );
+  var shown = points.filter(function (p) {
+    return p.value !== null;
+  });
+  var dots = marks.selectAll("circle.chart-dot").data(shown, function (p) {
+    return p.day;
+  });
+  dots.exit().remove();
+  var dotsAll = dots
+    .enter()
+    .append("circle")
+    .attr("class", "chart-dot change-day")
+    .attr("r", 3.5)
+    .attr("cx", function (p) {
+      return cx(p.day);
+    })
+    .attr("cy", inner.h)
+    .merge(dots);
+  morph(dotsAll, ctx, shown.length)
+    .attr("cx", function (p) {
+      return cx(p.day);
+    })
+    .attr("cy", function (p) {
+      return y(p.value);
+    });
+
+  // Each period's average, a flat line across its days, with its figure
+  // at the right end.
+  var steps = ctx.layer("steps");
+  steps.selectAll("*").remove();
+  periods.forEach(function (period) {
+    if (period.value === null || !period.days.length) return;
+    var x0 = x(period.days[0]);
+    var x1 = x(period.days[period.days.length - 1]) + x.bandwidth();
+    var py = Math.round(y(period.value)) + 0.5;
+    steps.append("line").attr("class", "change-step").attr("x1", x0).attr("x2", x1).attr("y1", py).attr("y2", py);
+    steps
+      .append("text")
+      .attr("class", "chart-value change-step-value")
+      .attr("x", x1 + 4)
+      .attr("y", py)
+      .attr("dy", "0.32em")
+      .text(axis.tick(period.value));
+  });
+
+  // The changes, as labelled rules; a label that leads somewhere is a
+  // link the keyboard reaches. Its step, up or down, is in the label.
+  var rules = ctx.layer("rules");
+  var ruleLinks = ctx.layer("rule-links", { links: true });
+  rules.selectAll("*").remove();
+  ruleLinks.selectAll("*").remove();
+  var ruleXs = changes.map(function (change) {
+    return Math.round(x(change.day)) - 0.5;
+  });
+  var spans = [];
+  var bounds = [-ctx.margin.left + 4, inner.w + ctx.margin.right - 2];
+  periods.forEach(function (period) {
+    if (!period.changes.length) return;
+    var rx = Math.round(x(period.from)) - 0.5;
+    rules.append("line").attr("class", "chart-rule").attr("x1", rx).attr("x2", rx).attr("y1", -8).attr("y2", inner.h);
+    var named = period.changes
+      .map(function (change) {
+        return change.label;
+      })
+      .join(" and ");
+    var full = named + (period.delta === null ? "" : ": " + signedPercent(Math.round(period.delta)) + " a reply");
+    var lead = period.changes[0];
+    var label = (lead.open ? ruleLinks : rules).append("text").attr("class", "chart-rule-label").attr("x", rx + 4).attr("y", -12).text(fitLabel(full, 40));
+    placeRuleLabel(label, full, rx, ruleXs, spans, bounds);
+    if (!lead.open) return;
+    label
+      .classed("is-openable", true)
+      .attr("tabindex", 0)
+      .attr("role", "link")
+      .attr("aria-label", full + ", changed on " + dayLabel(period.from, true) + ": see what it did")
+      .on("click", lead.open)
+      .on("keydown", function (event) {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        event.stopPropagation();
+        lead.open();
+      });
+  });
+
+  var periodOf = {};
+  periods.forEach(function (period) {
+    period.days.forEach(function (day) {
+      periodOf[day] = period;
+    });
+  });
+  points.forEach(function (p) {
+    var period = periodOf[p.day];
+    p.tip = {
+      value: p.value === null ? "No replies" : moneyText(p.value) + " a reply",
+      label: dayLabel(p.day, true),
+      lines: (p.turns ? [thousands(p.turns) + (p.turns === 1 ? " reply, " : " replies, ") + moneyText(p.cost)] : []).concat(
+        period && period.value !== null ? [period.name + ": " + moneyText(period.value) + " a reply on average"] : []
+      ),
+    };
+    p.open = opener(opts, "open", p.day);
+  });
+  var hits = ctx.layer("hits").selectAll("rect.chart-hit").data(points, function (p) {
+    return p.day;
+  });
+  hits.exit().remove();
+  var hitsAll = hits.enter().append("rect").attr("class", "chart-hit").merge(hits);
+  hitsAll
+    .attr("x", function (p) {
+      return x(p.day) - (x.step() - x.bandwidth()) / 2;
+    })
+    .attr("width", x.step())
+    .attr("y", 0)
+    .attr("height", inner.h);
+  hover(hitsAll, ctx);
+
+  var ox = ctx.margin.left;
+  var oy = ctx.margin.top;
+  var lastPeriod = periods[periods.length - 1];
+  var before = periods.length > 1 ? periods[periods.length - 2] : null;
+  var variant = !changes.length ? "none" : lastPeriod.value === null ? "early" : null;
+  return {
+    variant: variant,
+    facts: {
+      change: lastPeriod.changes.length ? lastPeriod.changes.map(function (c) { return c.label; }).join(" and ") : "",
+      day: dayLabel(lastPeriod.from, true),
+      before: before && before.value !== null ? moneyCell(before.value) : "",
+      after: lastPeriod.value !== null ? moneyCell(lastPeriod.value) : "",
+      delta: lastPeriod.delta === null ? "no earlier replies to compare" : signedPercent(Math.round(lastPeriod.delta)),
+      average: moneyCell(periods[0].value || 0),
+      span: spanText(days),
+    },
+    points: points.map(function (p) {
+      return {
+        x: ox + cx(p.day),
+        // A day without replies has no dot: the keyboard's ring sits on
+        // the baseline there.
+        y: oy + (p.value === null ? inner.h : y(p.value)),
+        band: p.value === null ? null : { x: ox + cx(p.day) - 5, y: oy + y(p.value) - 5, w: 10, h: 10 },
+        tip: p.tip,
+        key: p.day,
+        open: p.open,
+      };
+    }),
+    table: {
+      columns: [
+        { key: "day", label: "Day (UTC)", kind: "str" },
+        { key: "turns", label: "Replies", kind: "int" },
+        { key: "cost", label: "Cost", kind: "money" },
+        { key: "per_reply", label: "Cost per reply", kind: "money" },
+        { key: "period", label: "Period", kind: "str" },
+      ],
+      rows: points.map(function (p) {
+        var period = periodOf[p.day];
+        return { day: p.day, turns: p.turns, cost: p.cost, per_reply: p.value, period: period ? period.name : "" };
+      }),
+    },
+    legend: [],
+    note: "Each flat line is the average cost per reply between two changes, over the projects shown. A change's own day counts after it. Days run midnight to midnight UTC.",
+  };
+}
+
 // -- 2. savings levers: bars hatched by how sure they are -----------------------------------
 
 // How sure a figure is, as the end of a sentence ("..., an estimate").
@@ -679,9 +959,8 @@ function bars(ctx, data) {
         return num(d.usd);
       }),
     ])
-    .nice(4)
     .range([0, inner.w]);
-  valueAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, { orient: "bottom", span: inner.h, ticks: 4, format: axis.tick });
+  valueAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, { orient: "bottom", span: inner.h, values: moneyTicks(x, axis, 4, true), format: axis.tick });
   ctx.unit(axis.unit, "bottom");
   var ox = ctx.margin.left;
   var oy = ctx.margin.top;
@@ -851,9 +1130,8 @@ function line(ctx, data) {
   var y = d3
     .scaleLinear()
     .domain([Math.max(0, low - pad), cap + pad])
-    .nice(4)
     .range([inner.h, 0]);
-  valueAxis(ctx.layer("axis-y"), y, { orient: "left", span: inner.w, ticks: 4, format: axis.tick });
+  valueAxis(ctx.layer("axis-y"), y, { orient: "left", span: inner.w, values: moneyTicks(y, axis, 4, true), format: axis.tick });
   valueAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, { orient: "bottom", span: 0, ticks: 6, format: tokenTick });
   ctx.unit(axis.unit);
   ctx.unit("Conversation size when summarised (tokens)", "bottom");
@@ -1018,12 +1296,17 @@ export function modeColour(mode) {
 
 // Tick values for a log scale: 1, 2 and 5 per decade, or only the
 // powers of ten when that's too many.
-function logTicks(domain) {
+function logTicks(domain, factor) {
+  // Stepped in the axis's own unit (factor per USD): 1%, 2%, 5% of the
+  // weekly limit rather than $1, $2, $5 written as shares.
+  var k = factor || 1;
+  var low = domain[0] * k;
+  var high = domain[1] * k;
   var ticks = [];
-  for (var power = Math.floor(Math.log10(domain[0])); power <= Math.ceil(Math.log10(domain[1])); power++) {
+  for (var power = Math.floor(Math.log10(low)); power <= Math.ceil(Math.log10(high)); power++) {
     [1, 2, 5].forEach(function (step) {
       var value = step * Math.pow(10, power);
-      if (value >= domain[0] && value <= domain[1]) ticks.push({ value: value, step: step });
+      if (value >= low && value <= high) ticks.push({ value: value / k, step: step });
     });
   }
   if (ticks.length > 6) {
@@ -1084,7 +1367,7 @@ function scatter(ctx, data) {
     .range([inner.h, 0]);
   var short = span[1] - span[0] < 2 * DAY_MS;
   var timeFormat = d3.utcFormat("%H:%M");
-  valueAxis(ctx.layer("axis-y"), y, { orient: "left", span: inner.w, values: logTicks(y.domain()), format: axis.tick });
+  valueAxis(ctx.layer("axis-y"), y, { orient: "left", span: inner.w, values: logTicks(y.domain(), axis.factor), format: axis.tick });
   valueAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, {
     orient: "bottom",
     span: 0,
@@ -1899,7 +2182,7 @@ function diverging(ctx, data) {
     .domain([low < 0 ? low - pad : 0, high > 0 ? high + pad : 0])
     .range([0, inner.w]);
   var zero = Math.round(x(0)) + 0.5;
-  valueAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, { orient: "bottom", span: inner.h, ticks: 4, format: axis.tick });
+  valueAxis(sublayer(ctx.layer("axis-x"), "base", 0, inner.h), x, { orient: "bottom", span: inner.h, values: moneyTicks(x, axis, 4, false), format: axis.tick });
   ctx.unit("Saving with a 1-hour lifetime (" + axis.unit + ")", "bottom");
   var ox = ctx.margin.left;
   var oy = ctx.margin.top;
@@ -1997,12 +2280,14 @@ function diverging(ctx, data) {
     return d.key;
   });
 
+  // Which lifetime is cheaper, not a change to make: an agent type may
+  // already be on the cheaper one, as the table under the chart says.
   var gainers = rows.filter(function (d) {
     return d.margin > 0;
   }).length;
   var legend = [];
-  if (gainers) legend.push({ label: "Saves with a 1-hour lifetime", colour: "var(--div-pos)" });
-  if (gainers < rows.length) legend.push({ label: "Costs more with a 1-hour lifetime", colour: "var(--div-neg)" });
+  if (gainers) legend.push({ label: "Cheaper on a 1-hour lifetime", colour: "var(--div-pos)" });
+  if (gainers < rows.length) legend.push({ label: "Dearer on a 1-hour lifetime", colour: "var(--div-neg)" });
   return {
     facts: { gainers: gainers ? thousands(gainers) : "None", count: thousands(rows.length) },
     points: rows.map(function (d) {
@@ -2261,6 +2546,7 @@ var FORMS = {
   "stacked-bars": stackedBars,
   scatter: scatter,
   timeline: buildSessionTimeline,
+  "change-steps": changeSteps,
 };
 
 // Draw chart `key` (a CHART_SPECS key) from `data` into `container`.

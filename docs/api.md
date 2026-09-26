@@ -1012,7 +1012,7 @@ move.
 Takes no window: each change is compared over its own before and after
 periods, looking back at most `lookback_days`.
 
-`data`: `{"changes": [{"change": {"ts", "source", "label", "keys", "changes", "backup_ts", "reverted", "project", "project_name", "summary"}, "before_sessions", "after_sessions", "enough", "gate", "verdict", "measures": [{"label", "before", "after", "before_n", "after_n", "change_pct", "direction", "p", "label_key", "label_text"}, ...], "quality": [{"group", "label", "before_runs", "after_runs", "verdict", "judged", "min_runs", "signals": [{"key", "label", "kind", "worse_when", "unit", "before", "after", "before_text", "after_text", "before_counts", "after_counts", "before_runs", "after_runs", "p", "label_key", "verdict"}, ...]}, ...], "without": {"paid_usd", "without_usd", "saved_usd", "fidelity", "fidelity_text", "basis", "sessions", "text", "since_text", "per_key": [{"key", "agent", "fidelity", "fidelity_text", "saved_usd", "saved_text", "basis"}, ...]} | null}, ...], "caveat", "min_sessions", "lookback_days"}`.
+`data`: `{"changes": [{"change": {"ts", "source", "label", "keys", "changes", "backup_ts", "reverted", "project", "project_name", "summary"}, "before_sessions", "after_sessions", "enough", "gate", "verdict", "measures": [{"key", "label", "kind", "better", "before", "after", "before_value", "after_value", "before_n", "after_n", "change_pct", "direction", "p", "label_key", "label_text"}, ...], "quality": [{"group", "label", "before_runs", "after_runs", "verdict", "judged", "min_runs", "signals": [{"key", "label", "kind", "worse_when", "unit", "before", "after", "before_text", "after_text", "before_counts", "after_counts", "before_runs", "after_runs", "p", "label_key", "verdict"}, ...]}, ...], "without": {"paid_usd", "without_usd", "saved_usd", "fidelity", "fidelity_text", "basis", "sessions", "text", "since_text", "per_key": [{"key", "agent", "fidelity", "fidelity_text", "saved_usd", "saved_text", "basis"}, ...]} | null}, ...], "caveat", "min_sessions", "lookback_days"}`.
 Newest change first, at most ten. `change.source` is `apply`, `revert`,
 `config` (a settings change the hook saw), `capture` (a metrics
 capture change from `capture-log.jsonl`, whose keys are `capture.<field>`
@@ -1029,7 +1029,10 @@ that project's value in the project filter (empty when no session
 loaded is from it). `label_key` is a measure's
 ratio-test reading (`lower`, `possibly_lower`, `higher`,
 `possibly_higher`, `no_clear_change` or `too_little_data`) and
-`label_text` the same in words. `enough` is false until each side has
+`label_text` the same in words. `kind` is the measure's unit (`money`,
+`pct`, `tokens` or `count`), `before_value`/`after_value` its raw
+figures (USD for `money`), and `better` which way is good: `lower`, or
+`null` for a measure where neither is (the share of messages tagged). `enough` is false until each side has
 `min_sessions` sessions; `gate` is the same check as a structured
 `{"reason": "min_sessions", "have", "need"}` object for a UI empty
 state, or `null` once `enough` is true. `before`/`after` are display

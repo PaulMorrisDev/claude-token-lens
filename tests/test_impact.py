@@ -198,6 +198,13 @@ def test_a_capture_change_is_measured_by_what_capture_adds_and_how_much_was_tagg
         "Metrics capture notes and tags per session",
         "Messages Claude tagged",
     ]
+    # Each measure says its unit and which way is good, so the dashboard
+    # can draw it and colour its reading: fewer tokens is better; a larger
+    # tagged share is coverage, neither better nor worse.
+    by_key = {m["key"]: m for m in result["measures"]}
+    assert (by_key["capture_tokens"]["kind"], by_key["capture_tokens"]["better"]) == ("tokens", "lower")
+    assert (by_key["tagged_share"]["kind"], by_key["tagged_share"]["better"]) == ("pct", None)
+    assert (by_key["cost_per_session"]["kind"], by_key["cost_per_session"]["better"]) == ("money", "lower")
 
 
 # -- EST-P3: task/purpose/mode, the ratio test, and stratification -------------

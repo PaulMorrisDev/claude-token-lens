@@ -139,6 +139,9 @@ WINDOW_LABELS: dict[str, str] = {"five_hour": "5-hour", "seven_day": "weekly", "
 #: The three volume metrics every window kind is fit against.
 _METRICS: tuple[str, ...] = ("new_tokens", "cache_read", "usd")
 
+#: Each metric in words, for a reason a fit wasn't accepted.
+_METRIC_WORDS: dict[str, str] = {"new_tokens": "new tokens", "cache_read": "cache reads", "usd": "spend"}
+
 _METRIC_UNIT_LABEL: dict[str, str] = {
     "new_tokens": "million new tokens",
     "cache_read": "million cache-read tokens",
@@ -503,11 +506,14 @@ def _build_fit(
     reason: str | None = None
     if n < th.min_pairs:
         accepted = False
-        reason = f"only {n} pair(s) with usable {metric} volume (need at least {th.min_pairs})"
+        reason = (
+            f"only {n} {'pair' if n == 1 else 'pairs'} of usage-limit readings with {_METRIC_WORDS.get(metric, metric)} "
+            f"between them (it needs {th.min_pairs})"
+        )
     elif r2 is None or r2 < th.min_r2:
         accepted = False
         r2_display = f"{r2:.2f}" if r2 is not None else "undefined"
-        reason = f"R²={r2_display} is below the {th.min_r2:.2f} acceptance threshold"
+        reason = f"the readings fit too loosely: {r2_display} out of 1, where it needs {th.min_r2:.2f} (R²)"
 
     return FitResult(
         window=window,
@@ -687,11 +693,14 @@ def build_section(stats: ElasticityStats, thresholds: ElasticityThresholds | Non
         value = stats.window_budget_million_tokens.get(window)
         new_tokens_fit = stats.fits.get(window, {}).get("new_tokens")
         if value is not None and new_tokens_fit is not None:
-            note = f"from a {new_tokens_fit.n_pairs}-pair fit, R²={new_tokens_fit.r2:.2f}"
+            note = (
+                f"from {new_tokens_fit.n_pairs} pairs of usage-limit readings, "
+                f"which fit {new_tokens_fit.r2:.2f} out of 1 (R²)"
+            )
         elif new_tokens_fit is not None and new_tokens_fit.reason:
             note = new_tokens_fit.reason
         else:
-            note = "new-tokens fit not accepted"
+            note = "not enough usage-limit readings yet"
         budget_rows.append([window, value, note])
 
     burn_columns = [

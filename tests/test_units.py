@@ -57,6 +57,30 @@ def test_subscription_small_share_keeps_two_decimals():
     assert "0.02%" in amount.primary
 
 
+def test_subscription_share_from_two_limits_up_reads_as_weeks():
+    units = Units(billing_mode="subscription", currency="USD", elasticity=_elasticity_with_slope(1.0))
+    # 248.7% of the weekly limit is 2.5 weeks of it.
+    assert units.money(248.7).primary == "about 2.5 weeks' worth of your usage limit"
+    # Just under the line it stays a share.
+    assert units.money(199.0).primary == "about 199.0% of your weekly usage limit"
+
+
+# -- Units.money_cell ---------------------------------------------------------
+
+
+def test_money_cell_is_a_short_share_with_dollars_on_a_plan():
+    units = Units(billing_mode="subscription", currency="USD", elasticity=_elasticity_with_slope(0.5))
+    assert units.money_cell(2.0) == "1.0% (2.00 USD)"
+    # Never weeks: a column's rows stay comparable.
+    assert units.money_cell(500.0) == "250.0% (500.00 USD)"
+
+
+def test_money_cell_is_plain_dollars_without_a_share():
+    assert Units(billing_mode="api").money_cell(12.345) == "12.35 USD"
+    assert Units(billing_mode="subscription").money_cell(5.0) == "5.00 USD"
+    assert Units().money_cell(0.0) == "none"
+
+
 # -- Amount.phrase: no doubled "about" ---------------------------------------
 
 

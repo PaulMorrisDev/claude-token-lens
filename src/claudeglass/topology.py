@@ -912,7 +912,7 @@ def _build_cache_signal_table(stats: TopologyStats) -> Table:
     ]
     return Table(
         name="topology_cache_signal_histogram",
-        title="CACHE_SIGNAL subkind histogram",
+        title="Cache events, by kind",
         columns=columns,
         rows=rows,
     )

@@ -3,12 +3,12 @@
  * The Setup page's Settings and Profiles, with what each change did.
  */
 
-import { clear, cli, el, onParams, state } from "./core.js";
+import { clear, cli, el, state } from "./core.js";
 import { fetchJson, findSection, loadInto, loadReport, postJson, withWindow } from "./api.js";
-import { projectName, shortTs, signedPercent } from "./format.js";
-import { button, callout, chip, codeBlockWithCopy, commandBlock, drawer, emptyState, errorNotice, loadingNode, prose, toast } from "./ui.js";
-import { dataGrid, pulseNode, renderMappedSections, renderPlacedTables, renderSectionGeneric, simpleTable } from "./grid.js";
-import { captureLink, viewIntro } from "./links.js";
+import { shortTs } from "./format.js";
+import { button, callout, chip, commandBlock, drawer, emptyState, errorNotice, loadingNode, prose, toast } from "./ui.js";
+import { dataGrid, renderMappedSections, renderPlacedTables, renderSectionGeneric, simpleTable } from "./grid.js";
+import { captureLink, pageLink, viewIntro } from "./links.js";
 
 // ======================================================================
 // Setup, Settings (config-diff + baseline + baseline_comparison)
@@ -18,10 +18,9 @@ export function renderConfig(panel) {
   clear(panel);
   viewIntro(panel, "setup/settings");
 
-  var impactContainer = setupSection(panel, "Your changes and what they did", "settings-impact", { allTime: true });
-  var impactLoaded = loadInto(impactContainer, "/api/impact", renderImpact, { skeleton: "rows" });
-  var backtestContainer = setupSection(panel, "Did your estimates come true?", "settings-backtest", { allTime: true });
-  loadInto(backtestContainer, "/api/backtest", renderBacktest, { skeleton: "rows" });
+  // What your changes did, and whether estimates came true, are on
+  // Your changes (page-changes.js); this page is what is set, and where.
+  panel.appendChild(el("p", { class: "notes" }, [el("span", { text: "What each change you made did is on " }), pageLink("changes"), el("span", { text: "." })]));
 
   var driftContainer = setupSection(panel, "Your settings and how they changed", "config-drift");
   loadInto(driftContainer, withWindow("/api/config-diff?auto_keys=1"), renderConfigDiff, { skeleton: "rows" });
@@ -42,16 +41,6 @@ export function renderConfig(panel) {
     renderMappedSections(result.report, "setup/settings", sectionContainer, ["config"]);
   });
 
-  // ?day=: a change marker on the daily spend chart. That day's change
-  // (the first listed, so the latest that day) is brought into view and
-  // pulsed.
-  onParams("setup/settings", function (params) {
-    if (!/^\d{4}-\d\d-\d\d$/.test(params.day || "")) return;
-    impactLoaded.then(function () {
-      var card = impactContainer.querySelector('.impact-card[data-day="' + params.day + '"]');
-      if (card) pulseNode(card, "block-target");
-    });
-  });
 }
 
 // One part of a Setup view: a titled section and the body its data
@@ -84,11 +73,15 @@ function renderConfigDiff(data, container) {
   } else if (Array.isArray(data) && data.length) {
     renderPlacedTables(container, data, state.currency, "config-diff");
   } else {
+    // Only changes the session-start hook saw in your settings files are
+    // listed here. A change found in your sessions (the model they ran
+    // on, say) is on Your changes, so this can't say your settings didn't
+    // change.
     container.appendChild(
       emptyState(
-        "Your settings didn't change in this window.",
+        "No settings changes recorded in this window.",
         null,
-        "ClaudeGlass notes each change to your Claude Code settings as it happens, and lists it here."
+        "This lists the changes ClaudeGlass sees in your settings files as each session starts, once it's connected. A change your sessions show another way, such as a different model, is on Your changes."
       )
     );
   }
@@ -753,21 +746,16 @@ function renderProfileCreator(container, onSaved) {
   container.appendChild(goalsBox);
   container.appendChild(draftBox);
   loadInto(goalsBox, "/api/profile-goals", function (data, target) {
+    // "Start from my current settings" is the Save my current settings
+    // button at the top of the page, so it isn't a card here as well.
     (data.goals || []).forEach(function (goal) {
+      if (goal.id === "current") return;
       var card = el("article", { class: "profile-card goal-card" });
       card.appendChild(el("h3", { text: goal.title }));
       card.appendChild(el("p", { class: "profile-card-summary" }, prose(goal.what)));
       // Every goal card has this button: its name says which goal.
       var pick = button("Start here", { label: "Start here: " + goal.title });
       pick.addEventListener("click", function () {
-        if (goal.id === "current") {
-          var saveBtn = document.getElementById("profiles-save-current");
-          if (saveBtn) {
-            saveBtn.click();
-            saveBtn.scrollIntoView({ behavior: "smooth", block: "center" });
-          }
-          return;
-        }
         loadInto(draftBox, withWindow("/api/profile-goals?goal=" + encodeURIComponent(goal.id)), function (draft, box) {
           renderGoalDraft(draft, box, onSaved);
         });
@@ -1034,148 +1022,4 @@ function renderProfileEstimate(profile, container) {
     logged = true;
     postJson(request.url, { settings: request.settings, agents: request.agents, log: true });
   };
-}
-
-function renderImpact(data, container) {
-  var changes = data.changes || [];
-  if (!changes.length) {
-    container.appendChild(
-      emptyState("No changes recorded yet. After you apply a profile or a fix, or change a setting, this shows the sessions before it against those after it.")
-    );
-    return;
-  }
-  container.appendChild(el("p", { class: "notes" }, prose(data.caveat)));
-  changes.forEach(function (item) {
-    var change = item.change || {};
-    var card = el("article", { class: "rec impact-card", "data-day": String(change.ts || "").slice(0, 10) });
-    card.appendChild(el("h3", { text: change.label + (change.reverted ? " (since undone)" : "") }));
-    var what = change.summary || (change.keys || []).join(", ");
-    var where = change.project ? "In " + (change.project_name ? projectName(change.project_name) : "one project") + " only" : "";
-    card.appendChild(el("p", { class: "profile-card-meta", text: [shortTs(change.ts), where, what].filter(Boolean).join(" · ") }));
-    renderWithout(item.without, card);
-    if (item.gate) {
-      card.appendChild(emptyState(item.verdict, item.gate));
-    } else {
-      card.appendChild(el("p", { class: "quick-summary" }, prose(item.verdict)));
-    }
-    if (item.enough) {
-      card.appendChild(
-        simpleTable(
-          [{ label: "Measure" }, { label: "Before" }, { label: "After" }, { label: "Change" }, { label: "Reading" }],
-          (item.measures || []).map(function (m) {
-            return [m.label, m.before, m.after, signedPercent(m.change_pct), m.label_text || ""];
-          })
-        )
-      );
-    }
-    var unjudged = (item.quality || []).filter(function (group) {
-      return !group.judged;
-    });
-    (item.quality || []).forEach(function (group) {
-      if (!group.judged) return;
-      card.appendChild(el("p", { class: "quick-summary" }, [el("strong", { text: "Quality, " + group.label + ": " }), el("span", { text: group.verdict })]));
-      var box = el("details", { class: "fix" });
-      box.appendChild(el("summary", { text: "Every quality signal (" + group.before_runs + " runs before, " + group.after_runs + " after)" }));
-      box.appendChild(
-        simpleTable(
-          [{ label: "Signal" }, { label: "Before" }, { label: "After" }, { label: "Verdict" }],
-          (group.signals || []).map(function (s) {
-            return [s.label, s.before_text + " (" + s.before_counts + ")", s.after_text + " (" + s.after_counts + ")", s.verdict];
-          })
-        )
-      );
-      card.appendChild(box);
-    });
-    if (unjudged.length) {
-      card.appendChild(
-        el("p", { class: "notes" }, [
-          el("strong", { text: "Quality: " }),
-          el("span", {
-            text:
-              "too few runs yet to judge " +
-              unjudged
-                .map(function (group) {
-                  return group.label + " (" + group.before_runs + " before, " + group.after_runs + " after)";
-                })
-                .join(", ") +
-              ". Each needs at least " + unjudged[0].min_runs + " runs on each side.",
-          }),
-        ])
-      );
-    }
-    if (change.source === "apply" && change.backup_ts && !change.reverted) {
-      card.appendChild(el("p", { class: "notes", text: "To undo it:" }));
-      card.appendChild(codeBlockWithCopy(cli("apply --revert " + change.backup_ts), "Command", "undoing " + change.label));
-    }
-    var levelChange = change.source === "capture" && (change.changes || []).filter(function (c) {
-      return c.key === "capture.level" && c.old;
-    })[0];
-    if (levelChange) {
-      card.appendChild(el("p", { class: "notes" }, [el("span", { text: "To change it back, use " }), captureLink(), el("span", { text: " or:" })]));
-      card.appendChild(
-        codeBlockWithCopy(
-          levelChange.old === "off" ? cli("capture off") : cli("capture level " + levelChange.old),
-          "Command",
-          "undoing " + change.label
-        )
-      );
-    }
-    container.appendChild(card);
-  });
-}
-
-// What the sessions after a change would have cost without it
-// (counterfactual.py). One line, how it was worked out, and a row per
-// setting when the change made several at once (their figures overlap,
-// so the headline uses the sessions before instead).
-function renderWithout(without, card) {
-  if (!without) return;
-  card.appendChild(el("p", { class: "quick-summary" }, [el("strong", { text: without.text })]));
-  card.appendChild(el("p", { class: "notes", text: [without.fidelity_text, without.basis].filter(Boolean).join(" ") }));
-  var rows = without.fidelity === "before" ? without.per_key || [] : [];
-  if (!rows.length) return;
-  card.appendChild(
-    simpleTable(
-      [{ label: "Setting" }, { label: "Without it" }, { label: "How" }],
-      rows.map(function (row) {
-        return [(row.agent ? row.agent + ": " : "") + row.key, row.saved_text, row.fidelity_text];
-      })
-    )
-  );
-}
-
-// EST-P4/P8: did a saving estimate come true? Rows are
-// backtest.present()'s own display-ready shape (predicted_text,
-// measured_text and verdict_text are already server-formatted
-// sentences) -- this just lays them out in a table, no client-side
-// money or verdict logic, per docs/ui.md's "server formats, dashboard
-// shows" rule.
-function renderBacktest(data, container) {
-  var predictions = (data && data.predictions) || [];
-  if (!predictions.length) {
-    container.appendChild(
-      emptyState("No estimates logged yet. Each estimated effect Profiles shows is logged, then checked here once enough sessions after a matching change arrive.")
-    );
-    return;
-  }
-  container.appendChild(
-    el("p", {
-      class: "notes",
-      text: "Estimated effects from Profiles, checked against what happened after a matching change.",
-    })
-  );
-  container.appendChild(
-    simpleTable(
-      [{ label: "Change" }, { label: "When" }, { label: "Estimated" }, { label: "Measured" }, { label: "Verdict" }],
-      predictions.map(function (row) {
-        return [
-          row.agent ? row.agent + ": " + row.measure_key : row.measure_key,
-          shortTs(row.ts),
-          row.predicted_text,
-          row.measured_text || "—",
-          row.verdict_text,
-        ];
-      })
-    )
-  );
 }

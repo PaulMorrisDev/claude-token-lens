@@ -128,6 +128,13 @@ export function formatCell(value, kind, currency) {
   }
 }
 
+// A float that is a whole number reads as one: "24", not "24.00". For a
+// single figure (a tile, a fact); a grid decides per column, so its
+// digits stay lined up (grid.js).
+export function wholeKind(value, kind) {
+  return kind === "float" && typeof value === "number" && Number.isInteger(value) ? "int" : kind;
+}
+
 // The full value behind a compacted cell, for its tooltip ("1,243,112
 // tokens"), or "" when the cell already shows it all.
 export function fullValue(value, kind) {
@@ -192,6 +199,21 @@ export function readableAmounts(value) {
   return value;
 }
 
+// A share of the weekly limit at or above this many percent reads as
+// weeks of it ("about 2.5 weeks' worth of your usage limit"): 248.7% of a
+// limit is hard to picture. Mirrors units.WEEKS_FROM_SHARE.
+var WEEKS_FROM_SHARE = 200;
+
+// A share of the weekly limit: two decimals below 1%, so a small saving
+// doesn't read as "0.0%"; one above.
+function shareText(share) {
+  return share < 1 ? share.toFixed(2) + "%" : formatCell(share, "pct");
+}
+
+function weeksText(share) {
+  return (share / 100).toFixed(1);
+}
+
 // Mirrors units.Units.money (src/claudeglass/units.py): usd (a
 // list-price amount over opts.period, e.g. "a week") phrased for the
 // billing mode from state.units (report.meta.units -- {mode,
@@ -216,9 +238,12 @@ export function money(usd, opts) {
     return { primary: dollars + " list-price equivalent" + suffix, secondary: "", basis: unitsInfo.basis || "" };
   }
   var share = usd * sharePerUsd;
-  var shareText = share < 1 ? share.toFixed(2) + "%" : formatCell(share, "pct");
+  var primary =
+    share >= WEEKS_FROM_SHARE
+      ? "about " + weeksText(share) + " weeks' worth of your usage limit" + suffix
+      : "about " + shareText(share) + " of your " + (unitsInfo.period_label || "weekly usage limit") + suffix;
   return {
-    primary: "about " + shareText + " of your " + (unitsInfo.period_label || "weekly usage limit") + suffix,
+    primary: primary,
     secondary: dollars + " list-price equivalent",
     basis: unitsInfo.basis || "",
   };
@@ -256,10 +281,14 @@ export function moneyNode(usd, opts) {
 }
 
 // An amount split for a metric tile: the number, its unit in the
-// quieter ink, and (on a plan) the list-price equivalent as a hint.
-// API: "$12.34". Pro or Max: "3.2" "% of your weekly limit", with
-// "$12.34 list-price equivalent" beneath.
+// quieter ink on the line below, and (on a plan) the list-price
+// equivalent as a hint. API: "$12.34". Pro or Max: "3.2%" "of your weekly
+// usage limit", or from WEEKS_FROM_SHARE up "2.5" "weeks of your usage
+// limit" (one line in a tile), with "$12.34 list-price equivalent"
+// beneath. opts.like (another amount in USD) picks the form that amount
+// takes, so a tile counting up to it writes every step in its final unit.
 export function moneyParts(usd, opts) {
+  opts = opts || {};
   var value = typeof usd === "number" && isFinite(usd) ? usd : 0;
   var unitsInfo = state.units || {};
   if (unitsInfo.mode !== "subscription") return { value: currencyAmount(value), unit: "", secondary: "" };
@@ -268,11 +297,21 @@ export function moneyParts(usd, opts) {
     return { value: currencyAmount(value), unit: "list-price", secondary: "" };
   }
   var share = value * sharePerUsd;
-  return {
-    value: share < 1 ? share.toFixed(2) : formatCell(share, "pct").replace(/%$/, ""),
-    unit: "% of your " + (unitsInfo.period_label || "weekly usage limit"),
-    secondary: currencyAmount(value) + " list-price equivalent" + (opts && opts.period ? " " + opts.period : ""),
-  };
+  var like = typeof opts.like === "number" && isFinite(opts.like) ? opts.like * sharePerUsd : share;
+  var secondary = currencyAmount(value) + " list-price equivalent" + (opts.period ? " " + opts.period : "");
+  if (like >= WEEKS_FROM_SHARE) return { value: weeksText(share), unit: "weeks of your usage limit", secondary: secondary };
+  return { value: shareText(share), unit: "of your " + (unitsInfo.period_label || "weekly usage limit"), secondary: secondary };
+}
+
+// Mirrors units.Units.money_cell: an amount short enough for a table cell
+// or a chart's reading, "0.07% ($0.06)" on a plan with a known share of
+// the weekly limit, else the plain figure. Always a share, never weeks.
+export function moneyCell(usd) {
+  if (typeof usd !== "number" || !isFinite(usd) || usd <= 0) return currencyAmount(0);
+  var unitsInfo = state.units || {};
+  var sharePerUsd = unitsInfo.mode === "subscription" ? unitsInfo.share_per_usd : null;
+  if (sharePerUsd === null || sharePerUsd === undefined) return currencyAmount(usd);
+  return shareText(usd * sharePerUsd) + " (" + currencyAmount(usd) + ")";
 }
 
 // A value and its unit as a node: the unit in the quieter ink, one step
@@ -305,6 +344,9 @@ export function moneyAxis() {
   if (share !== null && share !== undefined) {
     return {
       unit: "% of your " + (unitsInfo.period_label || "weekly usage limit"),
+      // What one USD is in the axis's unit, so a chart can step its ticks
+      // in that unit (charts.js's moneyTicks).
+      factor: share,
       tick: function (usd) {
         var value = usd * share;
         var abs = Math.abs(value);
@@ -315,6 +357,7 @@ export function moneyAxis() {
   }
   return {
     unit: unitsInfo.mode === "subscription" ? "list-price " + symbol : symbol,
+    factor: 1,
     tick: function (usd) {
       var text = axisNumber(usd);
       if (currency !== "USD") return text;

@@ -27,6 +27,11 @@ NO_LIMIT_SHARE_HINT = (
     "'claudeglass log-usage', to see this as a share of your plan's weekly limit."
 )
 
+#: A share of the weekly limit at or above this many percent reads as
+#: weeks of it ("about 2.5 weeks' worth of your usage limit"): 248.7% of
+#: a limit is hard to picture. format.js's WEEKS_FROM_SHARE mirrors it.
+WEEKS_FROM_SHARE = 200.0
+
 
 @dataclass(frozen=True, slots=True)
 class Amount:
@@ -84,10 +89,12 @@ class Units:
                 primary=f"{dollars} list-price equivalent{suffix}",
                 basis=NO_LIMIT_SHARE_HINT,
             )
-        # Two decimals below 1%, so a small saving doesn't read as "0.0%".
-        share_text = f"{share:.2f}%" if share < 1 else format_cell(share, "pct")
+        if share >= WEEKS_FROM_SHARE:
+            primary = f"about {share / 100:.1f} weeks' worth of your usage limit{suffix}"
+        else:
+            primary = f"about {_share_text(share)} of your weekly usage limit{suffix}"
         return Amount(
-            primary=f"about {share_text} of your weekly usage limit{suffix}",
+            primary=primary,
             secondary=f"{dollars} list-price equivalent",
             basis="from your own usage-limit readings against the tokens used between them",
         )
@@ -113,6 +120,20 @@ class Units:
         value = float(usd) if isinstance(usd, (int, float)) and math.isfinite(usd) else 0.0
         return format_cell(value, "money", self.currency)
 
+    def money_cell(self, usd: float) -> str:
+        """A short amount for a table cell, where :meth:`money`'s sentence
+        would wrap a column into a tall stack: "222.4% (202.33 USD)" on a
+        plan with a known share of the weekly limit, else the plain
+        figure. Always a share, never weeks, so a column's rows compare.
+        "none" for a zero, negative or non-finite amount."""
+        if not isinstance(usd, (int, float)) or not math.isfinite(usd) or usd <= 0:
+            return "none"
+        dollars = format_cell(usd, "money", self.currency)
+        if self.billing_mode != "subscription" or self.elasticity is None:
+            return dollars
+        share = elasticity_mod.express_in_window(usd, self.elasticity)
+        return dollars if share is None else f"{_share_text(share)} ({dollars})"
+
     def basis(self) -> str:
         """One sentence on what amounts mean in this billing mode, for
         the line that introduces them."""
@@ -126,4 +147,10 @@ class Units:
         return f"Amounts are list-price equivalents, not what you are charged. {NO_LIMIT_SHARE_HINT}"
 
 
-__all__ = ["Amount", "NO_LIMIT_SHARE_HINT", "Units"]
+def _share_text(share: float) -> str:
+    """A share of the weekly limit: two decimals below 1%, so a small
+    saving doesn't read as "0.0%"; one above."""
+    return f"{share:.2f}%" if share < 1 else format_cell(share, "pct")
+
+
+__all__ = ["Amount", "NO_LIMIT_SHARE_HINT", "Units", "WEEKS_FROM_SHARE"]
