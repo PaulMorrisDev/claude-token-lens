@@ -8,6 +8,7 @@ built from scratch in each test.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -26,6 +27,31 @@ _HOOK_PATH = (
     / "hooks"
     / "snapshot-config.py"
 )
+
+
+def _load_hook_module():
+    # Imported (not just run as a subprocess) only so _run_hook can read
+    # its env-var name lists below -- every actual hook invocation in this
+    # file still goes through the real subprocess path the module
+    # docstring describes.
+    spec = importlib.util.spec_from_file_location("_snapshot_config_under_test", _HOOK_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_HOOK_MODULE = _load_hook_module()
+
+#: Every env var name the hook itself would capture (COV-09's
+#: ANTHROPIC_*/CLAUDE_*/OTEL_* prefixes plus the irregular extra names --
+#: see snapshot-config.py's _ENV_NAME_PREFIXES/_ENV_EXTRA_NAMES). _run_hook
+#: strips these from the *inherited* environment before layering its own
+#: fixed test values on top, so a real value already set on the machine or
+#: container running the tests (e.g. MAX_THINKING_TOKENS,
+#: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) can never leak into an assertion about
+#: what the hook captured.
+_ENV_NAME_PREFIXES = _HOOK_MODULE._ENV_NAME_PREFIXES
+_ENV_EXTRA_NAMES = _HOOK_MODULE._ENV_EXTRA_NAMES
 
 _AGENT_WITH_CACHE_TTL = """---
 name: verification-runner
@@ -110,6 +136,15 @@ def _run_hook(
     extra_args: list[str] | None = None,
 ) -> subprocess.CompletedProcess:
     env = os.environ.copy()
+    # Drop every name the hook itself would capture before layering this
+    # test's own fixed values on top -- otherwise a real value already set
+    # on the machine or container running the tests (e.g.
+    # MAX_THINKING_TOKENS, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) leaks into a
+    # test asserting what the hook captured, and CLAUDE_CONFIG_DIR/HOME
+    # below would collide with a real one instead of cleanly overriding it.
+    for name in list(env):
+        if name.startswith(_ENV_NAME_PREFIXES) or name in _ENV_EXTRA_NAMES:
+            del env[name]
     env["ANTHROPIC_FAKE"] = "secret"
     env["CLAUDE_X"] = "1"
     # A decoy that must NOT be picked up (wrong prefix).
