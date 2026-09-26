@@ -78,6 +78,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Overview's ways to save could come to more than you spent.**
+  Its sentence added every way to save up, but they overlap: a cheaper
+  model prices the fewer tokens earlier summaries leave, so doing both
+  saves less than the two added. And the auto-compact action was counted
+  on top of the compaction saving it comes from. Each way to save is now
+  a share of the spend it comes from (its agent type's, or all of it),
+  taken from what the others leave, and an action a saving already
+  counts joins it once. On real sessions the sentence went from $107 of
+  $103 spent to $58. Each row keeps its own figure.
 - **A conversation summary's own request was left out of spend.**
   Claude Code bills the request that writes a summary but logs only
   that a summary happened. Each summary now adds an estimated request,
