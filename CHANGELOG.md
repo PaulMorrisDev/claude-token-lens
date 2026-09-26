@@ -78,6 +78,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The dashboard stopped updating a session you were still in.** A
+  transcript written to in the last minute was skipped until it went
+  quiet, so a session busy for hours showed the figures from when the
+  dashboard first read it: on a real cloud session, 3.5 hours and $15
+  behind. It is now read again at most once a minute while it keeps
+  changing; a 44 MB transcript takes under half a second.
 - **The Overview's ways to save could come to more than you spent.**
   Its sentence added every way to save up, but they overlap: a cheaper
   model prices the fewer tokens earlier summaries leave, so doing both
