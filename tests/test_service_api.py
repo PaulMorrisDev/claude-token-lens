@@ -822,13 +822,30 @@ def test_daily_usage_default_is_unchanged(server):
     assert_privacy(body)
 
 
-def test_daily_usage_accepts_the_shared_window_params(server):
+def test_daily_usage_accepts_the_shared_window_params(server, monkeypatch):
     resp, body = server.get_json("/api/daily-usage?since=2099-01-01T00:00:00Z")
     assert resp.status == 200
     assert body["data"] == []
     resp, body = server.get_json("/api/daily-usage?window=all")
     assert resp.status == 200
     assert len(body["data"]) == 1
+
+    # "days=7" resolves against the real wall clock (discovery._resolve_window
+    # does `datetime.now(timezone.utc) - timedelta(days=days)`), while the
+    # seeded row's timestamp is a fixed 2026-09-18. Freeze discovery's notion
+    # of "now" to just after that fixed timestamp so this assertion holds
+    # regardless of the date this test happens to run on.
+    from datetime import datetime, timezone
+
+    from claudeglass import discovery
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 18, 13, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(discovery, "datetime", _FrozenDatetime)
+
     resp, body = server.get_json("/api/daily-usage?days=7")
     assert resp.status == 200
     assert len(body["data"]) == 1  # the legacy param still works unchanged
