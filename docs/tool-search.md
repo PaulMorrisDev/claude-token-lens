@@ -1,0 +1,83 @@
+# What MCP tool search saves
+
+With tool search on (Claude Code's default on the Anthropic API), Claude
+Code sends deferred tools, most of them MCP tools, by name only. When
+Claude needs one, it calls `ToolSearch`, and Claude Code loads that
+tool's full definition into the conversation. Without tool search, every
+definition would sit at the front of every request.
+
+The `tool_search` section (`tool_search.py`) puts a number on that. It
+appears on the dashboard under Agents & context › Context, and in the
+terminal as the `tool-search` check:
+
+```powershell
+python -m claudeglass check tool-search --all-projects
+```
+
+## What the transcripts record
+
+Claude Code writes two notes into each transcript:
+
+- `deferred_tools_delta` lists the tools added to, or removed from, the
+  deferred list (`addedNames`, `removedNames`). The list shrinks while an
+  MCP server reconnects and comes back after, and is sent again in full
+  after a conversation summary.
+- `deferred_tools_record` lists each full definition Claude Code loaded
+  (`entries`: name, description, input schema).
+
+`parse.py` keeps, per reply, how many listed tools had no definition
+loaded when the reply was requested, by MCP server
+(`Turn.deferred_tools_by_server`), and the size of the name list
+(`Turn.deferred_list_chars`). Per transcript it keeps each loaded
+definition's size by tool name (`TranscriptResult.tool_definition_chars`).
+It never keeps a description or a schema, and a name outside the API's
+tool-name alphabet is dropped.
+
+## The model
+
+For each reply requested with tools deferred:
+
+- **Kept out.** Each deferred tool whose definition wasn't loaded is
+  counted at the average definition size of its own MCP server, measured
+  from the definitions loaded anywhere in the window. A server none of
+  whose tools was loaded takes the average of every server. Sizes are
+  characters / 4, as everywhere else in the report.
+- **Priced** at that reply's own rate for the front of the prompt: its
+  cache read rate when it read the cache, its cache write rate when it
+  wrote the cache from the start, its input rate when it cached nothing.
+  Rates come from `price_turn`, so geo and long-context multipliers
+  apply.
+- **Taken off.** The name list sent in the definitions' place, priced
+  the same way. And every reply whose only tool call was `ToolSearch`,
+  in full: without tool search, Claude would have called the tool
+  directly.
+
+A definition that was loaded counts as sent either way, so it adds
+nothing to the saving and nothing to the cost.
+
+## Reading it
+
+- **Net saving** is the headline. It is an estimate: most deferred tools
+  are never loaded, so their size comes from the ones that were.
+- **Sized from** says whether a server's size came from its own loaded
+  tools or from every server's. A server whose tools you never use is
+  always sized from every server's.
+- When no definition was loaded in the window, nothing can be sized:
+  the token and money columns stay blank and the check reports "no
+  data".
+
+On one real set of cloud sessions (Claude Code 2.1.283, five MCP servers
+with up to 154 deferred tools), tool search kept about 57,500 tokens out
+of each of 588 replies. That saved $6.77 at list price, less $0.16 for
+the name list and $1.03 for 16 replies that only searched: $5.58 net.
+
+## What it doesn't cover
+
+- Third-party "token saver" MCP servers (compressors, code-search
+  replacements, memory servers) save tokens by changing how Claude works,
+  not by keeping definitions out. Measuring them needs a comparison of
+  sessions with and without them: see [`savers.md`](savers.md).
+- When tool search is off (for example behind a proxy that doesn't
+  forward `tool_reference` blocks), the transcripts carry no deferred
+  list, so there is nothing to measure. The `env-tool-search`
+  recommendation covers that case.

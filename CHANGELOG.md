@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quality held, and how to undo it. It takes over "Your changes and
   what they did" and the estimates check from Setup › Settings.
   `/api/impact`'s measures now carry `key`, `kind` and `better`.
+- **What MCP tool search saves.** Claude Code lists MCP tools by name
+  and loads a tool's full definition only when Claude needs it. A new
+  section, on Agents & context › Context, and a new check
+  (`claudeglass check tool-search`) say how many definitions that kept
+  out of each request, by MCP server, and what it saved at each reply's
+  own cache rate, less the name list and the replies that only searched
+  for a tool. Tools never loaded are sized from the ones that were, so
+  it is an estimate, and it says which servers were sized from their
+  own tools. See [`docs/tool-search.md`](docs/tool-search.md). Every
+  log is read again once to pick this up.
 
 ### Changed
 
@@ -59,6 +69,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A session started with `/clear` in a web or mobile session was
+  counted twice.** Claude Code writes the new session's lines to its own
+  log and also into the earlier session's log, so every reply in it was
+  priced once in each. A log now skips the lines of another session
+  whose own log sits beside it, and Data quality counts them as "Lines
+  copied from another session". On one real pair of sessions this took
+  5.7% off total spend, and the earlier session now comes within 0.5% of
+  Claude Code's own cost record. A copy with no log of its own is still
+  counted. Every log is read again once to pick this up.
 - Figures that seemed to disagree now say which they are: the
   Overview's "Saved by cache reads" is before paying for the cache
   writes (Cache › Rebuilds leads with the saving after them); the

@@ -998,6 +998,8 @@ var SECTION_CARDS = {
   run_split: "cache-reads",
   // A hook's added context is re-read on every later reply.
   hooks: "cache-reads",
+  // A definition tool search keeps out would be read on every reply.
+  tool_search: "cache-reads",
   compactions: "conversation-summaries",
   elasticity: "billing-mode",
 };

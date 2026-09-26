@@ -56,7 +56,8 @@ answered from your own sessions:
   summary, or a change early in the context.
 - **"What am I paying for on every reply?"** CLAUDE.md files, skills and
   tool definitions go out with every request. It prices each one and
-  says what to trim, move or hide.
+  says what to trim, move or hide, and what MCP tool search saves by
+  keeping unused tool definitions out, server by server.
 - **"Are my habits costing me?"** Work habits turns each of your
   requests, and everything Claude did for it, into habits worth
   changing, with a rough saving for each.

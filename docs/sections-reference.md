@@ -12,7 +12,7 @@ subscription billing with usage-log readings), `sessions`, `recache`, `ttl`,
 `limits`, `carry`, `compaction_sim`, `plan_handoff`, `model_swap`, `waste`,
 `compactions`, `agent_startup`, `agents`, `run_split`, `hooks`, `quality`, `workstyle`, `habits`,
 `workflows`, `phases` (CLI only with `--phases`; the dashboard always has it), `config` (only when config
-snapshots exist), `context_budget`, `capture`, `scorecard`, and
+snapshots exist), `context_budget`, `tool_search`, `capture`, `scorecard`, and
 `baseline_comparison` (only with `--baseline`). `claudeglass
 report` prints it. This file groups sections by topic, so its order
 differs.
@@ -67,6 +67,7 @@ and it's still useful when you want one section by itself.
 | `phases` | Phases | `phases.py` | cost split across DISCOVERY (read/search only), IMPLEMENTATION (real edits or an ordinary shell command), VERIFICATION (a test/build tool, or a scratch-file edit), OTHER — in the CLI's report only when `--phases` is given; the dashboard always builds it |
 | `config` | Config | `report.py` via `snapshots.py` | one diff table per config key that changed across the window's snapshots (capped at 20 keys) — only present when `snapshot-config` snapshots exist for the window |
 | `context_budget` | Context budget | `context_budget.py` | an estimated breakdown of what a session's context window is spent on before any real work (system prompt and tools, skills, memory files, custom agents, MCP tools), plus ground truth where the statusline logged it |
+| `tool_search` | What tool search saves | `tool_search.py` | how many tool definitions MCP tool search kept out of each request, by MCP server, what that saved at each reply's own cache rate, and the net after the name list and the replies that only searched — see [`tool-search.md`](tool-search.md) |
 | `capture` | Capture | `habits.py` | what metrics capture has cost since it was turned on, measured from the transcripts, and what the habits and feedback that depend on it are worth a week — see [`capture.md`](capture.md) |
 | `scorecard` | Scorecard | `scorecard.py` | five 1-5 levels (cache efficiency, context hygiene, agent efficiency, config fit, data quality) plus an overall level (the minimum of the first four, never an average) |
 | `baseline_comparison` | Baseline comparison | `report.py` via `baseline.py` | before/after the last captured onboarding baseline, plus a per-mode breakdown — only present when `--baseline` resolves one (added unconditionally, even on the single-section subcommands) |
@@ -1267,6 +1268,29 @@ section's sized buckets as its evidence, and names the largest one in
 its action text, whenever `context_budget` is present in the report —
 falling back to its older single-mean-baseline evidence otherwise.
 
+## `tool_search` (`tool_search.py`)
+
+Full write-up: [`docs/tool-search.md`](tool-search.md). Every transcript
+in the window, main sessions and subagents alike: each gets its own
+deferred-tool list.
+
+- `tool_search_summary` — one row (`all replies`): replies requested
+  with tools deferred, the most tools deferred in one reply and how many
+  of those were MCP tools, definitions measured and their average size
+  (tokens), tokens kept out of each reply, what keeping them out saved,
+  the cost of the name list, replies that only called `ToolSearch` and
+  their cost, and the net saving. The token and money figures are blank
+  when no definition was loaded in the window.
+- `tool_search_by_server` — one row per MCP server (`built-in` for
+  Claude Code's own tools), largest saving first (top
+  `tool_search_top_n`, default 20): the most of its tools deferred in one
+  reply, its definitions measured, the size each deferred tool was
+  counted at, whether that size came from `its own tools` or `all
+  servers`, replies, tokens kept out of each reply and the saving.
+
+There is no rule: tool search is already on wherever this section has
+anything to measure. The quick action `tool-search` reads both tables.
+
 ## `savers` (`savers.py`)
 
 Full field-by-field contract: [`docs/savers.md`](savers.md#the-savers-report-section).
@@ -1501,7 +1525,9 @@ include `lines`, `unparsable_lines`, `truncated_final_line`,
 `turns_missing_usage`, `ttl_sum_mismatch`, `late_duplicate_ids`,
 `ignored_line_types` (a count per ignored line type, keyed on the
 sanitised type or `other` since `PARSER_VERSION` 20), `oversized_lines`,
-`trailing_events`, `replayed_lines`, `timestamp_parse_failures`,
+`trailing_events`, `replayed_lines`, `copied_lines` (lines of another
+session whose own file holds them too, skipped since `PARSER_VERSION`
+26), `timestamp_parse_failures`,
 `agent_settings`, `modes`, `attachment_catch_all`, `limit_hits`,
 `limit_resumes`, `agents_terminated`,
 `pre_split_turns` (pre-split `cache_creation` reads normalised at parse

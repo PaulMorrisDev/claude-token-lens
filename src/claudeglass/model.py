@@ -63,6 +63,10 @@ Independent-review follow-up fixes (post-WP1/WP2/WP7), all with defaults:
 - ``Diagnostics.replayed_lines: int = 0`` — non-blank lines skipped
   because their ``uuid`` was already seen earlier in the same file
   (transcripts replay whole blocks on rewind/resume).
+- ``Diagnostics.copied_lines: int = 0`` (``PARSER_VERSION`` 26) — lines
+  in a top-level transcript skipped because their ``sessionId`` names
+  another session whose own file sits beside it (``/clear`` in a web or
+  mobile session copies the new session into the earlier one's file).
 - ``Diagnostics.timestamp_parse_failures: int = 0`` — a priced turn's
   ``timestamp`` field was present but could not be parsed.
 - ``TranscriptMeta.tool_use_id: str | None = None`` — a subagent's
@@ -389,6 +393,19 @@ whole command:
   that repeat, with the same input, a call that hook blocked earlier in
   the transcript. Only a hash of the input is kept, in memory, while
   parsing.
+
+Tool-search addition (``PARSER_VERSION`` 26). Claude Code lists deferred
+tools by name (``deferred_tools_delta``) and records each definition it
+loads (``deferred_tools_record``). Tool names and sizes only, never a
+description or schema:
+
+- ``Turn.deferred_tools_by_server: dict = {}`` -- MCP server, or
+  ``built-in`` for Claude Code's own tools, -> tools listed by name only
+  (definition not loaded) when this reply was requested.
+- ``Turn.deferred_list_chars: int = 0`` -- characters of the name list
+  sent in their place.
+- ``TranscriptResult.tool_definition_chars: dict = {}`` -- tool name ->
+  characters of the full definition loaded for it.
 
 Parser-signals addition (``PARSER_VERSION`` 19 -- plan SURV-4/5/6/7, see
 ``events.py``/``parse.py``'s own module docstrings). Every new value is a
@@ -751,6 +768,13 @@ class Turn:
     #: Your-hooks addition (see module docstring): hook label -> this
     #: turn's tool calls that repeat, unchanged, a call that hook blocked.
     hook_resends: dict = field(default_factory=dict)
+    #: Tool-search addition (see module docstring): MCP server (or
+    #: ``"built-in"``) -> tools listed by name only, their definitions not
+    #: loaded, when this reply was requested.
+    deferred_tools_by_server: dict = field(default_factory=dict)
+    #: Tool-search addition: characters of the name list sent in place of
+    #: those definitions.
+    deferred_list_chars: int = 0
 
 
 @dataclass(slots=True)
@@ -825,6 +849,9 @@ class Diagnostics:
     #: Independent-review addition (see module docstring): lines skipped
     #: because their ``uuid`` had already been seen earlier in this file.
     replayed_lines: int = 0
+    #: ``PARSER_VERSION`` 26 (see module docstring): lines skipped because
+    #: they belong to another session whose own file holds them too.
+    copied_lines: int = 0
     #: Independent-review addition (see module docstring): a priced turn's
     #: timestamp was present but failed to parse.
     timestamp_parse_failures: int = 0
@@ -903,6 +930,9 @@ class TranscriptResult:
     #: Parser-signals addition (see module docstring): counters that don't
     #: fit ``Diagnostics`` -- ``unknown_line_types``, ``unsized_blocks``.
     parser_notes: dict = field(default_factory=dict)
+    #: Tool-search addition (see module docstring): tool name -> characters
+    #: of its full definition, for each deferred tool this transcript loaded.
+    tool_definition_chars: dict = field(default_factory=dict)
 
 
 @dataclass(slots=True)

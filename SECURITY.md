@@ -156,6 +156,12 @@ Only numeric digests and short, non-identifying labels:
   `modelPricing` (a present flag plus the model ids it overrides, never
   the overridden numbers).
 
+For tool search, a reply keeps only how many tools were listed by name,
+by MCP server name, and the size of that list; a transcript keeps the
+size of each tool definition it loaded, by tool name. A definition's
+description and schema are never stored, and a tool name outside the
+API's tool-name alphabet (letters, digits, `_`, `-`, `.`) is dropped.
+
 For the quality signals, a message of yours keeps only a yes/no for
 whether its first 200 characters contain a correction phrase
 (`events._CORRECTION_RE`; the text itself is dropped), and a task

@@ -19,7 +19,7 @@ under subscription billing with usage-log readings, see
 ``hooks``, ``quality``,
 ``workstyle``,
 ``workflows``, ``phases`` (only when ``phases=True``), ``config`` (only
-when snapshots are supplied), ``context_budget``, ``scorecard``,
+when snapshots are supplied), ``context_budget``, ``tool_search``, ``scorecard``,
 ``baseline_comparison``
 (v4 wiring round: ``carry``/``compaction_sim``/``model_swap``/``waste``
 are the four v4 analytics modules, wired in here immediately after
@@ -146,6 +146,7 @@ from . import (
     run_split,
     scorecard,
     snapshots as snapshots_mod,
+    tool_search,
     topology,
     ttl,
     units as units_mod,
@@ -204,6 +205,7 @@ _SECTION_ORDER: tuple[str, ...] = (
     "phases",
     "config",
     "context_budget",
+    "tool_search",
     "capture",
     "scorecard",
 )
@@ -824,6 +826,7 @@ def _merge_diagnostics(acc: Diagnostics, d: Diagnostics) -> None:
     acc.oversized_lines += d.oversized_lines
     acc.trailing_events += d.trailing_events
     acc.replayed_lines += d.replayed_lines
+    acc.copied_lines += d.copied_lines
     acc.timestamp_parse_failures += d.timestamp_parse_failures
     acc.pre_split_turns += d.pre_split_turns
     acc.limit_hits += d.limit_hits
@@ -1306,6 +1309,7 @@ def build_report(
     waste_th = waste.WasteThresholds.from_config(config.thresholds)
     handoff_th = handoff.HandoffThresholds.from_config(config.thresholds)
     hooks_th = hook_costs.HookThresholds.from_config(config.thresholds)
+    tool_search_th = tool_search.ToolSearchThresholds.from_config(config.thresholds)
     run_split_th = run_split.RunSplitThresholds.from_config(config.thresholds)
 
     session_overrides = session_overrides or {}
@@ -1609,6 +1613,7 @@ def build_report(
         all_results, pricing, run_split_th, compaction_sim_stats.rediscovery_allowance_usd
     )
     hook_stats = hook_costs.compute_hook_costs(all_results, pricing, hooks_th)
+    tool_search_stats = tool_search.compute_tool_search(all_results, pricing, tool_search_th)
 
     # How amounts are phrased (billing mode, and under subscription the
     # usage-limit fit). Built before the sections: the elasticity section
@@ -1824,6 +1829,9 @@ def build_report(
             context_budget.build_section(cb, snapshots=snapshots, usage_log_rows=usage_log_rows, pricing=pricing)
         )
 
+    if _want("tool_search"):
+        sections.append(tool_search.build_section(tool_search_stats, tool_search_th))
+
     if _want("capture"):
         sections.append(habits.capture_section(corpus, pricing, config.capture, ratings=ratings, h=_habits_built))
 
@@ -1869,6 +1877,7 @@ def build_report(
         + list(handoff.ASSUMPTIONS)
         + list(run_split.ASSUMPTIONS)
         + list(hook_costs.ASSUMPTIONS)
+        + list(tool_search.ASSUMPTIONS)
         + list(model_swap.ASSUMPTIONS)
         + list(waste.ASSUMPTIONS)
         + list(quality.ASSUMPTIONS)
